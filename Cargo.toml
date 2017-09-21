@@ -1,0 +1,12 @@
+[package]
+name = "janus-retproxy"
+version = "0.1.0"
+authors = ["Marshall Quander <marshall@quander.me>"]
+
+[lib]
+crate_type = ["cdylib"]
+
+[dependencies]
+cstr-macro = "0.1.0"
+janus-plugin = { path = "/home/mquander/src/janus-plugin", version = "0.1.0" }
+janus-plugin-sys = { path = "/home/mquander/src/janus-plugin/janus-plugin-sys", version = "0.1.0" }
