@@ -1,17 +1,10 @@
 PREFIX = /opt/janus/lib/janus/plugins
 TARGET = target/release/libjanus_retproxy.so
 
-$(TARGET):
+install:
 	cargo build --release
-
-test:
-	cargo test
-
-clean:
-	cargo clean
-
-install: $(TARGET) test
+	cargo test --release
 	mkdir -p $(DESTDIR)$(PREFIX)
-	cp $< $(DESTDIR)$(PREFIX)
+	cp $(TARGET) $(DESTDIR)$(PREFIX)
 
-.PHONY: test clean install
+.PHONY: install
