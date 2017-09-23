@@ -22,7 +22,7 @@ pub struct ProxySession {
     pub bitrate: i32,
     pub slowlink_count: i16,
     pub hanging_up: i32,
-    pub destroyed: i64
+    pub destroyed: i64,
 }
 
 pub struct ProxyMessage {
@@ -33,7 +33,7 @@ pub struct ProxyMessage {
 pub struct ProxyPluginState {
     pub sessions: Vec<ProxySession>,
     pub messages: Vec<ProxyMessage>,
-    pub callbacks: Arc<Mutex<Option<Box<PluginCallbacks>>>>
+    pub callbacks: Arc<Mutex<Option<Box<PluginCallbacks>>>>,
 }
 
 lazy_static! {
@@ -50,10 +50,10 @@ pub const METADATA: PluginMetadata = PluginMetadata {
     description: cstr!("Janus WebRTC reverse proxy for Reticulum."),
     name: cstr!("Janus retproxy plugin"),
     author: cstr!("Marshall Quander"),
-    package: cstr!("janus.plugin.retproxy")
+    package: cstr!("janus.plugin.retproxy"),
 };
 
-extern fn init(callbacks: *mut PluginCallbacks, config_path: *const c_char) -> c_int {
+extern "C" fn init(callbacks: *mut PluginCallbacks, config_path: *const c_char) -> c_int {
     if callbacks.is_null() || config_path.is_null() {
         return -1;
     }
@@ -64,11 +64,11 @@ extern fn init(callbacks: *mut PluginCallbacks, config_path: *const c_char) -> c
     0
 }
 
-extern fn destroy() {
+extern "C" fn destroy() {
     janus::log(janus::LogLevel::Info, "Janus retproxy plugin destroyed!\n");
 }
 
-extern fn create_session(handle: *mut PluginSession, _error: *mut c_int) {
+extern "C" fn create_session(handle: *mut PluginSession, _error: *mut c_int) {
     janus::log(janus::LogLevel::Info, "Initializing retproxy session...\n");
     let session = Box::new(ProxySession {
         has_audio: false,
@@ -79,32 +79,39 @@ extern fn create_session(handle: *mut PluginSession, _error: *mut c_int) {
         bitrate: 0,
         destroyed: 0,
         hanging_up: 0,
-        slowlink_count: 0
+        slowlink_count: 0,
     });
-    unsafe { (*handle).plugin_handle = Box::into_raw(session) as *mut c_void; }
+    unsafe {
+        (*handle).plugin_handle = Box::into_raw(session) as *mut c_void;
+    }
 }
 
-extern fn destroy_session(handle: *mut PluginSession, _error: *mut c_int) {
+extern "C" fn destroy_session(handle: *mut PluginSession, _error: *mut c_int) {
     janus::log(janus::LogLevel::Info, "Destroying retproxy session...\n");
     let session: &mut ProxySession = unsafe { &mut *((*handle).plugin_handle as *mut ProxySession) };
     session.destroyed = 1;
 }
 
 
-unsafe extern fn handle_message(_handle: *mut PluginSession, _transaction: *mut c_char, _message: *mut janus::Json, _jsep: *mut janus::Json) -> *mut PluginResult {
+unsafe extern "C" fn handle_message(
+    _handle: *mut PluginSession,
+    _transaction: *mut c_char,
+    _message: *mut janus::Json,
+    _jsep: *mut janus::Json,
+) -> *mut PluginResult {
     janus_internal::janus_plugin_result_new(PluginResultType::JANUS_PLUGIN_OK, ptr::null(), janus_internal::json_object())
 }
 
-unsafe extern fn query_session(_handle: *mut PluginSession) -> *mut janus::Json {
+unsafe extern "C" fn query_session(_handle: *mut PluginSession) -> *mut janus::Json {
     janus_internal::json_object()
 }
 
-extern fn setup_media(_handle: *mut PluginSession) {}
-extern fn incoming_rtp(_handle: *mut PluginSession, _video: c_int, _buf: *mut c_char, _len: c_int) {}
-extern fn incoming_rtcp(_handle: *mut PluginSession, _video: c_int, _buf: *mut c_char, _len: c_int) {}
-extern fn incoming_data(_handle: *mut PluginSession, _buf: *mut c_char, _len: c_int) {}
-extern fn slow_link(_handle: *mut PluginSession, _uplink: c_int, _video: c_int) {}
-extern fn hangup_media(_handle: *mut PluginSession) {}
+extern "C" fn setup_media(_handle: *mut PluginSession) {}
+extern "C" fn incoming_rtp(_handle: *mut PluginSession, _video: c_int, _buf: *mut c_char, _len: c_int) {}
+extern "C" fn incoming_rtcp(_handle: *mut PluginSession, _video: c_int, _buf: *mut c_char, _len: c_int) {}
+extern "C" fn incoming_data(_handle: *mut PluginSession, _buf: *mut c_char, _len: c_int) {}
+extern "C" fn slow_link(_handle: *mut PluginSession, _uplink: c_int, _video: c_int) {}
+extern "C" fn hangup_media(_handle: *mut PluginSession) {}
 
 export_plugin!(
     METADATA,
