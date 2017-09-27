@@ -6,21 +6,19 @@ extern crate lazy_static;
 
 #[macro_use]
 extern crate janus_plugin as janus;
-extern crate janus_plugin_sys as janus_internal;
+extern crate jansson_sys as jansson;
 
 use std::ptr;
+use std::ffi::CStr;
 use std::os::raw::{c_char, c_int, c_void};
 use std::sync::{Arc, Mutex};
-use janus::{PluginCallbacks, PluginMetadata, PluginResult, PluginResultType, PluginSession};
+use janus::{LogLevel, Plugin, PluginCallbacks, PluginMetadata, PluginResult, PluginResultType, PluginSession};
 
 pub struct ProxySession {
     pub has_audio: bool,
-    pub has_video: bool,
     pub has_data: bool,
-    pub audio_active: bool,
-    pub video_active: bool,
-    pub bitrate: i32,
-    pub slowlink_count: i16,
+    pub bitrate: u32,
+    pub slowlink_count: u16,
     pub hanging_up: i32,
     pub destroyed: i64,
 }
@@ -31,15 +29,15 @@ pub struct ProxyMessage {
 }
 
 pub struct ProxyPluginState {
-    pub sessions: Vec<ProxySession>,
-    pub messages: Vec<ProxyMessage>,
+    pub sessions: Arc<Mutex<Vec<Box<ProxySession>>>>,
+    pub messages: Arc<Mutex<Vec<Box<ProxyMessage>>>>,
     pub callbacks: Arc<Mutex<Option<Box<PluginCallbacks>>>>,
 }
 
 lazy_static! {
     static ref STATE: ProxyPluginState = ProxyPluginState {
-        sessions: Vec::new(),
-        messages: Vec::new(),
+        sessions: Arc::new(Mutex::new(Vec::new())),
+        messages: Arc::new(Mutex::new(Vec::new())),
         callbacks: Arc::new(Mutex::new(None))
     };
 }
@@ -55,65 +53,177 @@ pub const METADATA: PluginMetadata = PluginMetadata {
 
 extern "C" fn init(callbacks: *mut PluginCallbacks, config_path: *const c_char) -> c_int {
     if callbacks.is_null() || config_path.is_null() {
+        janus::log(LogLevel::Err, "Invalid parameters for retproxy plugin initialization!");
         return -1;
     }
 
     let callback_mutex = Arc::clone(&STATE.callbacks);
     *callback_mutex.lock().unwrap() = Some(unsafe { Box::from_raw(callbacks) });
-    janus::log(janus::LogLevel::Info, "Janus retproxy plugin initialized!\n");
+    janus::log(LogLevel::Info, "Janus retproxy plugin initialized!");
     0
 }
 
 extern "C" fn destroy() {
-    janus::log(janus::LogLevel::Info, "Janus retproxy plugin destroyed!\n");
+    janus::log(LogLevel::Info, "Janus retproxy plugin destroyed!");
 }
 
 extern "C" fn create_session(handle: *mut PluginSession, _error: *mut c_int) {
-    janus::log(janus::LogLevel::Info, "Initializing retproxy session...\n");
+    janus::log(LogLevel::Info, "Initializing retproxy session...");
     let session = Box::new(ProxySession {
         has_audio: false,
-        has_video: false,
         has_data: false,
-        audio_active: true,
-        video_active: true,
         bitrate: 0,
         destroyed: 0,
         hanging_up: 0,
         slowlink_count: 0,
     });
     unsafe {
-        (*handle).plugin_handle = Box::into_raw(session) as *mut c_void;
+        (*handle).plugin_handle = session.as_ref() as *const ProxySession as *mut c_void;
     }
+    let sessions_mutex = Arc::clone(&STATE.sessions);
+    (*sessions_mutex.lock().unwrap()).push(session);
 }
 
-extern "C" fn destroy_session(handle: *mut PluginSession, _error: *mut c_int) {
-    janus::log(janus::LogLevel::Info, "Destroying retproxy session...\n");
+extern "C" fn destroy_session(handle: *mut PluginSession, error: *mut c_int) {
+    janus::log(LogLevel::Info, "Destroying retproxy session...");
+    if handle.is_null() {
+        janus::log(LogLevel::Err, "No session associated with handle!");
+        unsafe { *error = -1 };
+        return
+    }
     let session: &mut ProxySession = unsafe { &mut *((*handle).plugin_handle as *mut ProxySession) };
     session.destroyed = 1;
 }
 
+extern "C" fn query_session(handle: *mut PluginSession) -> *mut janus::Json {
+    if handle.is_null() {
+        janus::log(LogLevel::Err, "No session associated with handle!");
+        return ptr::null_mut();
+    }
+    let session: &mut ProxySession = unsafe { &mut *((*handle).plugin_handle as *mut ProxySession) };
+    unsafe {
+        let result = jansson::json_object();
+        jansson::json_object_set_new(result, cstr!("bitrate"), jansson::json_integer(session.bitrate as i64));
+        jansson::json_object_set_new(result, cstr!("slowlink_count"), jansson::json_integer(session.slowlink_count as i64));
+        jansson::json_object_set_new(result, cstr!("destroyed"), jansson::json_integer(session.destroyed));
+        result
+    }
+}
 
-unsafe extern "C" fn handle_message(
-    _handle: *mut PluginSession,
-    _transaction: *mut c_char,
-    _message: *mut janus::Json,
-    _jsep: *mut janus::Json,
+extern "C" fn setup_media(handle: *mut PluginSession) {
+    janus::log(LogLevel::Verb, "WebRTC media is now available.");
+    if handle.is_null() {
+        janus::log(LogLevel::Err, "No session associated with handle!");
+        return;
+    }
+    let session: &mut ProxySession = unsafe { &mut *((*handle).plugin_handle as *mut ProxySession) };
+    session.hanging_up = 0;
+}
+
+extern "C" fn incoming_rtp(handle: *mut PluginSession, video: c_int, buf: *mut c_char, len: c_int) {
+    janus::log(LogLevel::Huge, "RTP packet received!");
+    if handle.is_null() {
+        janus::log(LogLevel::Err, "No session associated with handle!");
+        return;
+    }
+    let callback_mutex = Arc::clone(&STATE.callbacks);
+    ((*callback_mutex.lock().unwrap()).as_ref().unwrap().relay_rtp)(handle, video, buf, len);
+}
+
+extern "C" fn incoming_rtcp(handle: *mut PluginSession, video: c_int, buf: *mut c_char, len: c_int) {
+    janus::log(LogLevel::Huge, "RTCP packet received!");
+    if handle.is_null() {
+        janus::log(LogLevel::Err, "No session associated with handle!");
+        return;
+    }
+    let callback_mutex = Arc::clone(&STATE.callbacks);
+    ((*callback_mutex.lock().unwrap()).as_ref().unwrap().relay_rtcp)(handle, video, buf, len);
+}
+
+extern "C" fn incoming_data(handle: *mut PluginSession, buf: *mut c_char, len: c_int) {
+    janus::log(LogLevel::Huge, "SCTP packet received!");
+    if handle.is_null() {
+        janus::log(LogLevel::Err, "No session associated with handle!");
+        return;
+    }
+    let callback_mutex = Arc::clone(&STATE.callbacks);
+    ((*callback_mutex.lock().unwrap()).as_ref().unwrap().relay_data)(handle, buf, len);
+}
+
+extern "C" fn slow_link(handle: *mut PluginSession, _uplink: c_int, _video: c_int) {
+    janus::log(LogLevel::Verb, "Slow link message received!");
+    if handle.is_null() {
+        janus::log(LogLevel::Err, "No session associated with handle!");
+        return;
+    }
+}
+
+extern "C" fn hangup_media(handle: *mut PluginSession) {
+    janus::log(LogLevel::Verb, "Hanging up WebRTC media.");
+    if handle.is_null() {
+        janus::log(LogLevel::Err, "No session associated with handle!");
+        return;
+    }
+}
+
+extern "C" fn handle_message(
+    handle: *mut PluginSession,
+    transaction: *mut c_char,
+    message: *mut janus::Json,
+    jsep: *mut janus::Json,
 ) -> *mut PluginResult {
-    janus_internal::janus_plugin_result_new(PluginResultType::JANUS_PLUGIN_OK, ptr::null(), janus_internal::json_object())
+    janus::log(LogLevel::Verb, "Received signalling message.");
+    if handle.is_null() {
+        janus::log(LogLevel::Err, "No session associated with handle!");
+        return Box::into_raw(janus::create_result(PluginResultType::JANUS_PLUGIN_ERROR, cstr!("No session associated with handle!"), ptr::null_mut()));
+    }
+    if message.is_null() {
+        janus::log(LogLevel::Err, "Null message received!");
+        return Box::into_raw(janus::create_result(PluginResultType::JANUS_PLUGIN_ERROR, cstr!("Null message received!"), ptr::null_mut()));
+    }
+
+    let (root, jsep) = unsafe { (&*message, &*jsep) };
+
+    if root.type_ != jansson::json_type::JSON_OBJECT {
+        janus::log(LogLevel::Err, "Message wasn't a JSON object.");
+        return Box::into_raw(janus::create_result(PluginResultType::JANUS_PLUGIN_ERROR, cstr!("Message wasn't a JSON object."), ptr::null_mut()));
+    }
+
+
+    let sdp_val = unsafe { jansson::json_string_value(jansson::json_object_get(jsep, cstr!("sdp"))) };
+    if sdp_val.is_null() {
+        let callback_mutex = Arc::clone(&STATE.callbacks);
+        let ret = ((*callback_mutex.lock().unwrap()).as_ref().unwrap().push_event)(
+            handle,
+            &mut PLUGIN,
+            transaction,
+            unsafe { jansson::json_object() },
+            ptr::null_mut());
+        janus::log(LogLevel::Verb, &format!("Sent event. Received {} ({}).", ret, janus::get_api_error(ret)));
+    } else {
+        let offer_str = unsafe { CStr::from_ptr(sdp_val).to_str().unwrap() };
+        let offer = janus::sdp::parse_sdp(offer_str, 512).unwrap();
+        let answer = janus::sdp::answer_sdp(&offer);
+        let answer_str = janus::sdp::write_sdp(&answer);
+        unsafe {
+            let jsep = jansson::json_object();
+            jansson::json_object_set_new(jsep, cstr!("type"), jansson::json_string(cstr!("answer")));
+            jansson::json_object_set_new(jsep, cstr!("sdp"), jansson::json_string(answer_str.as_ptr()));
+            let callback_mutex = Arc::clone(&STATE.callbacks);
+            let _ret = ((*callback_mutex.lock().unwrap()).as_ref().unwrap().push_event)(
+                handle,
+                &mut PLUGIN,
+                transaction,
+                jansson::json_object(),
+                jsep);
+        }
+        janus::log(LogLevel::Info, &format!("Received SDP offer: {}", offer_str));
+    }
+
+    Box::into_raw(janus::create_result(PluginResultType::JANUS_PLUGIN_OK, ptr::null(), unsafe { jansson::json_object() }))
 }
 
-unsafe extern "C" fn query_session(_handle: *mut PluginSession) -> *mut janus::Json {
-    janus_internal::json_object()
-}
-
-extern "C" fn setup_media(_handle: *mut PluginSession) {}
-extern "C" fn incoming_rtp(_handle: *mut PluginSession, _video: c_int, _buf: *mut c_char, _len: c_int) {}
-extern "C" fn incoming_rtcp(_handle: *mut PluginSession, _video: c_int, _buf: *mut c_char, _len: c_int) {}
-extern "C" fn incoming_data(_handle: *mut PluginSession, _buf: *mut c_char, _len: c_int) {}
-extern "C" fn slow_link(_handle: *mut PluginSession, _uplink: c_int, _video: c_int) {}
-extern "C" fn hangup_media(_handle: *mut PluginSession) {}
-
-export_plugin!(
+const PLUGIN: Plugin = build_plugin!(
     METADATA,
     init,
     destroy,
@@ -128,3 +238,5 @@ export_plugin!(
     destroy_session,
     query_session
 );
+
+export_plugin!(&PLUGIN);
