@@ -1,9 +1,9 @@
 PREFIX = /opt/janus/lib/janus/plugins
-TARGET = target/release/libjanus_retproxy.so
+TARGET = target/debug/libjanus_retproxy.so
 
 install:
-	cargo build --release
-	cargo test --release
+	cargo build
+	cargo test
 	mkdir -p $(DESTDIR)$(PREFIX)
 	cp $(TARGET) $(DESTDIR)$(PREFIX)
 
