@@ -26,6 +26,7 @@ function init() {
 			Janus.debug("Trying a createOffer");
 			retproxy.createOffer(
 			    {
+                                media: { video: false },
 				success: function(jsep) {
 				    Janus.debug("Got SDP!");
 				    Janus.debug(jsep);

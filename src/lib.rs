@@ -202,7 +202,7 @@ extern "C" fn handle_message(
         let offer_str = unsafe { CString::from_raw(sdp_val as *mut _) };
         janus::log(LogLevel::Info, &format!("Received SDP offer: {}", offer_str.to_str().unwrap()));
         let offer = janus::sdp::parse_sdp(offer_str).unwrap();
-        let answer = answer_sdp!(&offer);
+        let answer = answer_sdp!(&offer, janus::sdp::OfferAnswerParameters::Video, 0);
         let answer_str = janus::sdp::write_sdp(&answer);
         unsafe {
             let jsep = jansson::json_object();
