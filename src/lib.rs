@@ -9,7 +9,7 @@ extern crate janus_plugin as janus;
 extern crate jansson_sys as jansson;
 
 use std::ptr;
-use std::ffi::CStr;
+use std::ffi::CString;
 use std::os::raw::{c_char, c_int, c_void};
 use std::sync::{Arc, Mutex};
 use janus::{LogLevel, Plugin, PluginCallbacks, PluginMetadata, PluginResult, PluginResultType, PluginSession};
@@ -201,7 +201,8 @@ extern "C" fn handle_message(
             ptr::null_mut());
         janus::log(LogLevel::Verb, &format!("Sent event. Received {} ({}).", ret, janus::get_api_error(ret)));
     } else {
-        let offer_str = unsafe { CStr::from_ptr(sdp_val).to_str().unwrap() };
+        let offer_str = unsafe { CString::from_raw(sdp_val as *mut _) };
+        janus::log(LogLevel::Info, &format!("Received SDP offer: {}", offer_str.to_str().unwrap()));
         let offer = janus::sdp::parse_sdp(offer_str, 512).unwrap();
         let answer = janus::sdp::answer_sdp(&offer);
         let answer_str = janus::sdp::write_sdp(&answer);
@@ -217,7 +218,6 @@ extern "C" fn handle_message(
                 jansson::json_object(),
                 jsep);
         }
-        janus::log(LogLevel::Info, &format!("Received SDP offer: {}", offer_str));
     }
 
     Box::into_raw(janus::create_result(PluginResultType::JANUS_PLUGIN_OK, ptr::null(), unsafe { jansson::json_object() }))
