@@ -9,7 +9,7 @@ extern crate jansson_sys as jansson;
 use std::ptr;
 use std::ffi::CString;
 use std::os::raw::{c_char, c_int, c_void};
-use std::sync::{Arc, Mutex};
+use std::sync::{Mutex, RwLock};
 use janus::{LogLevel, Plugin, PluginCallbacks, PluginMetadata, PluginResult, PluginResultType, PluginSession};
 
 pub struct ProxySession {
@@ -26,17 +26,17 @@ pub struct ProxyMessage {
     pub transaction: String,
 }
 
-pub struct ProxyPluginState {
-    pub sessions: Arc<Mutex<Vec<Box<ProxySession>>>>,
-    pub messages: Arc<Mutex<Vec<Box<ProxyMessage>>>>,
-    pub callbacks: Arc<Mutex<Option<Box<PluginCallbacks>>>>,
+pub struct ProxyPluginState<'a> {
+    pub sessions: RwLock<Vec<Box<ProxySession>>>,
+    pub messages: RwLock<Vec<Box<ProxyMessage>>>,
+    pub callbacks: Mutex<Option<&'a PluginCallbacks>>,
 }
 
 lazy_static! {
-    static ref STATE: ProxyPluginState = ProxyPluginState {
-        sessions: Arc::new(Mutex::new(Vec::new())),
-        messages: Arc::new(Mutex::new(Vec::new())),
-        callbacks: Arc::new(Mutex::new(None))
+    static ref STATE: ProxyPluginState<'static> = ProxyPluginState {
+        sessions: RwLock::new(Vec::new()),
+        messages: RwLock::new(Vec::new()),
+        callbacks: Mutex::new(None)
     };
 }
 
@@ -55,8 +55,7 @@ extern "C" fn init(callbacks: *mut PluginCallbacks, config_path: *const c_char) 
         return -1;
     }
 
-    let callback_mutex = Arc::clone(&STATE.callbacks);
-    *callback_mutex.lock().unwrap() = Some(unsafe { Box::from_raw(callbacks) });
+    *STATE.callbacks.lock().unwrap() = unsafe { callbacks.as_ref() };
     janus::log(LogLevel::Info, "Janus retproxy plugin initialized!");
     0
 }
@@ -78,8 +77,7 @@ extern "C" fn create_session(handle: *mut PluginSession, _error: *mut c_int) {
     unsafe {
         (*handle).plugin_handle = session.as_ref() as *const ProxySession as *mut c_void;
     }
-    let sessions_mutex = Arc::clone(&STATE.sessions);
-    (*sessions_mutex.lock().unwrap()).push(session);
+    (*STATE.sessions.write().unwrap()).push(session);
 }
 
 extern "C" fn destroy_session(handle: *mut PluginSession, error: *mut c_int) {
@@ -124,8 +122,7 @@ extern "C" fn incoming_rtp(handle: *mut PluginSession, video: c_int, buf: *mut c
         janus::log(LogLevel::Err, "No session associated with handle!");
         return;
     }
-    let callback_mutex = Arc::clone(&STATE.callbacks);
-    ((*callback_mutex.lock().unwrap()).as_ref().unwrap().relay_rtp)(handle, video, buf, len);
+    ((*STATE.callbacks.lock().unwrap()).as_ref().unwrap().relay_rtp)(handle, video, buf, len);
 }
 
 extern "C" fn incoming_rtcp(handle: *mut PluginSession, video: c_int, buf: *mut c_char, len: c_int) {
@@ -134,8 +131,7 @@ extern "C" fn incoming_rtcp(handle: *mut PluginSession, video: c_int, buf: *mut 
         janus::log(LogLevel::Err, "No session associated with handle!");
         return;
     }
-    let callback_mutex = Arc::clone(&STATE.callbacks);
-    ((*callback_mutex.lock().unwrap()).as_ref().unwrap().relay_rtcp)(handle, video, buf, len);
+    ((*STATE.callbacks.lock().unwrap()).as_ref().unwrap().relay_rtcp)(handle, video, buf, len);
 }
 
 extern "C" fn incoming_data(handle: *mut PluginSession, buf: *mut c_char, len: c_int) {
@@ -144,8 +140,7 @@ extern "C" fn incoming_data(handle: *mut PluginSession, buf: *mut c_char, len: c
         janus::log(LogLevel::Err, "No session associated with handle!");
         return;
     }
-    let callback_mutex = Arc::clone(&STATE.callbacks);
-    ((*callback_mutex.lock().unwrap()).as_ref().unwrap().relay_data)(handle, buf, len);
+    ((*STATE.callbacks.lock().unwrap()).as_ref().unwrap().relay_data)(handle, buf, len);
 }
 
 extern "C" fn slow_link(handle: *mut PluginSession, _uplink: c_int, _video: c_int) {
@@ -187,11 +182,9 @@ extern "C" fn handle_message(
         return Box::into_raw(janus::create_result(PluginResultType::JANUS_PLUGIN_ERROR, cstr!("Message wasn't a JSON object."), ptr::null_mut()));
     }
 
-
     let sdp_val = unsafe { jansson::json_string_value(jansson::json_object_get(jsep, cstr!("sdp"))) };
     if sdp_val.is_null() {
-        let callback_mutex = Arc::clone(&STATE.callbacks);
-        let ret = ((*callback_mutex.lock().unwrap()).as_ref().unwrap().push_event)(
+        let ret = ((*STATE.callbacks.lock().unwrap()).as_ref().unwrap().push_event)(
             handle,
             &mut PLUGIN,
             transaction,
@@ -208,8 +201,7 @@ extern "C" fn handle_message(
             let jsep = jansson::json_object();
             jansson::json_object_set_new(jsep, cstr!("type"), jansson::json_string(cstr!("answer")));
             jansson::json_object_set_new(jsep, cstr!("sdp"), jansson::json_string(answer_str.as_ptr()));
-            let callback_mutex = Arc::clone(&STATE.callbacks);
-            let _ret = ((*callback_mutex.lock().unwrap()).as_ref().unwrap().push_event)(
+            let _ret = ((*STATE.callbacks.lock().unwrap()).as_ref().unwrap().push_event)(
                 handle,
                 &mut PLUGIN,
                 transaction,
