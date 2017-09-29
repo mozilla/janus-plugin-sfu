@@ -9,7 +9,7 @@ extern crate jansson_sys as jansson;
 use std::ptr;
 use std::ffi::CString;
 use std::os::raw::{c_char, c_int, c_void};
-use std::sync::{Mutex, RwLock};
+use std::sync::{RwLock};
 use janus::{LogLevel, Plugin, PluginCallbacks, PluginMetadata, PluginResult, PluginResultType, PluginSession};
 
 pub struct ProxySession {
@@ -26,18 +26,9 @@ pub struct ProxyMessage {
     pub transaction: String,
 }
 
-pub struct ProxyPluginState<'a> {
+pub struct ProxyPluginState {
     pub sessions: RwLock<Vec<Box<ProxySession>>>,
     pub messages: RwLock<Vec<Box<ProxyMessage>>>,
-    pub callbacks: Mutex<Option<&'a PluginCallbacks>>,
-}
-
-lazy_static! {
-    static ref STATE: ProxyPluginState<'static> = ProxyPluginState {
-        sessions: RwLock::new(Vec::new()),
-        messages: RwLock::new(Vec::new()),
-        callbacks: Mutex::new(None)
-    };
 }
 
 pub const METADATA: PluginMetadata = PluginMetadata {
@@ -49,13 +40,27 @@ pub const METADATA: PluginMetadata = PluginMetadata {
     package: cstr!("janus.plugin.retproxy"),
 };
 
+static mut CALLBACKS: Option<&PluginCallbacks> = None;
+
+/// Returns a ref to the callback struct provided by Janus containing function pointers to pass data back to the gateway.
+fn gateway_callbacks() -> &'static PluginCallbacks {
+    unsafe { CALLBACKS.expect("Callbacks not initialized -- did plugin init() succeed?") }
+}
+
+lazy_static! {
+    static ref STATE: ProxyPluginState = ProxyPluginState {
+        sessions: RwLock::new(Vec::new()),
+        messages: RwLock::new(Vec::new()),
+    };
+}
+
 extern "C" fn init(callbacks: *mut PluginCallbacks, config_path: *const c_char) -> c_int {
     if callbacks.is_null() || config_path.is_null() {
         janus::log(LogLevel::Err, "Invalid parameters for retproxy plugin initialization!");
         return -1;
     }
 
-    *STATE.callbacks.lock().unwrap() = unsafe { callbacks.as_ref() };
+    unsafe { CALLBACKS = callbacks.as_ref() };
     janus::log(LogLevel::Info, "Janus retproxy plugin initialized!");
     0
 }
@@ -122,7 +127,7 @@ extern "C" fn incoming_rtp(handle: *mut PluginSession, video: c_int, buf: *mut c
         janus::log(LogLevel::Err, "No session associated with handle!");
         return;
     }
-    ((*STATE.callbacks.lock().unwrap()).as_ref().unwrap().relay_rtp)(handle, video, buf, len);
+    (gateway_callbacks().relay_rtp)(handle, video, buf, len);
 }
 
 extern "C" fn incoming_rtcp(handle: *mut PluginSession, video: c_int, buf: *mut c_char, len: c_int) {
@@ -131,7 +136,7 @@ extern "C" fn incoming_rtcp(handle: *mut PluginSession, video: c_int, buf: *mut 
         janus::log(LogLevel::Err, "No session associated with handle!");
         return;
     }
-    ((*STATE.callbacks.lock().unwrap()).as_ref().unwrap().relay_rtcp)(handle, video, buf, len);
+    (gateway_callbacks().relay_rtcp)(handle, video, buf, len);
 }
 
 extern "C" fn incoming_data(handle: *mut PluginSession, buf: *mut c_char, len: c_int) {
@@ -140,7 +145,7 @@ extern "C" fn incoming_data(handle: *mut PluginSession, buf: *mut c_char, len: c
         janus::log(LogLevel::Err, "No session associated with handle!");
         return;
     }
-    ((*STATE.callbacks.lock().unwrap()).as_ref().unwrap().relay_data)(handle, buf, len);
+    (gateway_callbacks().relay_data)(handle, buf, len);
 }
 
 extern "C" fn slow_link(handle: *mut PluginSession, _uplink: c_int, _video: c_int) {
@@ -174,17 +179,25 @@ extern "C" fn handle_message(
         janus::log(LogLevel::Err, "Null message received!");
         return Box::into_raw(janus::create_result(PluginResultType::JANUS_PLUGIN_ERROR, cstr!("Null message received!"), ptr::null_mut()));
     }
-
+    if jsep.is_null() {
+        janus::log(LogLevel::Verb, "No JSEP provided; nothing to do.");
+        return Box::into_raw(janus::create_result(PluginResultType::JANUS_PLUGIN_OK, ptr::null(), ptr::null_mut()));
+    }
     let (root, jsep) = unsafe { (&*message, &*jsep) };
 
     if root.type_ != jansson::json_type::JSON_OBJECT {
         janus::log(LogLevel::Err, "Message wasn't a JSON object.");
         return Box::into_raw(janus::create_result(PluginResultType::JANUS_PLUGIN_ERROR, cstr!("Message wasn't a JSON object."), ptr::null_mut()));
     }
+    if jsep.type_ != jansson::json_type::JSON_OBJECT {
+        janus::log(LogLevel::Err, "JSEP wasn't a JSON object.");
+        return Box::into_raw(janus::create_result(PluginResultType::JANUS_PLUGIN_ERROR, cstr!("JSEP wasn't a JSON object."), ptr::null_mut()));
+    }
 
     let sdp_val = unsafe { jansson::json_string_value(jansson::json_object_get(jsep, cstr!("sdp"))) };
+    let push_event = gateway_callbacks().push_event;
     if sdp_val.is_null() {
-        let ret = ((*STATE.callbacks.lock().unwrap()).as_ref().unwrap().push_event)(
+        let ret = push_event(
             handle,
             &mut PLUGIN,
             transaction,
@@ -193,7 +206,6 @@ extern "C" fn handle_message(
         janus::log(LogLevel::Verb, &format!("Sent event. Received {} ({}).", ret, janus::get_api_error(ret)));
     } else {
         let offer_str = unsafe { CString::from_raw(sdp_val as *mut _) };
-        janus::log(LogLevel::Info, &format!("Received SDP offer: {}", offer_str.to_str().unwrap()));
         let offer = janus::sdp::parse_sdp(offer_str).unwrap();
         let answer = answer_sdp!(&offer, janus::sdp::OfferAnswerParameters::Video, 0);
         let answer_str = janus::sdp::write_sdp(&answer);
@@ -201,16 +213,17 @@ extern "C" fn handle_message(
             let jsep = jansson::json_object();
             jansson::json_object_set_new(jsep, cstr!("type"), jansson::json_string(cstr!("answer")));
             jansson::json_object_set_new(jsep, cstr!("sdp"), jansson::json_string(answer_str.as_ptr()));
-            let _ret = ((*STATE.callbacks.lock().unwrap()).as_ref().unwrap().push_event)(
+            let ret = push_event(
                 handle,
                 &mut PLUGIN,
                 transaction,
                 jansson::json_object(),
                 jsep);
+            janus::log(LogLevel::Verb, &format!("Sent event. Received {} ({}).", ret, janus::get_api_error(ret)));
         }
     }
 
-    Box::into_raw(janus::create_result(PluginResultType::JANUS_PLUGIN_OK, ptr::null(), unsafe { jansson::json_object() }))
+    Box::into_raw(janus::create_result(PluginResultType::JANUS_PLUGIN_OK, ptr::null(), ptr::null_mut()))
 }
 
 const PLUGIN: Plugin = build_plugin!(
