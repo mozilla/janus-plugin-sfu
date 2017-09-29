@@ -8,7 +8,7 @@ extern crate jansson_sys as jansson;
 
 use std::ptr;
 use std::ffi::CString;
-use std::os::raw::{c_char, c_int, c_void};
+use std::os::raw::{c_char, c_int};
 use std::sync::{RwLock};
 use janus::{LogLevel, Plugin, PluginCallbacks, PluginMetadata, PluginResult, PluginResultType, PluginSession};
 
@@ -19,7 +19,11 @@ pub struct ProxySession {
     pub slowlink_count: u16,
     pub hanging_up: i32,
     pub destroyed: i64,
+    pub handle: *mut PluginSession,
 }
+
+unsafe impl Sync for ProxySession {}
+unsafe impl Send for ProxySession {}
 
 pub struct ProxyMessage {
     pub session: ProxySession,
@@ -78,9 +82,10 @@ extern "C" fn create_session(handle: *mut PluginSession, _error: *mut c_int) {
         destroyed: 0,
         hanging_up: 0,
         slowlink_count: 0,
+        handle: handle
     });
     unsafe {
-        (*handle).plugin_handle = session.as_ref() as *const ProxySession as *mut c_void;
+        (*handle).plugin_handle = session.as_ref() as *const _ as *mut _;
     }
     (*STATE.sessions.write().unwrap()).push(session);
 }
@@ -92,7 +97,7 @@ extern "C" fn destroy_session(handle: *mut PluginSession, error: *mut c_int) {
         unsafe { *error = -1 };
         return
     }
-    let session: &mut ProxySession = unsafe { &mut *((*handle).plugin_handle as *mut ProxySession) };
+    let session = unsafe { &mut *((*handle).plugin_handle as *mut ProxySession) };
     session.destroyed = 1;
 }
 
@@ -101,7 +106,7 @@ extern "C" fn query_session(handle: *mut PluginSession) -> *mut janus::Json {
         janus::log(LogLevel::Err, "No session associated with handle!");
         return ptr::null_mut();
     }
-    let session: &mut ProxySession = unsafe { &mut *((*handle).plugin_handle as *mut ProxySession) };
+    let session = unsafe { &mut *((*handle).plugin_handle as *mut ProxySession) };
     unsafe {
         let result = jansson::json_object();
         jansson::json_object_set_new(result, cstr!("bitrate"), jansson::json_integer(session.bitrate as i64));
@@ -117,7 +122,7 @@ extern "C" fn setup_media(handle: *mut PluginSession) {
         janus::log(LogLevel::Err, "No session associated with handle!");
         return;
     }
-    let session: &mut ProxySession = unsafe { &mut *((*handle).plugin_handle as *mut ProxySession) };
+    let session = unsafe { &mut *((*handle).plugin_handle as *mut ProxySession) };
     session.hanging_up = 0;
 }
 
@@ -136,16 +141,25 @@ extern "C" fn incoming_rtcp(handle: *mut PluginSession, video: c_int, buf: *mut 
         janus::log(LogLevel::Err, "No session associated with handle!");
         return;
     }
+
     (gateway_callbacks().relay_rtcp)(handle, video, buf, len);
 }
 
 extern "C" fn incoming_data(handle: *mut PluginSession, buf: *mut c_char, len: c_int) {
-    janus::log(LogLevel::Huge, "SCTP packet received!");
+    janus::log(LogLevel::Verb, "SCTP packet received!");
     if handle.is_null() {
         janus::log(LogLevel::Err, "No session associated with handle!");
         return;
     }
-    (gateway_callbacks().relay_data)(handle, buf, len);
+
+    let sessions = &*STATE.sessions.read().unwrap();
+    let this_session_ptr = unsafe { (*handle).plugin_handle };
+    for other_session in sessions {
+        let other_session_ptr = other_session.as_ref() as *const _ as *mut _;
+        if this_session_ptr != other_session_ptr {
+            (gateway_callbacks().relay_data)(other_session.handle, buf, len);
+        }
+    }
 }
 
 extern "C" fn slow_link(handle: *mut PluginSession, _uplink: c_int, _video: c_int) {
