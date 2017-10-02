@@ -189,6 +189,11 @@ extern "C" fn hangup_media(handle: *mut PluginSession) {
     }
 }
 
+fn push_event(handle: *mut PluginSession, transaction: *mut c_char, message: *mut Json, jsep: *mut Json) -> Result<(), Box<Error+Send+Sync>> {
+    let f = gateway_callbacks().push_event;
+    janus::get_result(f(handle, &mut PLUGIN, transaction, message, jsep))
+}
+
 fn handle_message_core(handle: *mut PluginSession, transaction: *mut c_char, message: *mut Json, jsep: *mut Json) -> PluginResult {
     if message.is_null() {
         Err(From::from("Null message received!"))
@@ -203,16 +208,10 @@ fn handle_message_core(handle: *mut PluginSession, transaction: *mut c_char, mes
             Err(From::from("JSEP wasn't a JSON object."))
         } else {
             let sdp_val = unsafe { jansson::json_string_value(jansson::json_object_get(jsep, cstr!("sdp"))) };
-            let push_event = gateway_callbacks().push_event;
             if sdp_val.is_null() {
-                let ret = push_event(
-                    handle,
-                    &mut PLUGIN,
-                    transaction,
-                    unsafe { jansson::json_object() },
-                    ptr::null_mut());
-                janus::log(LogLevel::Verb, &format!("Sent event. Received {} ({}).", ret, janus::get_api_error(ret)));
-                Ok(PluginSuccess::Ok(ptr::null_mut()))
+                push_event(handle, transaction, unsafe { jansson::json_object() }, ptr::null_mut()).map(
+                    |_| PluginSuccess::Ok(ptr::null_mut())
+                )
             } else {
                 let offer_str = unsafe { CString::from_raw(sdp_val as *mut _) };
                 let offer = janus::sdp::parse_sdp(offer_str)?;
@@ -222,14 +221,9 @@ fn handle_message_core(handle: *mut PluginSession, transaction: *mut c_char, mes
                     let jsep = jansson::json_object();
                     jansson::json_object_set_new(jsep, cstr!("type"), jansson::json_string(cstr!("answer")));
                     jansson::json_object_set_new(jsep, cstr!("sdp"), jansson::json_string(answer_str.as_ptr()));
-                    let ret = push_event(
-                        handle,
-                        &mut PLUGIN,
-                        transaction,
-                        jansson::json_object(),
-                        jsep);
-                    janus::log(LogLevel::Verb, &format!("Sent event. Received {} ({}).", ret, janus::get_api_error(ret)));
-                    Ok(PluginSuccess::Ok(ptr::null_mut()))
+                    push_event(handle, transaction, jansson::json_object(), jsep).map(
+                        |_| PluginSuccess::Ok(ptr::null_mut())
+                    )
                 }
             }
         }
