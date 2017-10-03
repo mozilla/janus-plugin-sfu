@@ -12,8 +12,15 @@ use std::os::raw::{c_char, c_int};
 use std::ptr;
 use std::sync::{RwLock};
 use janus::{LogLevel, Plugin, PluginCallbacks, PluginMetadata,
-            PluginResultInfo, PluginResultType, PluginSession};
+            PluginResultInfo, PluginResultType, PluginHandle};
 use jansson::json_t as Json;
+
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
+enum SessionKind {
+    Unknown,
+    Publisher,
+    Listener,
+}
 
 #[derive(Debug)]
 enum PluginSuccess {
@@ -23,27 +30,27 @@ enum PluginSuccess {
 
 type PluginResult = Result<PluginSuccess, Box<Error+Send+Sync>>;
 
-struct ProxySession {
-    pub has_audio: bool,
-    pub has_data: bool,
-    pub bitrate: u32,
-    pub slowlink_count: u16,
-    pub hanging_up: i32,
-    pub destroyed: i64,
-    pub handle: *mut PluginSession,
+#[derive(Debug)]
+struct Session {
+    pub kind: SessionKind,
+    pub handle: *mut PluginHandle,
 }
 
-unsafe impl Sync for ProxySession {}
-unsafe impl Send for ProxySession {}
-
-struct ProxyMessage {
-    pub session: ProxySession,
-    pub transaction: String,
+impl Session {
+    fn set_kind(&mut self, kind: SessionKind) -> Result<(), Box<Error+Send+Sync>> {
+        match self.kind {
+            SessionKind::Unknown => { self.kind = kind; Ok(()) },
+            x if x == kind => Ok(()),
+            _ => Err(From::from(format!("Session already configured as {:?}; can't set to {:?}.", self.kind, kind)))
+        }
+    }
 }
 
-struct ProxyPluginState {
-    pub sessions: RwLock<Vec<Box<ProxySession>>>,
-    pub messages: RwLock<Vec<Box<ProxyMessage>>>,
+unsafe impl Sync for Session {}
+unsafe impl Send for Session {}
+
+struct State {
+    pub sessions: RwLock<Vec<Box<Session>>>
 }
 
 const METADATA: PluginMetadata = PluginMetadata {
@@ -63,9 +70,8 @@ fn gateway_callbacks() -> &'static PluginCallbacks {
 }
 
 lazy_static! {
-    static ref STATE: ProxyPluginState = ProxyPluginState {
-        sessions: RwLock::new(Vec::new()),
-        messages: RwLock::new(Vec::new()),
+    static ref STATE: State = State {
+        sessions: RwLock::new(Vec::new())
     };
 }
 
@@ -84,15 +90,10 @@ extern "C" fn destroy() {
     janus::log(LogLevel::Info, "Janus retproxy plugin destroyed!");
 }
 
-extern "C" fn create_session(handle: *mut PluginSession, _error: *mut c_int) {
+extern "C" fn create_session(handle: *mut PluginHandle, _error: *mut c_int) {
     janus::log(LogLevel::Info, "Initializing retproxy session...");
-    let session = Box::new(ProxySession {
-        has_audio: false,
-        has_data: false,
-        bitrate: 0,
-        destroyed: 0,
-        hanging_up: 0,
-        slowlink_count: 0,
+    let session = Box::new(Session {
+        kind: SessionKind::Unknown,
         handle: handle
     });
     unsafe {
@@ -101,43 +102,34 @@ extern "C" fn create_session(handle: *mut PluginSession, _error: *mut c_int) {
     (*STATE.sessions.write().unwrap()).push(session);
 }
 
-extern "C" fn destroy_session(handle: *mut PluginSession, error: *mut c_int) {
+extern "C" fn destroy_session(handle: *mut PluginHandle, error: *mut c_int) {
     janus::log(LogLevel::Info, "Destroying retproxy session...");
     if handle.is_null() {
         janus::log(LogLevel::Err, "No session associated with handle!");
         unsafe { *error = -1 };
         return
     }
-    let session = unsafe { &mut *((*handle).plugin_handle as *mut ProxySession) };
-    session.destroyed = 1;
 }
 
-extern "C" fn query_session(handle: *mut PluginSession) -> *mut janus::Json {
+extern "C" fn query_session(handle: *mut PluginHandle) -> *mut janus::Json {
     if handle.is_null() {
         janus::log(LogLevel::Err, "No session associated with handle!");
         return ptr::null_mut();
     }
-    let session = unsafe { &mut *((*handle).plugin_handle as *mut ProxySession) };
     unsafe {
-        let result = jansson::json_object();
-        jansson::json_object_set_new(result, cstr!("bitrate"), jansson::json_integer(session.bitrate as i64));
-        jansson::json_object_set_new(result, cstr!("slowlink_count"), jansson::json_integer(session.slowlink_count as i64));
-        jansson::json_object_set_new(result, cstr!("destroyed"), jansson::json_integer(session.destroyed));
-        result
+        jansson::json_object()
     }
 }
 
-extern "C" fn setup_media(handle: *mut PluginSession) {
+extern "C" fn setup_media(handle: *mut PluginHandle) {
     janus::log(LogLevel::Verb, "WebRTC media is now available.");
     if handle.is_null() {
         janus::log(LogLevel::Err, "No session associated with handle!");
         return;
     }
-    let session = unsafe { &mut *((*handle).plugin_handle as *mut ProxySession) };
-    session.hanging_up = 0;
 }
 
-extern "C" fn incoming_rtp(handle: *mut PluginSession, video: c_int, buf: *mut c_char, len: c_int) {
+extern "C" fn incoming_rtp(handle: *mut PluginHandle, video: c_int, buf: *mut c_char, len: c_int) {
     janus::log(LogLevel::Huge, "RTP packet received!");
     if handle.is_null() {
         janus::log(LogLevel::Err, "No session associated with handle!");
@@ -146,7 +138,7 @@ extern "C" fn incoming_rtp(handle: *mut PluginSession, video: c_int, buf: *mut c
     (gateway_callbacks().relay_rtp)(handle, video, buf, len);
 }
 
-extern "C" fn incoming_rtcp(handle: *mut PluginSession, video: c_int, buf: *mut c_char, len: c_int) {
+extern "C" fn incoming_rtcp(handle: *mut PluginHandle, video: c_int, buf: *mut c_char, len: c_int) {
     janus::log(LogLevel::Huge, "RTCP packet received!");
     if handle.is_null() {
         janus::log(LogLevel::Err, "No session associated with handle!");
@@ -156,7 +148,7 @@ extern "C" fn incoming_rtcp(handle: *mut PluginSession, video: c_int, buf: *mut 
     (gateway_callbacks().relay_rtcp)(handle, video, buf, len);
 }
 
-extern "C" fn incoming_data(handle: *mut PluginSession, buf: *mut c_char, len: c_int) {
+extern "C" fn incoming_data(handle: *mut PluginHandle, buf: *mut c_char, len: c_int) {
     janus::log(LogLevel::Verb, "SCTP packet received!");
     if handle.is_null() {
         janus::log(LogLevel::Err, "No session associated with handle!");
@@ -173,7 +165,7 @@ extern "C" fn incoming_data(handle: *mut PluginSession, buf: *mut c_char, len: c
     }
 }
 
-extern "C" fn slow_link(handle: *mut PluginSession, _uplink: c_int, _video: c_int) {
+extern "C" fn slow_link(handle: *mut PluginHandle, _uplink: c_int, _video: c_int) {
     janus::log(LogLevel::Verb, "Slow link message received!");
     if handle.is_null() {
         janus::log(LogLevel::Err, "No session associated with handle!");
@@ -181,7 +173,7 @@ extern "C" fn slow_link(handle: *mut PluginSession, _uplink: c_int, _video: c_in
     }
 }
 
-extern "C" fn hangup_media(handle: *mut PluginSession) {
+extern "C" fn hangup_media(handle: *mut PluginHandle) {
     janus::log(LogLevel::Verb, "Hanging up WebRTC media.");
     if handle.is_null() {
         janus::log(LogLevel::Err, "No session associated with handle!");
@@ -189,20 +181,36 @@ extern "C" fn hangup_media(handle: *mut PluginSession) {
     }
 }
 
-fn push_event(handle: *mut PluginSession, transaction: *mut c_char, message: *mut Json, jsep: *mut Json) -> Result<(), Box<Error+Send+Sync>> {
+fn push_event(handle: *mut PluginHandle, transaction: *mut c_char, message: *mut Json, jsep: *mut Json) -> Result<(), Box<Error+Send+Sync>> {
     let f = gateway_callbacks().push_event;
     janus::get_result(f(handle, &mut PLUGIN, transaction, message, jsep))
 }
 
-fn handle_contents(_handle: *mut PluginSession, _transaction: *mut c_char, message: &Json) -> PluginResult {
+fn handle_contents(session: &mut Session, _transaction: *mut c_char, message: &Json) -> PluginResult {
     if message.type_ != jansson::json_type::JSON_OBJECT {
         Err(From::from("Message wasn't a JSON object."))
     } else {
-        Ok(PluginSuccess::Ok(ptr::null_mut()))
+        unsafe {
+            let kind_json = jansson::json_object_get(message, cstr!("kind"));
+            if !kind_json.is_null() && (*kind_json).type_ == jansson::json_type::JSON_STRING {
+                let kind = CStr::from_ptr(jansson::json_string_value(kind_json));
+                if kind == CStr::from_ptr(cstr!("publisher")) {
+                    janus::log(LogLevel::Verb, &format!("Configuring session {:?} as publisher.", session));
+                    session.set_kind(SessionKind::Publisher).map(|_| PluginSuccess::Ok(ptr::null_mut()))
+                } else if kind == CStr::from_ptr(cstr!("listener")) {
+                    janus::log(LogLevel::Verb, &format!("Configuring session {:?} as listener.", session));
+                    session.set_kind(SessionKind::Listener).map(|_| PluginSuccess::Ok(ptr::null_mut()))
+                } else {
+                    Err(From::from("Unknown session kind specified (neither publisher nor listener.)"))
+                }
+            } else {
+                Ok(PluginSuccess::Ok(ptr::null_mut()))
+            }
+        }
     }
 }
 
-fn handle_jsep(handle: *mut PluginSession, transaction: *mut c_char, jsep: &Json) -> PluginResult {
+fn handle_jsep(session: &Session, transaction: *mut c_char, jsep: &Json) -> PluginResult {
     if jsep.type_ != jansson::json_type::JSON_OBJECT {
         Err(From::from("JSEP wasn't a JSON object."))
     } else {
@@ -218,7 +226,7 @@ fn handle_jsep(handle: *mut PluginSession, transaction: *mut c_char, jsep: &Json
                 let answer_jsep = jansson::json_object();
                 jansson::json_object_set_new(answer_jsep, cstr!("type"), jansson::json_string(cstr!("answer")));
                 jansson::json_object_set_new(answer_jsep, cstr!("sdp"), jansson::json_string(answer_str.as_ptr()));
-                push_event(handle, transaction, jansson::json_object(), answer_jsep).map(
+                push_event(session.handle, transaction, jansson::json_object(), answer_jsep).map(
                     |_| PluginSuccess::Ok(ptr::null_mut())
                 )
             }
@@ -226,24 +234,25 @@ fn handle_jsep(handle: *mut PluginSession, transaction: *mut c_char, jsep: &Json
     }
 }
 
-fn handle_message_core(handle: *mut PluginSession, transaction: *mut c_char, message: *mut Json, jsep: *mut Json) -> PluginResult {
+fn handle_message_core(session: &mut Session, transaction: *mut c_char, message: *mut Json, jsep: *mut Json) -> PluginResult {
     if !jsep.is_null() {
-        handle_jsep(handle, transaction, unsafe { &*jsep })?;
+        handle_jsep(session, transaction, unsafe { &*jsep })?;
     }
     if !message.is_null() {
-        handle_contents(handle, transaction, unsafe { &*message })
+        handle_contents(session, transaction, unsafe { &*message })
     } else {
         Ok(PluginSuccess::Ok(ptr::null_mut()))
     }
 }
 
-extern "C" fn handle_message(handle: *mut PluginSession, transaction: *mut c_char, message: *mut Json, jsep: *mut Json) -> *mut PluginResultInfo {
+extern "C" fn handle_message(handle: *mut PluginHandle, transaction: *mut c_char, message: *mut Json, jsep: *mut Json) -> *mut PluginResultInfo {
     janus::log(LogLevel::Verb, "Received signalling message.");
     Box::into_raw(
         if handle.is_null() {
             janus::create_result(PluginResultType::JANUS_PLUGIN_ERROR, cstr!("No handle associated with message!"), ptr::null_mut())
         } else {
-            match handle_message_core(handle, transaction, message, jsep) {
+            let session = unsafe { &mut *((*handle).plugin_handle as *mut Session) };
+            match handle_message_core(session, transaction, message, jsep) {
                 Ok(PluginSuccess::Ok(json)) => janus::create_result(PluginResultType::JANUS_PLUGIN_OK, ptr::null(), json),
                 Ok(PluginSuccess::OkWait(msg)) => janus::create_result(PluginResultType::JANUS_PLUGIN_OK_WAIT, msg.as_ptr(), ptr::null_mut()),
                 Err(err) => {
