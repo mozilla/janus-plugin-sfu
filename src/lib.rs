@@ -49,10 +49,6 @@ impl Session {
 unsafe impl Sync for Session {}
 unsafe impl Send for Session {}
 
-struct State {
-    pub sessions: RwLock<Vec<Box<Session>>>
-}
-
 const METADATA: PluginMetadata = PluginMetadata {
     version: 1,
     version_str: cstr!("0.0.1"),
@@ -67,6 +63,11 @@ static mut CALLBACKS: Option<&PluginCallbacks> = None;
 /// Returns a ref to the callback struct provided by Janus containing function pointers to pass data back to the gateway.
 fn gateway_callbacks() -> &'static PluginCallbacks {
     unsafe { CALLBACKS.expect("Callbacks not initialized -- did plugin init() succeed?") }
+}
+
+#[derive(Debug)]
+struct State {
+    pub sessions: RwLock<Vec<Box<Session>>>
 }
 
 lazy_static! {
@@ -109,6 +110,7 @@ extern "C" fn destroy_session(handle: *mut PluginHandle, error: *mut c_int) {
         unsafe { *error = -1 };
         return
     }
+    (*STATE.sessions.write().unwrap()).retain(|ref s| unsafe { (*s.handle).plugin_handle != (*handle).plugin_handle });
 }
 
 extern "C" fn query_session(handle: *mut PluginHandle) -> *mut janus::Json {
