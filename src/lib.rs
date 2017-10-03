@@ -16,14 +16,14 @@ use janus::{LogLevel, Plugin, PluginCallbacks, PluginMetadata,
 use jansson::json_t as Json;
 
 #[derive(Debug)]
-pub enum PluginSuccess {
+enum PluginSuccess {
     Ok(*mut Json),
     OkWait(&'static CStr)
 }
 
-pub type PluginResult = Result<PluginSuccess, Box<Error+Send+Sync>>;
+type PluginResult = Result<PluginSuccess, Box<Error+Send+Sync>>;
 
-pub struct ProxySession {
+struct ProxySession {
     pub has_audio: bool,
     pub has_data: bool,
     pub bitrate: u32,
@@ -36,17 +36,17 @@ pub struct ProxySession {
 unsafe impl Sync for ProxySession {}
 unsafe impl Send for ProxySession {}
 
-pub struct ProxyMessage {
+struct ProxyMessage {
     pub session: ProxySession,
     pub transaction: String,
 }
 
-pub struct ProxyPluginState {
+struct ProxyPluginState {
     pub sessions: RwLock<Vec<Box<ProxySession>>>,
     pub messages: RwLock<Vec<Box<ProxyMessage>>>,
 }
 
-pub const METADATA: PluginMetadata = PluginMetadata {
+const METADATA: PluginMetadata = PluginMetadata {
     version: 1,
     version_str: cstr!("0.0.1"),
     description: cstr!("Janus WebRTC reverse proxy for Reticulum."),
