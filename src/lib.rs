@@ -194,39 +194,46 @@ fn push_event(handle: *mut PluginSession, transaction: *mut c_char, message: *mu
     janus::get_result(f(handle, &mut PLUGIN, transaction, message, jsep))
 }
 
-fn handle_message_core(handle: *mut PluginSession, transaction: *mut c_char, message: *mut Json, jsep: *mut Json) -> PluginResult {
-    if message.is_null() {
-        Err(From::from("Null message received!"))
-    } else if jsep.is_null() {
-        Ok(PluginSuccess::Ok(ptr::null_mut()))
+fn handle_contents(_handle: *mut PluginSession, _transaction: *mut c_char, message: &Json) -> PluginResult {
+    if message.type_ != jansson::json_type::JSON_OBJECT {
+        Err(From::from("Message wasn't a JSON object."))
     } else {
-        let (root, jsep) = unsafe { (&*message, &*jsep) };
+        Ok(PluginSuccess::Ok(ptr::null_mut()))
+    }
+}
 
-        if root.type_ != jansson::json_type::JSON_OBJECT {
-            Err(From::from("Message wasn't a JSON object."))
-        } else if jsep.type_ != jansson::json_type::JSON_OBJECT {
-            Err(From::from("JSEP wasn't a JSON object."))
+fn handle_jsep(handle: *mut PluginSession, transaction: *mut c_char, jsep: &Json) -> PluginResult {
+    if jsep.type_ != jansson::json_type::JSON_OBJECT {
+        Err(From::from("JSEP wasn't a JSON object."))
+    } else {
+        let sdp_val = unsafe { jansson::json_string_value(jansson::json_object_get(jsep, cstr!("sdp"))) };
+        if sdp_val.is_null() {
+            Err(From::from("No SDP supplied in JSEP."))
         } else {
-            let sdp_val = unsafe { jansson::json_string_value(jansson::json_object_get(jsep, cstr!("sdp"))) };
-            if sdp_val.is_null() {
-                push_event(handle, transaction, unsafe { jansson::json_object() }, ptr::null_mut()).map(
+            let offer_str = unsafe { CString::from_raw(sdp_val as *mut _) };
+            let offer = janus::sdp::parse_sdp(offer_str)?;
+            let answer = answer_sdp!(&offer, janus::sdp::OfferAnswerParameters::Video, 0);
+            let answer_str = janus::sdp::write_sdp(&answer);
+            unsafe {
+                let answer_jsep = jansson::json_object();
+                jansson::json_object_set_new(answer_jsep, cstr!("type"), jansson::json_string(cstr!("answer")));
+                jansson::json_object_set_new(answer_jsep, cstr!("sdp"), jansson::json_string(answer_str.as_ptr()));
+                push_event(handle, transaction, jansson::json_object(), answer_jsep).map(
                     |_| PluginSuccess::Ok(ptr::null_mut())
                 )
-            } else {
-                let offer_str = unsafe { CString::from_raw(sdp_val as *mut _) };
-                let offer = janus::sdp::parse_sdp(offer_str)?;
-                let answer = answer_sdp!(&offer, janus::sdp::OfferAnswerParameters::Video, 0);
-                let answer_str = janus::sdp::write_sdp(&answer);
-                unsafe {
-                    let jsep = jansson::json_object();
-                    jansson::json_object_set_new(jsep, cstr!("type"), jansson::json_string(cstr!("answer")));
-                    jansson::json_object_set_new(jsep, cstr!("sdp"), jansson::json_string(answer_str.as_ptr()));
-                    push_event(handle, transaction, jansson::json_object(), jsep).map(
-                        |_| PluginSuccess::Ok(ptr::null_mut())
-                    )
-                }
             }
         }
+    }
+}
+
+fn handle_message_core(handle: *mut PluginSession, transaction: *mut c_char, message: *mut Json, jsep: *mut Json) -> PluginResult {
+    if !jsep.is_null() {
+        handle_jsep(handle, transaction, unsafe { &*jsep })?;
+    }
+    if !message.is_null() {
+        handle_contents(handle, transaction, unsafe { &*message })
+    } else {
+        Ok(PluginSuccess::Ok(ptr::null_mut()))
     }
 }
 
