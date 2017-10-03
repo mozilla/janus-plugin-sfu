@@ -3,8 +3,8 @@ name = "janus-retproxy"
 version = "0.1.0"
 dependencies = [
  "cstr-macro 0.1.0 (registry+https://github.com/rust-lang/crates.io-index)",
- "jansson-sys 0.1.0",
- "janus-plugin 0.1.0",
+ "jansson-sys 0.1.0 (git+https://github.com/mquander/janus-plugin-rs)",
+ "janus-plugin 0.1.0 (git+https://github.com/mquander/janus-plugin-rs)",
  "lazy_static 0.2.9 (registry+https://github.com/rust-lang/crates.io-index)",
 ]
 
@@ -48,26 +48,29 @@ dependencies = [
 [[package]]
 name = "jansson-sys"
 version = "0.1.0"
+source = "git+https://github.com/mquander/janus-plugin-rs#d52787b315ddaad4a60166e93ce6a044ae5529ba"
 
 [[package]]
 name = "janus-plugin"
 version = "0.1.0"
+source = "git+https://github.com/mquander/janus-plugin-rs#d52787b315ddaad4a60166e93ce6a044ae5529ba"
 dependencies = [
  "chrono 0.4.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "colored 1.5.3 (registry+https://github.com/rust-lang/crates.io-index)",
  "cstr-macro 0.1.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "glib-sys 0.4.0 (registry+https://github.com/rust-lang/crates.io-index)",
- "jansson-sys 0.1.0",
- "janus-plugin-sys 0.1.0",
+ "jansson-sys 0.1.0 (git+https://github.com/mquander/janus-plugin-rs)",
+ "janus-plugin-sys 0.1.0 (git+https://github.com/mquander/janus-plugin-rs)",
  "libc 0.2.31 (registry+https://github.com/rust-lang/crates.io-index)",
 ]
 
 [[package]]
 name = "janus-plugin-sys"
 version = "0.1.0"
+source = "git+https://github.com/mquander/janus-plugin-rs#d52787b315ddaad4a60166e93ce6a044ae5529ba"
 dependencies = [
  "glib-sys 0.4.0 (registry+https://github.com/rust-lang/crates.io-index)",
- "jansson-sys 0.1.0",
+ "jansson-sys 0.1.0 (git+https://github.com/mquander/janus-plugin-rs)",
 ]
 
 [[package]]
@@ -158,6 +161,9 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 "checksum colored 1.5.3 (registry+https://github.com/rust-lang/crates.io-index)" = "c1d4a2a8e207306352a8b08263af6c83c0be745b21cd2eedfe03a5f49ec8cd93"
 "checksum cstr-macro 0.1.0 (registry+https://github.com/rust-lang/crates.io-index)" = "db53fddba18cdd35477a7213a3ef6acfbfa333c31b42ce019e544c4a1420a06f"
 "checksum glib-sys 0.4.0 (registry+https://github.com/rust-lang/crates.io-index)" = "cdd7d911c5dc610aabe37caae7d3b9d2cfe6d8f4c85ff4c062f3d6f490e75067"
+"checksum jansson-sys 0.1.0 (git+https://github.com/mquander/janus-plugin-rs)" = "<none>"
+"checksum janus-plugin 0.1.0 (git+https://github.com/mquander/janus-plugin-rs)" = "<none>"
+"checksum janus-plugin-sys 0.1.0 (git+https://github.com/mquander/janus-plugin-rs)" = "<none>"
 "checksum kernel32-sys 0.2.2 (registry+https://github.com/rust-lang/crates.io-index)" = "7507624b29483431c0ba2d82aece8ca6cdba9382bff4ddd0f7490560c056098d"
 "checksum lazy_static 0.2.9 (registry+https://github.com/rust-lang/crates.io-index)" = "c9e5e58fa1a4c3b915a561a78a22ee0cac6ab97dca2504428bc1cb074375f8d5"
 "checksum libc 0.2.31 (registry+https://github.com/rust-lang/crates.io-index)" = "d1419b2939a0bc44b77feb34661583c7546b532b192feab36249ab584b86856c"

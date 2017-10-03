@@ -8,6 +8,6 @@ crate_type = ["cdylib"]
 
 [dependencies]
 cstr-macro = "0.1.0"
-janus-plugin = { path = "/home/mquander/src/janus-plugin" }
-jansson-sys = { path = "/home/mquander/src/janus-plugin/jansson-sys" }
+janus-plugin = { git = "https://github.com/mquander/janus-plugin-rs" }
+jansson-sys = { git = "https://github.com/mquander/janus-plugin-rs" }
 lazy_static = "0.2"
