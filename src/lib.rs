@@ -8,7 +8,6 @@ extern crate jansson_sys as jansson;
 
 use std::error::Error;
 use std::ffi::{CStr, CString};
-use std::ops::Deref;
 use std::os::raw::{c_char, c_int};
 use std::ptr;
 use std::sync::{Arc, Mutex, RwLock, Weak};
@@ -16,6 +15,7 @@ use std::sync::mpsc;
 use std::thread;
 use janus::{LogLevel, Plugin, PluginCallbacks, PluginMetadata,
             PluginResultInfo, PluginResultType, PluginHandle};
+use janus::session::SessionHandle;
 use jansson::json_t as Json;
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
@@ -24,16 +24,6 @@ enum SessionKind {
     Publisher,
     Listener,
 }
-
-#[derive(Debug)]
-struct Message {
-    pub session: Weak<Session>,
-    pub transaction: *mut c_char,
-    pub message: *mut Json,
-    pub jsep: *mut Json
-}
-
-unsafe impl Send for Message {}
 
 #[derive(Debug)]
 struct SessionState {
@@ -49,6 +39,18 @@ impl SessionState {
         }
     }
 }
+
+type Session = SessionHandle<Mutex<SessionState>>;
+
+#[derive(Debug)]
+struct Message {
+    pub session: Weak<Session>,
+    pub transaction: *mut c_char,
+    pub message: *mut Json,
+    pub jsep: *mut Json
+}
+
+unsafe impl Send for Message {}
 
 const METADATA: PluginMetadata = PluginMetadata {
     version: 1,
@@ -70,36 +72,6 @@ fn message_channel() -> &'static mpsc::SyncSender<Message> {
 fn gateway_callbacks() -> &'static PluginCallbacks {
     unsafe { CALLBACKS.expect("Callbacks not initialized -- did plugin init() succeed?") }
 }
-
-#[derive(Debug)]
-struct SessionHandle<T> {
-    pub handle: *mut PluginHandle,
-    state: T,
-}
-
-impl<T> SessionHandle<T> {
-    pub fn establish(handle: *mut PluginHandle, state: T) -> Box<Arc<Self>> {
-        let result = Box::new(Arc::new(Self { handle, state: state }));
-        unsafe { (*handle).plugin_handle = result.as_ref() as *const _ as *mut _ };
-        result
-    }
-
-    pub fn from_ptr<'a>(handle: *mut PluginHandle) -> &'a Arc<Self> {
-        unsafe { &*((*handle).plugin_handle as *mut Arc<Self>) }
-    }
-}
-
-impl<T> Deref for SessionHandle<T> {
-    type Target = T;
-    fn deref(&self) -> &T {
-        &self.state
-    }
-}
-
-unsafe impl<T> Sync for SessionHandle<T> {}
-unsafe impl<T> Send for SessionHandle<T> {}
-
-type Session = SessionHandle<Mutex<SessionState>>;
 
 #[derive(Debug)]
 struct State {
@@ -238,10 +210,10 @@ fn handle_contents(session: &Session, _transaction: *mut c_char, message: &Json)
                 let kind = CStr::from_ptr(jansson::json_string_value(kind_json));
                 if kind == CStr::from_ptr(cstr!("publisher")) {
                     janus::log(LogLevel::Verb, &format!("Configuring session {:?} as publisher.", session));
-                    session.state.lock().unwrap().set_kind(SessionKind::Publisher)
+                    session.lock().unwrap().set_kind(SessionKind::Publisher)
                 } else if kind == CStr::from_ptr(cstr!("listener")) {
                     janus::log(LogLevel::Verb, &format!("Configuring session {:?} as listener.", session));
-                    session.state.lock().unwrap().set_kind(SessionKind::Listener)
+                    session.lock().unwrap().set_kind(SessionKind::Listener)
                 } else {
                     Err(From::from("Unknown session kind specified (neither publisher nor listener.)"))
                 }
