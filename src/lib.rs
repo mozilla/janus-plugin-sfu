@@ -5,6 +5,7 @@ extern crate lazy_static;
 #[macro_use]
 extern crate janus_plugin as janus;
 extern crate jansson_sys as jansson;
+extern crate uuid;
 
 use std::error::Error;
 use std::ffi::{CStr, CString};
@@ -13,6 +14,7 @@ use std::ptr;
 use std::sync::{Arc, Mutex, RwLock, Weak};
 use std::sync::mpsc;
 use std::thread;
+use uuid::Uuid;
 use janus::{LogLevel, Plugin, PluginCallbacks, PluginMetadata,
             PluginResultInfo, PluginResultType, PluginHandle};
 use janus::session::SessionHandle;
@@ -27,10 +29,20 @@ enum SessionKind {
 
 #[derive(Debug)]
 struct SessionState {
+    pub session_id: Uuid,
+    pub user_id: Option<Uuid>,
     pub kind: SessionKind,
 }
 
 impl SessionState {
+    fn set_user_id(&mut self, user_id: Uuid) -> Result<(), Box<Error+Send+Sync>> {
+        match self.user_id {
+            None => { self.user_id = Some(user_id); Ok(()) },
+            Some(id) if id == user_id => Ok(()),
+            _ => Err(From::from(format!("Session user ID already set to {:?}; can't set to {:?}.", self.user_id, user_id)))
+        }
+    }
+
     fn set_kind(&mut self, kind: SessionKind) -> Result<(), Box<Error+Send+Sync>> {
         match self.kind {
             SessionKind::Unknown => { self.kind = kind; Ok(()) },
@@ -62,11 +74,6 @@ const METADATA: PluginMetadata = PluginMetadata {
 };
 
 static mut CALLBACKS: Option<&PluginCallbacks> = None;
-static mut MESSAGE_CHANNEL: Option<mpsc::SyncSender<Message>> = None;
-
-fn message_channel() -> &'static mpsc::SyncSender<Message> {
-    unsafe { MESSAGE_CHANNEL.as_ref().expect("Message channel not initialized -- did plugin init() succeed?") }
-}
 
 /// Returns a ref to the callback struct provided by Janus containing function pointers to pass data back to the gateway.
 fn gateway_callbacks() -> &'static PluginCallbacks {
@@ -75,12 +82,14 @@ fn gateway_callbacks() -> &'static PluginCallbacks {
 
 #[derive(Debug)]
 struct State {
-    pub sessions: RwLock<Vec<Box<Arc<Session>>>>
+    pub sessions: RwLock<Vec<Box<Arc<Session>>>>,
+    pub message_channel: Mutex<Option<mpsc::SyncSender<Message>>>,
 }
 
 lazy_static! {
     static ref STATE: State = State {
-        sessions: RwLock::new(Vec::new())
+        sessions: RwLock::new(Vec::new()),
+        message_channel: Mutex::new(None)
     };
 }
 
@@ -90,9 +99,10 @@ extern "C" fn init(callbacks: *mut PluginCallbacks, config_path: *const c_char) 
         return -1;
     }
 
-    let (messages_tx, messages_rx) = mpsc::sync_channel(0);
     unsafe { CALLBACKS = callbacks.as_ref() };
-    unsafe { MESSAGE_CHANNEL = Some(messages_tx) };
+
+    let (messages_tx, messages_rx) = mpsc::sync_channel(0);
+    *(STATE.message_channel.lock().unwrap()) = Some(messages_tx);
 
     thread::spawn(move || {
         janus::log(LogLevel::Verb, "Message processing thread is alive.");
@@ -115,6 +125,8 @@ extern "C" fn destroy() {
 extern "C" fn create_session(handle: *mut PluginHandle, _error: *mut c_int) {
     janus::log(LogLevel::Info, "Initializing retproxy session...");
     let session = Session::establish(handle, Mutex::new(SessionState {
+        session_id: Uuid::new_v4(),
+        user_id: None,
         kind: SessionKind::Unknown,
     }));
     (*STATE.sessions.write().unwrap()).push(session);
@@ -205,22 +217,27 @@ fn handle_contents(session: &Session, _transaction: *mut c_char, message: &Json)
         Err(From::from("Message wasn't a JSON object."))
     } else {
         unsafe {
+            let user_id_json = jansson::json_object_get(message, cstr!("user_id"));
+            if !user_id_json.is_null() && (*user_id_json).type_ == jansson::json_type::JSON_STRING {
+                let user_id = CStr::from_ptr(jansson::json_string_value(user_id_json));
+                session.lock().unwrap().set_user_id(Uuid::parse_str(user_id.to_str()?)?)?
+            }
+
             let kind_json = jansson::json_object_get(message, cstr!("kind"));
             if !kind_json.is_null() && (*kind_json).type_ == jansson::json_type::JSON_STRING {
                 let kind = CStr::from_ptr(jansson::json_string_value(kind_json));
                 if kind == CStr::from_ptr(cstr!("publisher")) {
                     janus::log(LogLevel::Verb, &format!("Configuring session {:?} as publisher.", session));
-                    session.lock().unwrap().set_kind(SessionKind::Publisher)
+                    session.lock().unwrap().set_kind(SessionKind::Publisher)?
                 } else if kind == CStr::from_ptr(cstr!("listener")) {
                     janus::log(LogLevel::Verb, &format!("Configuring session {:?} as listener.", session));
-                    session.lock().unwrap().set_kind(SessionKind::Listener)
+                    session.lock().unwrap().set_kind(SessionKind::Listener)?
                 } else {
-                    Err(From::from("Unknown session kind specified (neither publisher nor listener.)"))
+                    return Err(From::from("Unknown session kind specified (neither publisher nor listener.)"))
                 }
-            } else {
-                Ok(())
             }
         }
+        Ok(())
     }
 }
 
@@ -273,7 +290,7 @@ extern "C" fn handle_message(handle: *mut PluginHandle, transaction: *mut c_char
             janus::create_result(PluginResultType::JANUS_PLUGIN_ERROR, cstr!("No handle associated with message!"), ptr::null_mut())
         } else {
             let session = Arc::downgrade(Session::from_ptr(handle));
-            message_channel().send(Message { session, transaction, message, jsep }).ok();
+            STATE.message_channel.lock().unwrap().as_ref().unwrap().send(Message { session, transaction, message, jsep }).ok();
             janus::create_result(PluginResultType::JANUS_PLUGIN_OK_WAIT, cstr!("Processing."), ptr::null_mut())
         }
     )

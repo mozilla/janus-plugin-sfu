@@ -11,3 +11,4 @@ cstr-macro = "0.1.0"
 janus-plugin = { git = "https://github.com/mquander/janus-plugin-rs" }
 jansson-sys = { git = "https://github.com/mquander/janus-plugin-rs" }
 lazy_static = "0.2"
+uuid = { version = "0.4", features = ["use_std", "v4"] }
