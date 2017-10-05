@@ -1,5 +1,7 @@
 # janus-retproxy
 
+[![Build Status](https://travis-ci.org/mquander/janus-retproxy.svg?branch=master)](https://travis-ci.org/mquander/janus-retproxy)
+
 [Janus](https://janus.conf.meetecho.com/) plugin to serve as a reverse proxy for [Reticulum](https://github.com/mozilla/reticulum), a kind of WebVR networking backend.
 
 ## Building
