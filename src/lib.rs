@@ -23,8 +23,8 @@ use jansson::json_t as Json;
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
 enum ConnectionRole {
     Unknown,
-    Master,
-    Listener,
+    Publisher,
+    Subscriber,
 }
 
 #[derive(Debug)]
@@ -110,14 +110,14 @@ fn gateway_callbacks() -> &'static PluginCallbacks {
 #[derive(Debug)]
 struct State {
     pub connections: RwLock<Vec<Box<Arc<Connection>>>>,
-    pub subscriptions: Mutex<HashMap<i32, Vec<i32>>>,
+    pub subscriptions: RwLock<HashMap<u32, HashSet<u32>>>,
     pub message_channel: Mutex<Option<mpsc::SyncSender<RawMessage>>>,
 }
 
 lazy_static! {
     static ref STATE: State = State {
         connections: RwLock::new(Vec::new()),
-        subscriptions: Mutex::new(HashMap::new()),
+        subscriptions: RwLock::new(HashMap::new()),
         message_channel: Mutex::new(None)
     };
 }
@@ -194,7 +194,24 @@ extern "C" fn incoming_rtp(handle: *mut PluginHandle, video: c_int, buf: *mut c_
         janus::log(LogLevel::Err, "No session associated with handle!");
         return;
     }
-    (gateway_callbacks().relay_rtp)(handle, video, buf, len);
+
+    let conn = Arc::clone(Connection::from_ptr(handle));
+    let conn_state = conn.lock().unwrap();
+    let publisher_user_id = conn_state.user_id.as_ref().unwrap();
+    let connections = STATE.connections.read().unwrap();
+    let subscriptions = STATE.subscriptions.read().unwrap();
+    if let Some(subscribers) = subscriptions.get(publisher_user_id) {
+        for other in connections.iter() {
+            if handle != other.handle {
+                let other_state = &*(other.lock().unwrap());
+                if let Some(other_user_id) = other_state.user_id.as_ref() {
+                    if other_state.role == ConnectionRole::Subscriber && subscribers.contains(other_user_id) {
+                        (gateway_callbacks().relay_rtp)(other.handle, video, buf, len);
+                    }
+                }
+            }
+        }
+    }
 }
 
 extern "C" fn incoming_rtcp(handle: *mut PluginHandle, video: c_int, buf: *mut c_char, len: c_int) {
@@ -214,8 +231,8 @@ extern "C" fn incoming_data(handle: *mut PluginHandle, buf: *mut c_char, len: c_
         return;
     }
 
-    let connections = &*STATE.connections.read().unwrap();
-    for other in connections {
+    let connections = STATE.connections.read().unwrap();
+    for other in connections.iter() {
         if handle != other.handle {
             (gateway_callbacks().relay_data)(other.handle, buf, len);
         }
@@ -253,55 +270,94 @@ fn generate_user_id() -> u32 {
     candidate
 }
 
+fn get_user_list() -> *mut Json {
+    let connections = STATE.connections.read().unwrap();
+    let user_set: HashSet<u32> = connections.iter().filter_map(|c| c.lock().unwrap().user_id).collect();
+    unsafe {
+        let user_list = jansson::json_array();
+        for user_id in user_set {
+            jansson::json_array_append_new(user_list, jansson::json_integer(user_id as i64));
+        }
+        user_list
+    }
+}
+
 fn handle_join(conn: &Connection, txn: *mut c_char, message: &Json) -> MessageProcessingResult {
     let push_event = gateway_callbacks().push_event;
+    let user_list = get_user_list();
     unsafe {
         let user_id_json = jansson::json_object_get(message, cstr!("user_id"));
-        if user_id_json.is_null() {
-            let user_id = generate_user_id();
-            janus::log(LogLevel::Verb, &format!("Setting connection {:?} user ID to {:?}.", conn, user_id));
-            conn.lock().unwrap().user_id = Some(user_id);
-            let response = jansson::json_object();
-            jansson::json_object_set_new(response, cstr!("user_id"), jansson::json_integer(user_id as i64));
-            janus::get_result(push_event(conn.handle, &mut PLUGIN, txn, response, ptr::null_mut()))?
+        let user_id = if user_id_json.is_null() {
+            generate_user_id()
         } else if (*user_id_json).type_ == jansson::json_type::JSON_INTEGER {
-            let user_id = jansson::json_integer_value(user_id_json) as u32;
-            janus::log(LogLevel::Verb, &format!("Setting connection {:?} user ID to {:?}.", conn, user_id));
-            conn.lock().unwrap().user_id = Some(user_id);
-            let response = jansson::json_object();
-            jansson::json_object_set_new(response, cstr!("user_id"), jansson::json_integer(user_id as i64));
-            janus::get_result(push_event(conn.handle, &mut PLUGIN, txn, response, ptr::null_mut()))?
-        }
+            jansson::json_integer_value(user_id_json) as u32
+        } else {
+            return Err(From::from("Invalid user ID specified (must be an integer.)"))
+        };
+        janus::log(LogLevel::Verb, &format!("Setting connection {:?} user ID to {:?}.", conn, user_id));
+        conn.lock().unwrap().user_id = Some(user_id);
 
         let role_json = jansson::json_object_get(message, cstr!("role"));
         if !role_json.is_null() && (*role_json).type_ == jansson::json_type::JSON_STRING {
             let role = CStr::from_ptr(jansson::json_string_value(role_json));
-            if role == CStr::from_ptr(cstr!("master")) {
-                janus::log(LogLevel::Verb, &format!("Configuring connection {:?} as master.", conn));
-                conn.lock().unwrap().set_role(ConnectionRole::Master)?
-            } else if role == CStr::from_ptr(cstr!("listener")) {
-                janus::log(LogLevel::Verb, &format!("Configuring connection {:?} as listener.", conn));
-                conn.lock().unwrap().set_role(ConnectionRole::Listener)?
+            if role == CStr::from_ptr(cstr!("publisher")) {
+                janus::log(LogLevel::Verb, &format!("Configuring connection {:?} as publisher.", conn));
+                conn.lock().unwrap().set_role(ConnectionRole::Publisher)?
+            } else if role == CStr::from_ptr(cstr!("subscriber")) {
+                janus::log(LogLevel::Verb, &format!("Configuring connection {:?} as subscriber.", conn));
+                conn.lock().unwrap().set_role(ConnectionRole::Subscriber)?
             } else {
-                return Err(From::from("Unknown session kind specified (neither publisher nor listener.)"))
+                return Err(From::from("Unknown session kind specified (neither publisher nor subscriber.)"))
             }
         }
-        Ok(())
+        let response = jansson::json_object();
+        jansson::json_object_set_new(response, cstr!("user_id"), jansson::json_integer(user_id as i64));
+        jansson::json_object_set_new(response, cstr!("user_ids"), user_list);
+        janus::get_result(push_event(conn.handle, &mut PLUGIN, txn, response, ptr::null_mut()))
     }
 }
 
 fn handle_list(conn: &Connection, txn: *mut c_char) -> MessageProcessingResult {
-    let connections = STATE.connections.read().unwrap();
-    let user_set: HashSet<u32> = connections.iter().filter_map(|c| c.lock().unwrap().user_id).collect();
+    let user_list = get_user_list();
     let push_event = gateway_callbacks().push_event;
     unsafe {
         let response = jansson::json_object();
-        let xs = jansson::json_array();
-        for user_id in user_set {
-            jansson::json_array_append_new(xs, jansson::json_integer(user_id as i64));
-        }
-        jansson::json_object_set_new(response, cstr!("user_ids"), xs);
+        jansson::json_object_set_new(response, cstr!("user_ids"), user_list);
         janus::get_result(push_event(conn.handle, &mut PLUGIN, txn, response, ptr::null_mut()))
+    }
+}
+
+fn handle_subscribe(conn: &Connection, _txn: *mut c_char, message: &Json) -> MessageProcessingResult {
+    unsafe {
+        let user_ids_json = jansson::json_object_get(message, cstr!("user_ids"));
+        if user_ids_json.is_null() || (*user_ids_json).type_ != jansson::json_type::JSON_ARRAY {
+            return Err(From::from("user_ids must be an array."));
+        }
+        let user_ids_size = jansson::json_array_size(user_ids_json);
+        let mut user_ids = Vec::new();
+        for i in 0..user_ids_size {
+            let user_id_json = jansson::json_array_get(user_ids_json, i);
+            if (*user_id_json).type_ != jansson::json_type::JSON_INTEGER {
+                return Err(From::from("Each user ID must be an integer."));
+            }
+            user_ids.push(jansson::json_integer_value(user_id_json) as u32)
+        }
+
+        let mut subscriptions = STATE.subscriptions.write().unwrap();
+        janus::log(LogLevel::Warn, &format!("Subscriptions before: {:?}", *subscriptions));
+        let result = match conn.lock().unwrap().user_id {
+            Some(subscriber_user_id) => {
+                for publisher_user_id in user_ids {
+                    let entry = subscriptions.entry(publisher_user_id).or_insert_with(|| HashSet::new());
+                    entry.insert(subscriber_user_id);
+                }
+                Ok(())
+            }
+            None => Err(From::from("Can't subscribe prior to joining."))
+
+        };
+        janus::log(LogLevel::Warn, &format!("Subscriptions after: {:?}", *subscriptions));
+        result
     }
 }
 
@@ -339,7 +395,7 @@ fn handle_message_async(message: RawMessage) -> MessageProcessingResult {
                 match x {
                     MessageKind::Join => handle_join(conn, message.transaction, unsafe { &*message.message }),
                     MessageKind::List => handle_list(conn, message.transaction),
-                    MessageKind::Subscribe => Ok(()),
+                    MessageKind::Subscribe => handle_subscribe(conn, message.transaction, unsafe { &*message.message }),
                     MessageKind::Unsubscribe => Ok(()),
                     MessageKind::None => Ok(())
                 }
