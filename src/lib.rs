@@ -160,6 +160,18 @@ extern "C" fn create_session(handle: *mut PluginHandle, _error: *mut c_int) {
     (*STATE.connections.write().unwrap()).push(conn);
 }
 
+fn notify_publishers(msg: *mut Json) -> Result<(), Box<Error+Send+Sync>> {
+    let connections = STATE.connections.read().unwrap();
+    let push_event = gateway_callbacks().push_event;
+    for other in connections.iter() {
+        let other_state = other.lock().unwrap();
+        if other_state.role == ConnectionRole::Publisher {
+            janus::get_result(push_event(other.handle, &mut PLUGIN, ptr::null(), msg, ptr::null_mut()))?
+        }
+    }
+    Ok(())
+}
+
 extern "C" fn destroy_session(handle: *mut PluginHandle, error: *mut c_int) {
     janus::log(LogLevel::Info, "Destroying retproxy session...");
     if handle.is_null() {
@@ -167,7 +179,24 @@ extern "C" fn destroy_session(handle: *mut PluginHandle, error: *mut c_int) {
         unsafe { *error = -1 };
         return
     }
-    (*STATE.connections.write().unwrap()).retain(|ref c| c.handle != handle);
+    let conn = Arc::clone(Connection::from_ptr(handle));
+    let conn_role = conn.lock().unwrap().role;
+    let conn_user_id = conn.lock().unwrap().user_id;
+    STATE.connections.write().unwrap().retain(|ref c| c.handle != handle);
+    if conn_role == ConnectionRole::Publisher {
+        if let Some(user_id) = conn_user_id {
+            // notify all other publishers that this connection is gone
+            unsafe {
+                let response = jansson::json_object();
+                jansson::json_object_set_new(response, cstr!("event"), jansson::json_string(cstr!("leave")));
+                jansson::json_object_set_new(response, cstr!("user_id"), jansson::json_integer(user_id as i64));
+                let result = notify_publishers(response);
+                if let Err(err) = result {
+                    janus::log(LogLevel::Err, &format!("Error notifying publishers on leave: {}", err));
+                }
+            }
+        }
+    }
 }
 
 extern "C" fn query_session(handle: *mut PluginHandle) -> *mut janus::Json {
@@ -313,7 +342,18 @@ fn handle_join(conn: &Connection, txn: *mut c_char, message: &Json) -> MessagePr
         let response = jansson::json_object();
         jansson::json_object_set_new(response, cstr!("user_id"), jansson::json_integer(user_id as i64));
         jansson::json_object_set_new(response, cstr!("user_ids"), user_list);
-        janus::get_result(push_event(conn.handle, &mut PLUGIN, txn, response, ptr::null_mut()))
+        janus::get_result(push_event(conn.handle, &mut PLUGIN, txn, response, ptr::null_mut()))?;
+
+        let conn_role = conn.lock().unwrap().role;
+        if conn_role == ConnectionRole::Publisher {
+            // notify all other publishers that this user has joined
+            let response = jansson::json_object();
+            jansson::json_object_set_new(response, cstr!("event"), jansson::json_string(cstr!("join")));
+            jansson::json_object_set_new(response, cstr!("user_id"), jansson::json_integer(user_id as i64));
+            notify_publishers(response)
+        } else {
+            Ok(())
+        }
     }
 }
 
