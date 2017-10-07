@@ -2,6 +2,7 @@
 name = "janus-retproxy"
 version = "0.1.0"
 authors = ["Marshall Quander <marshall@quander.me>"]
+license = "MPL-2.0"
 
 [lib]
 crate_type = ["cdylib"]
