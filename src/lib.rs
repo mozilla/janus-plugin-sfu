@@ -21,7 +21,7 @@ use janus::session::SessionHandle;
 use jansson::json_t as Json;
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
-enum ConnectionRole {
+pub enum ConnectionRole {
     Unknown,
     Publisher { user_id: u32 },
     Subscriber { user_id: u32, target_id: u32 },
@@ -38,19 +38,12 @@ impl ConnectionRole {
 }
 
 #[derive(Debug)]
-enum MessageKind {
-    None,
-    Join,
-    List,
-}
-
-#[derive(Debug)]
-struct ConnectionState {
+pub struct ConnectionState {
     pub role: ConnectionRole,
 }
 
 impl ConnectionState {
-    fn set_role(&mut self, role: ConnectionRole) -> Result<(), Box<Error+Send+Sync>> {
+    pub fn set_role(&mut self, role: ConnectionRole) -> Result<(), Box<Error+Send+Sync>> {
         match self.role {
             ConnectionRole::Unknown => { self.role = role; Ok(()) },
             x if x == role => Ok(()),
@@ -59,10 +52,26 @@ impl ConnectionState {
     }
 }
 
-type Connection = SessionHandle<Mutex<ConnectionState>>;
+pub type Connection = SessionHandle<Mutex<ConnectionState>>;
+
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
+pub enum MessageKind {
+    Join,
+    List,
+}
+
+impl MessageKind {
+    pub fn parse(name: &str) -> Result<MessageKind, Box<Error+Send+Sync>> {
+        match name {
+            "join" => Ok(MessageKind::Join),
+            "list" => Ok(MessageKind::List),
+            _ => Err(From::from("Invalid message kind."))
+        }
+    }
+}
 
 #[derive(Debug)]
-struct RawMessage {
+pub struct RawMessage {
     pub connection: Weak<Connection>,
     pub transaction: *mut c_char,
     pub message: *mut Json,
@@ -70,29 +79,27 @@ struct RawMessage {
 }
 
 impl RawMessage {
-    pub fn classify(&self) -> Result<MessageKind, Box<Error+Send+Sync>> {
+    pub fn classify(&self) -> Result<Option<MessageKind>, Box<Error+Send+Sync>> {
         let has_msg = !self.message.is_null();
         if !has_msg {
-            return Ok(MessageKind::None);
-        }
-        unsafe {
-            let kind_json = jansson::json_object_get(self.message, cstr!("kind"));
-            if kind_json.is_null() || (*kind_json).type_ != jansson::json_type::JSON_STRING {
-                return Ok(MessageKind::None);
-            }
-            let kind = CStr::from_ptr(jansson::json_string_value(kind_json));
-            if kind == CStr::from_ptr(cstr!("join")) {
-                Ok(MessageKind::Join)
-            } else if kind == CStr::from_ptr(cstr!("list")) {
-                Ok(MessageKind::List)
-            } else {
-                Err(From::from("Unknown message kind specified."))
+            Ok(None)
+        } else {
+            unsafe {
+                let kind_json = jansson::json_object_get(self.message, cstr!("kind"));
+                if kind_json.is_null() || (*kind_json).type_ != jansson::json_type::JSON_STRING {
+                    Ok(None)
+                } else {
+                    let kind = CStr::from_ptr(jansson::json_string_value(kind_json)).to_str()?;
+                    MessageKind::parse(kind).map(|k| Some(k))
+                }
             }
         }
     }
 }
 
 unsafe impl Send for RawMessage {}
+
+type MessageProcessingResult = Result<(), Box<Error+Send+Sync>>;
 
 const METADATA: PluginMetadata = PluginMetadata {
     version: 1,
@@ -310,8 +317,6 @@ extern "C" fn hangup_media(handle: *mut PluginHandle) {
     }
 }
 
-type MessageProcessingResult = Result<(), Box<Error+Send+Sync>>;
-
 fn user_id_taken(candidate: u32) -> bool {
     let connections = STATE.connections.read().unwrap();
     connections.iter().any(|c| c.lock().unwrap().role.get_user_id() == Some(candidate))
@@ -430,9 +435,9 @@ fn handle_message_async(message: RawMessage) -> MessageProcessingResult {
             message.classify().and_then(|x| {
                 janus::log(LogLevel::Verb, &format!("Processing {:?} on connection {:?}.", x, conn));
                 match x {
-                    MessageKind::Join => handle_join(conn, message.transaction, unsafe { &*message.message }),
-                    MessageKind::List => handle_list(conn, message.transaction),
-                    MessageKind::None => Ok(())
+                    Some(MessageKind::Join) => handle_join(conn, message.transaction, unsafe { &*message.message }),
+                    Some(MessageKind::List) => handle_list(conn, message.transaction),
+                    None => Ok(())
                 }
             })
         },
