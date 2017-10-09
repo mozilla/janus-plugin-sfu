@@ -4,7 +4,6 @@ extern crate cstr_macro;
 extern crate lazy_static;
 #[macro_use]
 extern crate janus_plugin as janus;
-extern crate rand;
 #[macro_use]
 extern crate serde_json;
 
@@ -13,8 +12,8 @@ use std::error::Error;
 use std::ffi::CString;
 use std::os::raw::{c_char, c_int};
 use std::ptr;
-use std::sync::{Arc, Mutex, RwLock, Weak};
-use std::sync::mpsc;
+use std::sync::{mpsc, Arc, Mutex, RwLock, Weak};
+use std::sync::atomic::{AtomicIsize, Ordering};
 use std::thread;
 use serde_json::Value as JsonValue;
 use janus::{JanssonValue, RawJanssonValue,
@@ -35,12 +34,12 @@ pub fn from_serde_json(input: JsonValue) -> JanssonValue {
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
 pub enum ConnectionRole {
     Unknown,
-    Publisher { user_id: u32 },
-    Subscriber { user_id: u32, target_id: u32 },
+    Publisher { user_id: i64 },
+    Subscriber { user_id: i64, target_id: i64 },
 }
 
 impl ConnectionRole {
-    pub fn get_user_id(&self) -> Option<u32> {
+    pub fn user_id(&self) -> Option<i64> {
         match *self {
             ConnectionRole::Publisher { user_id } => Some(user_id),
             ConnectionRole::Subscriber { user_id, .. } => Some(user_id),
@@ -123,12 +122,14 @@ fn gateway_callbacks() -> &'static PluginCallbacks {
 struct State {
     pub connections: RwLock<Vec<Box<Arc<Connection>>>>,
     pub message_channel: Mutex<Option<mpsc::SyncSender<RawMessage>>>,
+    pub next_user_id: AtomicIsize,
 }
 
 lazy_static! {
     static ref STATE: State = State {
         connections: RwLock::new(Vec::new()),
-        message_channel: Mutex::new(None)
+        message_channel: Mutex::new(None),
+        next_user_id: AtomicIsize::new(0)
     };
 }
 
@@ -312,36 +313,23 @@ extern "C" fn hangup_media(handle: *mut PluginHandle) {
     }
 }
 
-fn user_id_taken(candidate: u32) -> bool {
-    let connections = STATE.connections.read().unwrap();
-    connections.iter().any(|c| c.lock().unwrap().role.get_user_id() == Some(candidate))
+fn generate_user_id() -> i64 {
+    STATE.next_user_id.fetch_add(1, Ordering::Relaxed) as i64
 }
 
-fn generate_user_id() -> u32 {
-    let mut candidate = rand::random();
-    while user_id_taken(candidate) {
-        candidate = rand::random();
-    }
-    candidate
-}
-
-fn get_user_list() -> HashSet<u32> {
+fn get_user_list() -> HashSet<i64> {
     let connections = STATE.connections.read().unwrap();
-    connections.iter().filter_map(|c| c.lock().unwrap().role.get_user_id()).collect()
+    connections.iter().filter_map(|c| c.lock().unwrap().role.user_id()).collect()
 }
 
 fn handle_join(conn: &Connection, txn: *mut c_char, msg: JsonValue) -> MessageProcessingResult {
-    let push_event = gateway_callbacks().push_event;
-    let user_list = get_user_list();
-
-    let user_id_result: Result<u32, MessageProcessingError> = match msg.get("user_id") {
+    let user_id = match msg.get("user_id") {
         None => Ok(generate_user_id()),
         Some(&JsonValue::Number(ref existing_id)) if existing_id.is_i64() => {
-            Ok(existing_id.as_i64().unwrap() as u32)
+            Ok(existing_id.as_i64().unwrap())
         },
-        _ => Err(From::from("Invalid user ID specified (must be an integer.)")),
-    };
-    let user_id = user_id_result?;
+        _ => Err(MessageProcessingError::from("Invalid user ID specified (must be an integer.)")),
+    }?;
 
     let role = match msg.get("role") {
         Some(&JsonValue::String(ref role_str)) if role_str == "publisher" => {
@@ -351,17 +339,19 @@ fn handle_join(conn: &Connection, txn: *mut c_char, msg: JsonValue) -> MessagePr
         Some(&JsonValue::String(ref role_str)) if role_str == "subscriber" => {
             if let Some(&JsonValue::Number(ref target_id)) = msg.get("target_id") {
                 janus::log(LogLevel::Info, &format!("Configuring connection {:?} as subscriber for {} to {}.", conn, user_id, target_id));
-                conn.lock().unwrap().set_role(ConnectionRole::Subscriber { user_id, target_id: target_id.as_i64().unwrap() as u32 })
+                conn.lock().unwrap().set_role(ConnectionRole::Subscriber { user_id, target_id: target_id.as_i64().unwrap() })
             } else {
                 Err(From::from("No target ID specified for subscription."))
             }
         },
         _ => Err(From::from("Unknown session kind specified (neither publisher nor subscriber.)"))
     }?;
+
+    let push_event = gateway_callbacks().push_event;
     let response = from_serde_json(json!({
         "event": "join_self",
         "user_id": user_id,
-        "user_ids": user_list
+        "user_ids": get_user_list()
     }));
     janus::get_result(push_event(conn.handle, &mut PLUGIN, txn, response.ptr, ptr::null_mut()))?;
 
