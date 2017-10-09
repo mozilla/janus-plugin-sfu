@@ -4,21 +4,33 @@ extern crate cstr_macro;
 extern crate lazy_static;
 #[macro_use]
 extern crate janus_plugin as janus;
-extern crate jansson_sys as jansson;
 extern crate rand;
+#[macro_use]
+extern crate serde_json;
 
-use std::collections::HashSet;
+use std::collections::{HashSet};
 use std::error::Error;
-use std::ffi::{CStr, CString};
+use std::ffi::CString;
 use std::os::raw::{c_char, c_int};
 use std::ptr;
 use std::sync::{Arc, Mutex, RwLock, Weak};
 use std::sync::mpsc;
 use std::thread;
-use janus::{LogLevel, Plugin, PluginCallbacks, PluginMetadata,
+use serde_json::Value as JsonValue;
+use janus::{JanssonValue, RawJanssonValue,
+            LogLevel, Plugin, PluginCallbacks, PluginMetadata,
             PluginResultInfo, PluginResultType, PluginHandle};
 use janus::session::SessionHandle;
-use jansson::json_t as Json;
+
+/// Inefficiently converts a Jansson JSON value to a serde JSON value.
+pub fn to_serde_json(input: JanssonValue) -> JsonValue {
+    serde_json::from_str(&input.to_string(0)).unwrap()
+}
+
+/// Inefficiently converts a serde JSON value to a Jansson JSON value.
+pub fn from_serde_json(input: JsonValue) -> JanssonValue {
+    JanssonValue::from_str(&input.to_string(), 0).unwrap()
+}
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
 pub enum ConnectionRole {
@@ -43,10 +55,10 @@ pub struct ConnectionState {
 }
 
 impl ConnectionState {
-    pub fn set_role(&mut self, role: ConnectionRole) -> Result<(), Box<Error+Send+Sync>> {
+    pub fn set_role(&mut self, role: ConnectionRole) -> Result<ConnectionRole, Box<Error+Send+Sync>> {
         match self.role {
-            ConnectionRole::Unknown => { self.role = role; Ok(()) },
-            x if x == role => Ok(()),
+            ConnectionRole::Unknown => { self.role = role; Ok(role) },
+            x if x == role => Ok(x),
             _ => Err(From::from(format!("Connection role already configured as {:?}; can't set to {:?}.", self.role, role)))
         }
     }
@@ -61,7 +73,15 @@ pub enum MessageKind {
 }
 
 impl MessageKind {
-    pub fn parse(name: &str) -> Result<MessageKind, Box<Error+Send+Sync>> {
+    pub fn classify(json: &JsonValue) -> Result<Option<Self>, Box<Error+Send+Sync>> {
+        if let Some(&JsonValue::String(ref kind)) = json.get("kind") {
+            return Self::parse(&kind).map(|k| Some(k))
+        } else {
+            Ok(None)
+        }
+    }
+
+    pub fn parse(name: &str) -> Result<Self, Box<Error+Send+Sync>> {
         match name {
             "join" => Ok(MessageKind::Join),
             "list" => Ok(MessageKind::List),
@@ -72,34 +92,16 @@ impl MessageKind {
 
 #[derive(Debug)]
 pub struct RawMessage {
-    pub connection: Weak<Connection>,
-    pub transaction: *mut c_char,
-    pub message: *mut Json,
-    pub jsep: *mut Json
-}
-
-impl RawMessage {
-    pub fn classify(&self) -> Result<Option<MessageKind>, Box<Error+Send+Sync>> {
-        let has_msg = !self.message.is_null();
-        if !has_msg {
-            Ok(None)
-        } else {
-            unsafe {
-                let kind_json = jansson::json_object_get(self.message, cstr!("kind"));
-                if kind_json.is_null() || (*kind_json).type_ != jansson::json_type::JSON_STRING {
-                    Ok(None)
-                } else {
-                    let kind = CStr::from_ptr(jansson::json_string_value(kind_json)).to_str()?;
-                    MessageKind::parse(kind).map(|k| Some(k))
-                }
-            }
-        }
-    }
+    pub conn: Weak<Connection>,
+    pub txn: *mut c_char,
+    pub msg: Option<JanssonValue>,
+    pub jsep: Option<JanssonValue>,
 }
 
 unsafe impl Send for RawMessage {}
 
-type MessageProcessingResult = Result<(), Box<Error+Send+Sync>>;
+type MessageProcessingError = Box<Error+Send+Sync>;
+type MessageProcessingResult = Result<(), MessageProcessingError>;
 
 const METADATA: PluginMetadata = PluginMetadata {
     version: 1,
@@ -167,14 +169,14 @@ extern "C" fn create_session(handle: *mut PluginHandle, _error: *mut c_int) {
     (*STATE.connections.write().unwrap()).push(conn);
 }
 
-fn notify_publishers(myself: *mut PluginHandle, msg: *mut Json) -> Result<(), Box<Error+Send+Sync>> {
+fn notify_publishers(myself: *mut PluginHandle, msg: JanssonValue) -> Result<(), Box<Error+Send+Sync>> {
     let connections = STATE.connections.read().unwrap();
     let push_event = gateway_callbacks().push_event;
     for other in connections.iter() {
         if other.handle != myself {
             let other_state = other.lock().unwrap();
             if let ConnectionRole::Publisher { .. } = other_state.role {
-                janus::get_result(push_event(other.handle, &mut PLUGIN, ptr::null(), msg, ptr::null_mut()))?
+                janus::get_result(push_event(other.handle, &mut PLUGIN, ptr::null(), msg.ptr, ptr::null_mut()))?
             }
         }
     }
@@ -192,28 +194,21 @@ extern "C" fn destroy_session(handle: *mut PluginHandle, error: *mut c_int) {
     let conn_role = conn.lock().unwrap().role;
     STATE.connections.write().unwrap().retain(|ref c| c.handle != handle);
 
+    // notify all other publishers that this connection is gone
     if let ConnectionRole::Publisher { user_id } = conn_role {
-        // notify all other publishers that this connection is gone
-        unsafe {
-            let response = jansson::json_object();
-            jansson::json_object_set_new(response, cstr!("event"), jansson::json_string(cstr!("leave")));
-            jansson::json_object_set_new(response, cstr!("user_id"), jansson::json_integer(user_id as i64));
-            let result = notify_publishers(ptr::null_mut(), response);
-            if let Err(err) = result {
-                janus::log(LogLevel::Err, &format!("Error notifying publishers on leave: {}", err));
-            }
-        }
-    }
+        let response = from_serde_json(json!({"event": "leave", "user_id": user_id}));
+        notify_publishers(ptr::null_mut(), response).unwrap_or_else(|e| {
+            janus::log(LogLevel::Err, &format!("Error notifying publishers on leave: {}", e));
+        });
+    };
 }
 
-extern "C" fn query_session(handle: *mut PluginHandle) -> *mut janus::Json {
+extern "C" fn query_session(handle: *mut PluginHandle) -> *mut RawJanssonValue {
     if handle.is_null() {
         janus::log(LogLevel::Err, "No session associated with handle!");
         return ptr::null_mut();
     }
-    unsafe {
-        jansson::json_object()
-    }
+    ptr::null_mut()
 }
 
 extern "C" fn setup_media(handle: *mut PluginHandle) {
@@ -323,140 +318,129 @@ fn user_id_taken(candidate: u32) -> bool {
 }
 
 fn generate_user_id() -> u32 {
-    let mut candidate = rand::random::<u32>();
+    let mut candidate = rand::random();
     while user_id_taken(candidate) {
-        candidate = rand::random::<u32>();
+        candidate = rand::random();
     }
     candidate
 }
 
-fn get_user_list() -> *mut Json {
+fn get_user_list() -> HashSet<u32> {
     let connections = STATE.connections.read().unwrap();
-    let user_set: HashSet<u32> = connections.iter().filter_map(|c| c.lock().unwrap().role.get_user_id()).collect();
-    unsafe {
-        let user_list = jansson::json_array();
-        for user_id in user_set {
-            jansson::json_array_append_new(user_list, jansson::json_integer(user_id as i64));
-        }
-        user_list
-    }
+    connections.iter().filter_map(|c| c.lock().unwrap().role.get_user_id()).collect()
 }
 
-fn handle_join(conn: &Connection, txn: *mut c_char, message: &Json) -> MessageProcessingResult {
+fn handle_join(conn: &Connection, txn: *mut c_char, msg: JsonValue) -> MessageProcessingResult {
     let push_event = gateway_callbacks().push_event;
     let user_list = get_user_list();
-    unsafe {
-        let user_id_json = jansson::json_object_get(message, cstr!("user_id"));
-        let user_id = if user_id_json.is_null() {
-            generate_user_id()
-        } else if (*user_id_json).type_ == jansson::json_type::JSON_INTEGER {
-            jansson::json_integer_value(user_id_json) as u32
-        } else {
-            return Err(From::from("Invalid user ID specified (must be an integer.)"))
-        };
 
-        let role_json = jansson::json_object_get(message, cstr!("role"));
-        if !role_json.is_null() && (*role_json).type_ == jansson::json_type::JSON_STRING {
-            let role = CStr::from_ptr(jansson::json_string_value(role_json));
-            if role == CStr::from_ptr(cstr!("publisher")) {
-                janus::log(LogLevel::Info, &format!("Configuring connection {:?} as publisher for {}.", conn, user_id));
-                conn.lock().unwrap().set_role(ConnectionRole::Publisher { user_id })?
-            } else if role == CStr::from_ptr(cstr!("subscriber")) {
-                let target_id_json = jansson::json_object_get(message, cstr!("target_id"));
-                if !target_id_json.is_null() && (*target_id_json).type_ == jansson::json_type::JSON_INTEGER {
-                    let target_id = jansson::json_integer_value(target_id_json) as u32;
-                    janus::log(LogLevel::Info, &format!("Configuring connection {:?} as subscriber for {} to {}.", conn, user_id, target_id));
-                    conn.lock().unwrap().set_role(ConnectionRole::Subscriber { user_id, target_id })?
-                } else {
-                    return Err(From::from("No target ID specified for subscription."));
-                }
+    let user_id_result: Result<u32, MessageProcessingError> = match msg.get("user_id") {
+        None => Ok(generate_user_id()),
+        Some(&JsonValue::Number(ref existing_id)) if existing_id.is_i64() => {
+            Ok(existing_id.as_i64().unwrap() as u32)
+        },
+        _ => Err(From::from("Invalid user ID specified (must be an integer.)")),
+    };
+    let user_id = user_id_result?;
+
+    let role = match msg.get("role") {
+        Some(&JsonValue::String(ref role_str)) if role_str == "publisher" => {
+            janus::log(LogLevel::Info, &format!("Configuring connection {:?} as publisher for {}.", conn, user_id));
+            conn.lock().unwrap().set_role(ConnectionRole::Publisher { user_id })
+        },
+        Some(&JsonValue::String(ref role_str)) if role_str == "subscriber" => {
+            if let Some(&JsonValue::Number(ref target_id)) = msg.get("target_id") {
+                janus::log(LogLevel::Info, &format!("Configuring connection {:?} as subscriber for {} to {}.", conn, user_id, target_id));
+                conn.lock().unwrap().set_role(ConnectionRole::Subscriber { user_id, target_id: target_id.as_i64().unwrap() as u32 })
             } else {
-                return Err(From::from("Unknown session kind specified (neither publisher nor subscriber.)"))
+                Err(From::from("No target ID specified for subscription."))
             }
-        }
-        let response = jansson::json_object();
-        jansson::json_object_set_new(response, cstr!("event"), jansson::json_string(cstr!("join_self")));
-        jansson::json_object_set_new(response, cstr!("user_id"), jansson::json_integer(user_id as i64));
-        jansson::json_object_set_new(response, cstr!("user_ids"), user_list);
-        janus::get_result(push_event(conn.handle, &mut PLUGIN, txn, response, ptr::null_mut()))?;
+        },
+        _ => Err(From::from("Unknown session kind specified (neither publisher nor subscriber.)"))
+    }?;
+    let response = from_serde_json(json!({
+        "event": "join_self",
+        "user_id": user_id,
+        "user_ids": user_list
+    }));
+    janus::get_result(push_event(conn.handle, &mut PLUGIN, txn, response.ptr, ptr::null_mut()))?;
 
-        let conn_role = conn.lock().unwrap().role;
-        if let ConnectionRole::Publisher { .. } = conn_role {
-            // notify all other publishers that this user has joined
-            let response = jansson::json_object();
-            jansson::json_object_set_new(response, cstr!("event"), jansson::json_string(cstr!("join_other")));
-            jansson::json_object_set_new(response, cstr!("user_id"), jansson::json_integer(user_id as i64));
-            notify_publishers(conn.handle, response)
-        } else {
-            Ok(())
-        }
+    if let ConnectionRole::Publisher { .. } = role {
+        notify_publishers(conn.handle, from_serde_json(json!({
+            "event": "join_other",
+            "user_id": user_id
+        })))
+    } else {
+        Ok(())
     }
 }
 
 fn handle_list(conn: &Connection, txn: *mut c_char) -> MessageProcessingResult {
     let user_list = get_user_list();
     let push_event = gateway_callbacks().push_event;
-    unsafe {
-        let response = jansson::json_object();
-        jansson::json_object_set_new(response, cstr!("user_ids"), user_list);
-        janus::get_result(push_event(conn.handle, &mut PLUGIN, txn, response, ptr::null_mut()))
-    }
+    let response = from_serde_json(json!({"user_ids": user_list}));
+    janus::get_result(push_event(conn.handle, &mut PLUGIN, txn, response.ptr, ptr::null_mut()))
 }
 
-fn handle_jsep(conn: &Connection, txn: *mut c_char, jsep: &Json) -> MessageProcessingResult {
-    if jsep.type_ != jansson::json_type::JSON_OBJECT {
-        Err(From::from("JSEP wasn't a JSON object."))
+fn handle_jsep(conn: &Connection, txn: *mut c_char, jsep: JsonValue) -> MessageProcessingResult {
+    if let Some(&JsonValue::String(ref sdp)) = jsep.get("sdp") {
+        let offer = janus::sdp::parse_sdp(CString::new(&**sdp)?)?;
+        let answer = answer_sdp!(offer, janus::sdp::OfferAnswerParameters::Video, 0);
+        let answer_str = janus::sdp::write_sdp(&answer);
+        let answer_msg = from_serde_json(json!({}));
+        let answer_jsep = from_serde_json(json!({
+            "type": "answer",
+            "sdp": answer_str.to_str()?
+        }));
+        let push_event = gateway_callbacks().push_event;
+        janus::get_result(push_event(conn.handle, &mut PLUGIN, txn, answer_msg.ptr, answer_jsep.ptr))
     } else {
-        let sdp_val = unsafe { jansson::json_string_value(jansson::json_object_get(jsep, cstr!("sdp"))) };
-        if sdp_val.is_null() {
-            Err(From::from("No SDP supplied in JSEP."))
-        } else {
-            let offer_str = unsafe { CString::from_raw(sdp_val as *mut _) };
-            let offer = janus::sdp::parse_sdp(offer_str)?;
-            let answer = answer_sdp!(&offer, janus::sdp::OfferAnswerParameters::Video, 0);
-            let answer_str = janus::sdp::write_sdp(&answer);
-            unsafe {
-                let answer_jsep = jansson::json_object();
-                jansson::json_object_set_new(answer_jsep, cstr!("type"), jansson::json_string(cstr!("answer")));
-                jansson::json_object_set_new(answer_jsep, cstr!("sdp"), jansson::json_string(answer_str.as_ptr()));
-                let push_event = gateway_callbacks().push_event;
-                janus::get_result(push_event(conn.handle, &mut PLUGIN, txn, jansson::json_object(), answer_jsep))
-            }
-        }
+        Err(From::from("No SDP supplied in JSEP."))
     }
 }
 
-fn handle_message_async(message: RawMessage) -> MessageProcessingResult {
-    match message.connection.upgrade() {
+fn handle_message_async(RawMessage { jsep, msg, txn, conn }: RawMessage) -> MessageProcessingResult {
+    match conn.upgrade() {
         Some(ref conn) => {
-            if !message.jsep.is_null() {
-                handle_jsep(conn, message.transaction, unsafe { &*message.jsep })?
-            }
-            message.classify().and_then(|x| {
-                janus::log(LogLevel::Verb, &format!("Processing {:?} on connection {:?}.", x, conn));
-                match x {
-                    Some(MessageKind::Join) => handle_join(conn, message.transaction, unsafe { &*message.message }),
-                    Some(MessageKind::List) => handle_list(conn, message.transaction),
-                    None => Ok(())
-                }
+            // if we have a JSEP, handle it independently of whether or not we have a message
+            jsep.map(to_serde_json).map_or(Ok(()), |jsep| {
+                janus::log(LogLevel::Verb, &format!("Processing JSEP on connection {:?}.", conn));
+                handle_jsep(conn, txn, jsep)
+            })?;
+
+            // if we have a message, handle that
+            msg.map(to_serde_json).map_or(Ok(()), |msg| {
+                MessageKind::classify(&msg).and_then(|x| {
+                    janus::log(LogLevel::Verb, &format!("Processing {:?} on connection {:?}.", x, conn));
+                    match x {
+                        Some(MessageKind::Join) => handle_join(conn, txn, msg),
+                        Some(MessageKind::List) => handle_list(conn, txn),
+                        None => Ok(())
+                    }
+                })
             })
         },
-        None => {
-            janus::log(LogLevel::Info, "Message received for destroyed session; discarding.");
-            Ok(())
-        }
+        // getting messages for destroyed connections is slightly concerning,
+        // because messages shouldn't be backed up for that long, so warn if it happens
+        None => Ok(janus::log(LogLevel::Warn, "Message received for destroyed session; discarding.")),
     }
 }
 
-extern "C" fn handle_message(handle: *mut PluginHandle, transaction: *mut c_char, message: *mut Json, jsep: *mut Json) -> *mut PluginResultInfo {
+extern "C" fn handle_message(handle: *mut PluginHandle, transaction: *mut c_char,
+                             message: *mut RawJanssonValue, jsep: *mut RawJanssonValue) -> *mut PluginResultInfo {
     janus::log(LogLevel::Verb, "Queueing signalling message.");
     Box::into_raw(
         if handle.is_null() {
-            janus::create_result(PluginResultType::JANUS_PLUGIN_ERROR, cstr!("No handle associated with message!"), ptr::null_mut())
+            janus::create_result(PluginResultType::JANUS_PLUGIN_ERROR, cstr!("No handle associated with message!"), None)
         } else {
-            let connection = Arc::downgrade(Connection::from_ptr(handle));
-            STATE.message_channel.lock().unwrap().as_ref().unwrap().send(RawMessage { connection, transaction, message, jsep }).ok();
-            janus::create_result(PluginResultType::JANUS_PLUGIN_OK_WAIT, cstr!("Processing."), ptr::null_mut())
+            let msg = RawMessage {
+                conn: Arc::downgrade(Connection::from_ptr(handle)),
+                txn: transaction,
+                msg: JanssonValue::new(message),
+                jsep: JanssonValue::new(jsep)
+            };
+            STATE.message_channel.lock().unwrap().as_ref().unwrap().send(msg).ok();
+            janus::create_result(PluginResultType::JANUS_PLUGIN_OK_WAIT, cstr!("Processing."), None)
         }
     )
 }
