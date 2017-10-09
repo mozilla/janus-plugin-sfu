@@ -23,7 +23,7 @@ var sendAudio = params.send;
 function init() {
     // Create session
     janus = new Janus({
-	server: "ws://localhost:8188/",
+	server: "wss://quander.me:8989",
 	// No "iceServers" is provided, meaning janus.js will use a default STUN server
 	// Here are some examples of how an iceServers field may look like to support TURN
 	// 		iceServers: [{urls: "turn:yourturnserver.com:3478", username: "janususer", credential: "januspwd"}],
@@ -83,6 +83,7 @@ function init() {
                         for (var i = 0; i < user_ids.length; i++) {
                             var target_id = user_ids[i];
                             if (user_id !== target_id) {
+                                Janus.debug("Creating subscriber to " + target_id);
                                 createSubscriber(user_id, target_id);
                             }
                         }
@@ -90,6 +91,7 @@ function init() {
                     if(msg["event"] === "join_other") {
                         var target_id = msg["user_id"];
                         if (user_id !== target_id) {
+                            Janus.debug("Creating subscriber to " + target_id);
                             createSubscriber(user_id, target_id);
                         }
                     }

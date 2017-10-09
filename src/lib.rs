@@ -229,14 +229,15 @@ extern "C" fn incoming_rtp(handle: *mut PluginHandle, video: c_int, buf: *mut c_
     let conn = Arc::clone(Connection::from_ptr(handle));
     let conn_role = conn.lock().unwrap().role;
     if let ConnectionRole::Publisher { user_id } = conn_role {
-        janus::log(LogLevel::Huge, &format!("RTP packet received from user ID {:?}.", user_id));
+        janus::log(LogLevel::Huge, &format!("RTP packet received from user ID {}.", user_id));
         let relay_rtp = gateway_callbacks().relay_rtp;
         let connections = STATE.connections.read().unwrap();
         for other in connections.iter() {
             let other_state = &*(other.lock().unwrap());
             match other_state.role {
-                ConnectionRole::Subscriber { target_id, .. } if target_id == user_id => {
+                ConnectionRole::Subscriber { user_id: subscriber_id, target_id } if target_id == user_id => {
                     // this connection is subscribing to us, forward our RTP
+                    janus::log(LogLevel::Huge, &format!("RTP packet forwarded from user ID {} to {}.", user_id, subscriber_id));
                     relay_rtp(other.handle, video, buf, len);
                 },
                 _ => {
@@ -258,14 +259,15 @@ extern "C" fn incoming_rtcp(handle: *mut PluginHandle, video: c_int, buf: *mut c
     let conn = Arc::clone(Connection::from_ptr(handle));
     let conn_role = conn.lock().unwrap().role;
     if let ConnectionRole::Publisher { user_id } = conn_role {
-        janus::log(LogLevel::Huge, &format!("RTCP packet received from user ID {:?}.", user_id));
+        janus::log(LogLevel::Huge, &format!("RTCP packet received from user ID {}.", user_id));
         let relay_rtcp = gateway_callbacks().relay_rtcp;
         let connections = STATE.connections.read().unwrap();
         for other in connections.iter() {
             let other_state = &*(other.lock().unwrap());
             match other_state.role {
-                ConnectionRole::Subscriber { target_id, .. } if target_id == user_id => {
+                ConnectionRole::Subscriber { user_id: subscriber_id, target_id } if target_id == user_id => {
                     // this connection is subscribing to us, forward our RTCP
+                    janus::log(LogLevel::Huge, &format!("RTCP packet forwarded from user ID {} to {}.", user_id, subscriber_id));
                     relay_rtcp(other.handle, video, buf, len);
                 },
                 _ => {
@@ -338,7 +340,7 @@ fn handle_join(conn: &Connection, txn: *mut c_char, msg: JsonValue) -> MessagePr
         },
         Some(&JsonValue::String(ref role_str)) if role_str == "subscriber" => {
             if let Some(&JsonValue::Number(ref target_id)) = msg.get("target_id") {
-                janus::log(LogLevel::Info, &format!("Configuring connection {:?} as subscriber for {} to {}.", conn, user_id, target_id));
+                janus::log(LogLevel::Info, &format!("Configuring connection {:?} as subscriber from {} to {}.", conn, user_id, target_id));
                 conn.lock().unwrap().set_role(ConnectionRole::Subscriber { user_id, target_id: target_id.as_i64().unwrap() })
             } else {
                 Err(From::from("No target ID specified for subscription."))
