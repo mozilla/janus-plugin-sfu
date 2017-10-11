@@ -49,7 +49,7 @@ function init() {
 			success: function(jsep) {
 			    Janus.debug("Got SDP!");
 			    Janus.debug(jsep);
-			    publisher.send({"message": {"kind": "join", "role": "publisher"}, "jsep": jsep});
+			    publisher.send({"message": {"kind": "join", "role": {"kind": "publisher"}}, "jsep": jsep});
 			},
 			error: function(error) {
 			    Janus.error("WebRTC error:", error);
@@ -146,7 +146,7 @@ function createSubscriber(user_id, target_id) {
 		success: function(jsep) {
 		    Janus.debug("Got SDP!");
 		    Janus.debug(jsep);
-		    subscriber.send({"message": {"kind": "join", "role": "subscriber", "user_id": user_id, "target_id": target_id}, "jsep": jsep});
+		    subscriber.send({"message": {"kind": "join", "user_id": user_id, "role": {"kind": "subscriber", "target_id": target_id}}, "jsep": jsep});
 		},
 		error: function(error) {
 		    Janus.error("WebRTC error:", error);

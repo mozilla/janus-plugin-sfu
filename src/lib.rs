@@ -59,52 +59,18 @@ pub struct ConnectionState {
 
 pub type Connection = SessionHandle<ConnectionState>;
 
-#[derive(Debug, Copy, Clone, Serialize, Deserialize)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase", tag = "kind")]
 pub enum MessageKind {
     Join { user_id: Option<UserId>, role: ConnectionRole },
     List,
 }
 
-#[derive(Debug, Copy, Clone, Serialize, Deserialize)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase", tag = "kind")]
 pub enum ConnectionRole {
     Publisher,
     Subscriber { target_id: UserId }
-}
-
-impl MessageKind {
-    pub fn parse(json: JsonValue) -> Result<Option<Self>, MessageProcessingError> {
-        if let Some(&JsonValue::String(ref kind)) = json.get("kind") {
-            match &**kind {
-                "list" => Ok(Some(MessageKind::List)),
-                "join" => {
-                    let user_id = match json.get("user_id") {
-                        None => Ok(None),
-                        Some(&JsonValue::Number(ref n)) if n.is_u64() => {
-                            Ok(Some(UserId::try_from(n.as_u64().unwrap() as usize)?))
-                        },
-                        _ => Err(MessageProcessingError::from("Invalid user ID specified."))
-                    }?;
-                    let role = match json.get("role") {
-                        Some(&JsonValue::String(ref r)) if r == "publisher" => Ok(ConnectionRole::Publisher),
-                        Some(&JsonValue::String(ref r)) if r == "subscriber" => {
-                            let target_id = match json.get("target_id") {
-                                Some(&JsonValue::Number(ref n)) if n.is_u64() => {
-                                    UserId::try_from(n.as_u64().unwrap() as usize)
-                                },
-                                _ => Err(From::from("Invalid target ID specified."))
-                            }?;
-                            Ok(ConnectionRole::Subscriber { target_id })
-                        }
-                        _ => Err(MessageProcessingError::from("Invalid role specified."))
-                    }?;
-                    Ok(Some(MessageKind::Join { user_id, role }))
-                },
-                _ => Err(From::from("Invalid message kind."))
-            }
-        } else {
-            Ok(None)
-        }
-    }
 }
 
 #[derive(Debug)]
@@ -382,21 +348,19 @@ fn handle_message_async(RawMessage { jsep, msg, txn, conn }: RawMessage) -> Mess
     match conn.upgrade() {
         Some(ref conn) => {
             // if we have a JSEP, handle it independently of whether or not we have a message
-            jsep.map(to_serde_json).map_or(Ok(()), |jsep| {
+            jsep.map_or(Ok(()), |jsep| {
                 janus::log(LogLevel::Info, &format!("Processing JSEP on connection {:?}.", conn));
-                handle_jsep(&conn, txn, jsep)
+                handle_jsep(&conn, txn, to_serde_json(jsep))
             })?;
 
             // if we have a message, handle that
-            msg.map(to_serde_json).map_or(Ok(()), |msg| {
-                MessageKind::parse(msg).and_then(|x| {
-                    janus::log(LogLevel::Info, &format!("Processing {:?} on connection {:?}.", x, conn));
-                    match x {
-                        Some(MessageKind::List) => handle_list(&conn, txn),
-                        Some(MessageKind::Join { user_id, role }) => handle_join(&conn, txn, user_id, role),
-                        None => Ok(())
-                    }
-                })
+            msg.map_or(Ok(()), |x| {
+                let kind: MessageKind = serde_json::from_str(&x.to_string(0))?;
+                janus::log(LogLevel::Info, &format!("Processing {:?} on connection {:?}.", kind, conn));
+                match kind {
+                    MessageKind::List => handle_list(&conn, txn),
+                    MessageKind::Join { user_id, role } => handle_join(&conn, txn, user_id, role),
+                }
             })
         },
         // getting messages for destroyed connections is slightly concerning,
@@ -441,3 +405,38 @@ const PLUGIN: Plugin = build_plugin!(
 );
 
 export_plugin!(&PLUGIN);
+
+#[cfg(test)]
+mod tests {
+
+    use super::*;
+
+    mod message_parsing {
+
+        use super::*;
+
+        #[test]
+        fn parse_list() {
+            let json = r#"{"kind": "list"}"#;
+            let result: MessageKind = serde_json::from_str(json).unwrap();
+            assert_eq!(result, MessageKind::List);
+        }
+
+        #[test]
+        fn parse_publisher() {
+            let json = r#"{"kind": "join", "role": {"kind": "publisher"}}"#;
+            let result: MessageKind = serde_json::from_str(json).unwrap();
+            assert_eq!(result, MessageKind::Join { user_id: None, role: ConnectionRole::Publisher });
+        }
+
+        #[test]
+        fn parse_subscriber() {
+            let json = r#"{"kind": "join", "user_id": 1, "role": {"kind": "subscriber", "target_id": 2}}"#;
+            let result: MessageKind = serde_json::from_str(json).unwrap();
+            assert_eq!(result, MessageKind::Join {
+                user_id: Some(UserId::try_from(1).unwrap()),
+                role: ConnectionRole::Subscriber { target_id: UserId::try_from(2).unwrap() }
+            });
+        }
+    }
+}
