@@ -60,6 +60,13 @@ pub struct ConnectionState {
 
 pub type Connection = SessionHandle<ConnectionState>;
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase", tag = "type")]
+pub enum JsepKind {
+    Offer { sdp: String },
+    Answer { sdp: String }
+}
+
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase", tag = "kind")]
 pub enum MessageKind {
@@ -287,19 +294,6 @@ fn remove_publication(publisher: &UserId) {
 
 fn handle_join(conn: &Arc<Connection>, txn: *mut c_char, user_id: Option<UserId>, role: ConnectionRole) -> MessageProcessingResult {
     let other_user_ids = get_user_list();
-    let user_id = match user_id {
-        Some(n) => { conn.user_id.store(n, Ordering::Relaxed); n },
-        None => {
-            let new_user_id = STATE.next_user_id.next(Ordering::Relaxed)
-                .expect("next_user_id is always a non-empty user ID.");
-            conn.user_id.store(new_user_id, Ordering::Relaxed);
-            let notification = from_serde_json(json!({ "event": "join_other", "user_id": new_user_id }));
-            if let Err(e) = notify(new_user_id, notification) {
-                janus::log(LogLevel::Err, &format!("Error sending notification for user join: {:?}", e))
-            }
-            new_user_id
-        }
-    };
 
     match role {
         ConnectionRole::Subscriber { target_id } => {
@@ -312,13 +306,26 @@ fn handle_join(conn: &Arc<Connection>, txn: *mut c_char, user_id: Option<UserId>
         },
     };
 
-    let push_event = gateway_callbacks().push_event;
-    let response = from_serde_json(json!({
-        "event": "join_self",
-        "user_id": user_id,
-        "user_ids": other_user_ids
-    }));
-    janus::get_result(push_event(conn.handle, &mut PLUGIN, txn, response.ptr, ptr::null_mut()))
+    match user_id {
+        Some(n) => Ok(conn.user_id.store(n, Ordering::Relaxed)),
+        None => {
+            let new_user_id = STATE.next_user_id.next(Ordering::Relaxed)
+                .expect("next_user_id is always a non-empty user ID.");
+            conn.user_id.store(new_user_id, Ordering::Relaxed);
+            let notification = from_serde_json(json!({ "event": "join_other", "user_id": new_user_id }));
+            if let Err(e) = notify(new_user_id, notification) {
+                janus::log(LogLevel::Err, &format!("Error sending notification for user join: {:?}", e))
+            }
+
+            let push_event = gateway_callbacks().push_event;
+            let response = from_serde_json(json!({
+                "event": "join_self",
+                "user_id": new_user_id,
+                "user_ids": other_user_ids
+            }));
+            janus::get_result(push_event(conn.handle, &mut PLUGIN, txn, response.ptr, ptr::null_mut()))
+        }
+    }
 }
 
 fn handle_list(conn: &Arc<Connection>, txn: *mut c_char) -> MessageProcessingResult {
@@ -328,54 +335,61 @@ fn handle_list(conn: &Arc<Connection>, txn: *mut c_char) -> MessageProcessingRes
     janus::get_result(push_event(conn.handle, &mut PLUGIN, txn, response.ptr, ptr::null_mut()))
 }
 
-fn handle_jsep(conn: &Arc<Connection>, txn: *mut c_char, jsep: JsonValue) -> MessageProcessingResult {
-    if let Some(&JsonValue::String(ref sdp)) = jsep.get("sdp") {
-        let offer = janus::sdp::parse_sdp(CString::new(&**sdp)?)?;
-        let answer = answer_sdp!(offer, janus::sdp::OfferAnswerParameters::Video, 0);
-        let answer_str = janus::sdp::write_sdp(&answer);
-        let answer_msg = from_serde_json(json!({}));
-        let answer_jsep = from_serde_json(json!({
-            "type": "answer",
-            "sdp": answer_str.to_str()?
-        }));
-        let push_event = gateway_callbacks().push_event;
-        janus::get_result(push_event(conn.handle, &mut PLUGIN, txn, answer_msg.ptr, answer_jsep.ptr))
-    } else {
-        Err(From::from("No SDP supplied in JSEP."))
-    }
+fn handle_offer(conn: &Arc<Connection>, txn: *mut c_char, sdp: String) -> MessageProcessingResult {
+    let offer = janus::sdp::parse_sdp(CString::new(sdp)?)?;
+    let answer = answer_sdp!(offer, janus::sdp::OfferAnswerParameters::Video, 0);
+    let answer_str = janus::sdp::write_sdp(&answer);
+    let answer_msg = from_serde_json(json!({}));
+    let answer_jsep = from_serde_json(json!({
+        "type": "answer",
+        "sdp": answer_str.to_str()?
+    }));
+    let push_event = gateway_callbacks().push_event;
+    janus::get_result(push_event(conn.handle, &mut PLUGIN, txn, answer_msg.ptr, answer_jsep.ptr))
+}
+
+fn push_error<T>(conn: &Connection, txn: *mut c_char, err: Box<T>) -> MessageProcessingResult where T: Error+?Sized {
+    let response = from_serde_json(json!({ "error": format!("{}", err) }));
+    let push_event = gateway_callbacks().push_event;
+    janus::get_result(push_event(conn.handle, &mut PLUGIN, txn, response.ptr, ptr::null_mut()))
 }
 
 fn handle_message_async(RawMessage { jsep, msg, txn, conn }: RawMessage) -> MessageProcessingResult {
-    match conn.upgrade() {
-        Some(ref conn) => {
-            // if we have a JSEP, handle it independently of whether or not we have a message
-            jsep.map_or(Ok(()), |jsep| {
-                janus::log(LogLevel::Info, &format!("Processing JSEP on connection {:?}.", conn));
-                handle_jsep(&conn, txn, to_serde_json(jsep))
-            })?;
-
-            // if we have a message, handle that
-            msg.map_or(Ok(()), |x| {
-                let result: JsonResult<MessageKind> = serde_json::from_str(&x.to_string(0));
-                match result {
-                    Ok(kind) => {
-                        janus::log(LogLevel::Info, &format!("Processing {:?} on connection {:?}.", kind, conn));
-                        match kind {
-                            MessageKind::List => handle_list(&conn, txn),
-                            MessageKind::Join { user_id, role } => handle_join(&conn, txn, user_id, role),
+    if let Some(ref conn) = conn.upgrade() {
+        // if we have a JSEP, handle it independently of whether or not we have a message
+        jsep.map_or(Ok(()), |x| {
+            let result: JsonResult<JsepKind> = serde_json::from_str(&x.to_string(0));
+            match result {
+                Ok(kind) => {
+                    janus::log(LogLevel::Info, &format!("Processing {:?} on connection {:?}.", kind, conn));
+                    match kind {
+                        JsepKind::Offer { sdp } => handle_offer(&conn, txn, sdp),
+                        JsepKind::Answer { .. } => {
+                            push_error(conn, txn, MessageProcessingError::from("JSEP answers not yet supported."))
                         }
-                    },
-                    Err(e) => {
-                        let response = from_serde_json(json!({ "error": format!("{}", e) }));
-                        let push_event = gateway_callbacks().push_event;
-                        janus::get_result(push_event(conn.handle, &mut PLUGIN, txn, response.ptr, ptr::null_mut()))
                     }
-                }
-            })
-        },
+                },
+                Err(e) => push_error(conn, txn, Box::new(e))
+            }
+        })?;
+        // if we have a message, handle that
+        msg.map_or(Ok(()), |x| {
+            let result: JsonResult<MessageKind> = serde_json::from_str(&x.to_string(0));
+            match result {
+                Ok(kind) => {
+                    janus::log(LogLevel::Info, &format!("Processing {:?} on connection {:?}.", kind, conn));
+                    match kind {
+                        MessageKind::List => handle_list(&conn, txn),
+                        MessageKind::Join { user_id, role } => handle_join(&conn, txn, user_id, role),
+                    }
+                },
+                Err(e) => push_error(conn, txn, Box::new(e))
+            }
+        })
+    } else {
         // getting messages for destroyed connections is slightly concerning,
         // because messages shouldn't be backed up for that long, so warn if it happens
-        None => Ok(janus::log(LogLevel::Warn, "Message received for destroyed session; discarding.")),
+        Ok(janus::log(LogLevel::Warn, "Message received for destroyed session; discarding."))
     }
 }
 
@@ -420,6 +434,25 @@ export_plugin!(&PLUGIN);
 mod tests {
 
     use super::*;
+
+    mod jsep_parsing {
+
+        use super::*;
+
+        #[test]
+        fn parse_offer() {
+            let jsep = r#"{"type": "offer", "sdp": "..."}"#;
+            let result: JsepKind = serde_json::from_str(jsep).unwrap();
+            assert_eq!(result, JsepKind::Offer { sdp: "...".to_owned() });
+        }
+
+        #[test]
+        fn parse_answer() {
+            let jsep = r#"{"type": "answer", "sdp": "..."}"#;
+            let result: JsepKind = serde_json::from_str(jsep).unwrap();
+            assert_eq!(result, JsepKind::Answer { sdp: "...".to_owned() });
+        }
+    }
 
     mod message_parsing {
 
