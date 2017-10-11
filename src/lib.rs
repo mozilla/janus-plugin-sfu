@@ -23,6 +23,7 @@ use std::sync::{mpsc, Arc, Mutex, RwLock, Weak};
 use std::sync::atomic::Ordering;
 use std::thread;
 use serde_json::Value as JsonValue;
+use serde_json::Result as JsonResult;
 use janus::{JanssonValue, RawJanssonValue,
             LogLevel, Plugin, PluginCallbacks, PluginMetadata,
             PluginResultInfo, PluginResultType, PluginHandle};
@@ -355,11 +356,20 @@ fn handle_message_async(RawMessage { jsep, msg, txn, conn }: RawMessage) -> Mess
 
             // if we have a message, handle that
             msg.map_or(Ok(()), |x| {
-                let kind: MessageKind = serde_json::from_str(&x.to_string(0))?;
-                janus::log(LogLevel::Info, &format!("Processing {:?} on connection {:?}.", kind, conn));
-                match kind {
-                    MessageKind::List => handle_list(&conn, txn),
-                    MessageKind::Join { user_id, role } => handle_join(&conn, txn, user_id, role),
+                let result: JsonResult<MessageKind> = serde_json::from_str(&x.to_string(0));
+                match result {
+                    Ok(kind) => {
+                        janus::log(LogLevel::Info, &format!("Processing {:?} on connection {:?}.", kind, conn));
+                        match kind {
+                            MessageKind::List => handle_list(&conn, txn),
+                            MessageKind::Join { user_id, role } => handle_join(&conn, txn, user_id, role),
+                        }
+                    },
+                    Err(e) => {
+                        let response = from_serde_json(json!({ "error": format!("{}", e) }));
+                        let push_event = gateway_callbacks().push_event;
+                        janus::get_result(push_event(conn.handle, &mut PLUGIN, txn, response.ptr, ptr::null_mut()))
+                    }
                 }
             })
         },
