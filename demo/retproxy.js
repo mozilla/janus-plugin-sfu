@@ -23,7 +23,8 @@ var sendAudio = params.send;
 function init() {
     // Create session
     janus = new Janus({
-	server: "wss://quander.me:8989",
+        server: "ws://localhost:8188",
+//	server: "wss://quander.me:8989",
 	// No "iceServers" is provided, meaning janus.js will use a default STUN server
 	// Here are some examples of how an iceServers field may look like to support TURN
 	// 		iceServers: [{urls: "turn:yourturnserver.com:3478", username: "janususer", credential: "januspwd"}],

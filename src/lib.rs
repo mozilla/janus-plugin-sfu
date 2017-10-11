@@ -1,4 +1,6 @@
 #[macro_use]
+extern crate bitflags;
+#[macro_use]
 extern crate cstr_macro;
 #[macro_use]
 extern crate lazy_static;
@@ -6,14 +8,19 @@ extern crate lazy_static;
 extern crate janus_plugin as janus;
 #[macro_use]
 extern crate serde_json;
+#[macro_use]
+extern crate serde_derive;
 
-use std::collections::{HashSet};
+mod userid;
+
+use userid::{AtomicUserId, UserId};
+use std::collections::{HashSet, HashMap};
 use std::error::Error;
 use std::ffi::CString;
 use std::os::raw::{c_char, c_int};
 use std::ptr;
 use std::sync::{mpsc, Arc, Mutex, RwLock, Weak};
-use std::sync::atomic::{AtomicIsize, Ordering};
+use std::sync::atomic::Ordering;
 use std::thread;
 use serde_json::Value as JsonValue;
 use janus::{JanssonValue, RawJanssonValue,
@@ -31,60 +38,71 @@ pub fn from_serde_json(input: JsonValue) -> JanssonValue {
     JanssonValue::from_str(&input.to_string(), 0).unwrap()
 }
 
-#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
-pub enum ConnectionRole {
-    Unknown,
-    Publisher { user_id: i64 },
-    Subscriber { user_id: i64, target_id: i64 },
-}
-
-impl ConnectionRole {
-    pub fn user_id(&self) -> Option<i64> {
-        match *self {
-            ConnectionRole::Publisher { user_id } => Some(user_id),
-            ConnectionRole::Subscriber { user_id, .. } => Some(user_id),
-            ConnectionRole::Unknown => None
-        }
+bitflags! {
+    pub struct ContentKind: u8 {
+        const AUDIO = 0b00000001;
+        const VIDEO = 0b00000010;
+        const DATA = 0b00000100;
     }
 }
 
 #[derive(Debug)]
+pub struct Subscription {
+    pub conn: Weak<Connection>,
+    pub kind: ContentKind
+}
+
+#[derive(Debug)]
 pub struct ConnectionState {
-    pub role: ConnectionRole,
+    pub user_id: AtomicUserId
 }
 
-impl ConnectionState {
-    pub fn set_role(&mut self, role: ConnectionRole) -> Result<ConnectionRole, Box<Error+Send+Sync>> {
-        match self.role {
-            ConnectionRole::Unknown => { self.role = role; Ok(role) },
-            x if x == role => Ok(x),
-            _ => Err(From::from(format!("Connection role already configured as {:?}; can't set to {:?}.", self.role, role)))
-        }
-    }
-}
+pub type Connection = SessionHandle<ConnectionState>;
 
-pub type Connection = SessionHandle<Mutex<ConnectionState>>;
-
-#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Copy, Clone, Serialize, Deserialize)]
 pub enum MessageKind {
-    Join,
+    Join { user_id: Option<UserId>, role: ConnectionRole },
     List,
 }
 
+#[derive(Debug, Copy, Clone, Serialize, Deserialize)]
+pub enum ConnectionRole {
+    Publisher,
+    Subscriber { target_id: UserId }
+}
+
 impl MessageKind {
-    pub fn classify(json: &JsonValue) -> Result<Option<Self>, Box<Error+Send+Sync>> {
+    pub fn parse(json: JsonValue) -> Result<Option<Self>, MessageProcessingError> {
         if let Some(&JsonValue::String(ref kind)) = json.get("kind") {
-            return Self::parse(&kind).map(|k| Some(k))
+            match &**kind {
+                "list" => Ok(Some(MessageKind::List)),
+                "join" => {
+                    let user_id = match json.get("user_id") {
+                        None => Ok(None),
+                        Some(&JsonValue::Number(ref n)) if n.is_u64() => {
+                            Ok(Some(UserId::try_from(n.as_u64().unwrap() as usize)?))
+                        },
+                        _ => Err(MessageProcessingError::from("Invalid user ID specified."))
+                    }?;
+                    let role = match json.get("role") {
+                        Some(&JsonValue::String(ref r)) if r == "publisher" => Ok(ConnectionRole::Publisher),
+                        Some(&JsonValue::String(ref r)) if r == "subscriber" => {
+                            let target_id = match json.get("target_id") {
+                                Some(&JsonValue::Number(ref n)) if n.is_u64() => {
+                                    UserId::try_from(n.as_u64().unwrap() as usize)
+                                },
+                                _ => Err(From::from("Invalid target ID specified."))
+                            }?;
+                            Ok(ConnectionRole::Subscriber { target_id })
+                        }
+                        _ => Err(MessageProcessingError::from("Invalid role specified."))
+                    }?;
+                    Ok(Some(MessageKind::Join { user_id, role }))
+                },
+                _ => Err(From::from("Invalid message kind."))
+            }
         } else {
             Ok(None)
-        }
-    }
-
-    pub fn parse(name: &str) -> Result<Self, Box<Error+Send+Sync>> {
-        match name {
-            "join" => Ok(MessageKind::Join),
-            "list" => Ok(MessageKind::List),
-            _ => Err(From::from("Invalid message kind."))
         }
     }
 }
@@ -121,15 +139,17 @@ fn gateway_callbacks() -> &'static PluginCallbacks {
 #[derive(Debug)]
 struct State {
     pub connections: RwLock<Vec<Box<Arc<Connection>>>>,
+    pub subscriptions: RwLock<HashMap<UserId, Vec<Subscription>>>,
     pub message_channel: Mutex<Option<mpsc::SyncSender<RawMessage>>>,
-    pub next_user_id: AtomicIsize,
+    pub next_user_id: AtomicUserId,
 }
 
 lazy_static! {
     static ref STATE: State = State {
         connections: RwLock::new(Vec::new()),
+        subscriptions: RwLock::new(HashMap::new()),
         message_channel: Mutex::new(None),
-        next_user_id: AtomicIsize::new(0)
+        next_user_id: AtomicUserId::first()
     };
 }
 
@@ -164,21 +184,18 @@ extern "C" fn destroy() {
 
 extern "C" fn create_session(handle: *mut PluginHandle, _error: *mut c_int) {
     janus::log(LogLevel::Info, &format!("Initializing retproxy session {:?}...", unsafe { &*handle }));
-    let conn = Connection::establish(handle, Mutex::new(ConnectionState {
-        role: ConnectionRole::Unknown,
-    }));
+    let conn = Connection::establish(handle, ConnectionState {
+        user_id: AtomicUserId::empty()
+    });
     (*STATE.connections.write().unwrap()).push(conn);
 }
 
-fn notify_publishers(myself: *mut PluginHandle, msg: JanssonValue) -> Result<(), Box<Error+Send+Sync>> {
+fn notify(myself: UserId, msg: JanssonValue) -> Result<(), Box<Error+Send+Sync>> {
     let connections = STATE.connections.read().unwrap();
     let push_event = gateway_callbacks().push_event;
     for other in connections.iter() {
-        if other.handle != myself {
-            let other_state = other.lock().unwrap();
-            if let ConnectionRole::Publisher { .. } = other_state.role {
-                janus::get_result(push_event(other.handle, &mut PLUGIN, ptr::null(), msg.ptr, ptr::null_mut()))?
-            }
+        if other.user_id.load(Ordering::Relaxed) != Some(myself) {
+            janus::get_result(push_event(other.handle, &mut PLUGIN, ptr::null(), msg.ptr, ptr::null_mut()))?
         }
     }
     Ok(())
@@ -192,16 +209,19 @@ extern "C" fn destroy_session(handle: *mut PluginHandle, error: *mut c_int) {
         return
     }
     let conn = Arc::clone(Connection::from_ptr(handle));
-    let conn_role = conn.lock().unwrap().role;
+    let user_id = conn.user_id.load(Ordering::Relaxed);
     STATE.connections.write().unwrap().retain(|ref c| c.handle != handle);
 
-    // notify all other publishers that this connection is gone
-    if let ConnectionRole::Publisher { user_id } = conn_role {
-        let response = from_serde_json(json!({"event": "leave", "user_id": user_id}));
-        notify_publishers(ptr::null_mut(), response).unwrap_or_else(|e| {
-            janus::log(LogLevel::Err, &format!("Error notifying publishers on leave: {}", e));
-        });
-    };
+    if let Some(user_id) = user_id {
+        let user_exists = STATE.connections.read().unwrap().iter().any(|ref c| Some(user_id) == c.user_id.load(Ordering::Relaxed));
+        if !user_exists {
+            remove_publication(&user_id);
+            let response = from_serde_json(json!({"event": "leave", "user_id": user_id}));
+            notify(user_id, response).unwrap_or_else(|e| {
+                janus::log(LogLevel::Err, &format!("Error notifying publishers on leave: {}", e));
+            });
+        }
+    }
 }
 
 extern "C" fn query_session(handle: *mut PluginHandle) -> *mut RawJanssonValue {
@@ -220,82 +240,50 @@ extern "C" fn setup_media(handle: *mut PluginHandle) {
     }
 }
 
-extern "C" fn incoming_rtp(handle: *mut PluginHandle, video: c_int, buf: *mut c_char, len: c_int) {
-    if handle.is_null() {
-        janus::log(LogLevel::Err, "No session associated with handle!");
-        return;
-    }
-
-    let conn = Arc::clone(Connection::from_ptr(handle));
-    let conn_role = conn.lock().unwrap().role;
-    if let ConnectionRole::Publisher { user_id } = conn_role {
-        janus::log(LogLevel::Huge, &format!("RTP packet received from user ID {}.", user_id));
-        let relay_rtp = gateway_callbacks().relay_rtp;
-        let connections = STATE.connections.read().unwrap();
-        for other in connections.iter() {
-            let other_state = &*(other.lock().unwrap());
-            match other_state.role {
-                ConnectionRole::Subscriber { user_id: subscriber_id, target_id } if target_id == user_id => {
-                    // this connection is subscribing to us, forward our RTP
-                    janus::log(LogLevel::Huge, &format!("RTP packet forwarded from user ID {} to {}.", user_id, subscriber_id));
-                    relay_rtp(other.handle, video, buf, len);
-                },
-                _ => {
-                    // this connection doesn't care about our RTP
+fn relay<T>(from: *mut PluginHandle, kind: ContentKind, send: T) -> Result<(), Box<Error+Send+Sync>> where T: Fn(&Connection) {
+    if from.is_null() {
+        Err(From::from("No session associated with handle!"))
+    } else {
+        let conn = Arc::clone(Connection::from_ptr(from));
+        if let Some(user_id) = conn.user_id.load(Ordering::Relaxed) {
+            janus::log(LogLevel::Dbg, &format!("Packet of kind {:?} received from {:?}.", kind, user_id));
+            if let Some(subscriptions) = STATE.subscriptions.read().unwrap().get(&user_id) {
+                for subscription in subscriptions {
+                    if let Some(subscriber_conn) = subscription.conn.upgrade() {
+                        if subscription.kind.contains(kind) {
+                            janus::log(LogLevel::Dbg, &format!("Forwarding packet from {:?} to {:?}.", user_id, **subscriber_conn));
+                            send(subscriber_conn.as_ref());
+                        }
+                    }
                 }
             }
+            Ok(())
+        } else {
+            Err(From::from("No user ID associated with connection; can't relay."))
         }
-    } else {
-        janus::log(LogLevel::Err, "Received RTP from non-publisher. Discarding.");
+    }
+}
+
+extern "C" fn incoming_rtp(handle: *mut PluginHandle, video: c_int, buf: *mut c_char, len: c_int) {
+    let content_kind = if video == 1 { ContentKind::VIDEO } else { ContentKind::AUDIO };
+    let relay_rtp = gateway_callbacks().relay_rtp;
+    if let Err(e) = relay(handle, content_kind, |other| { relay_rtp(other.handle, video, buf, len); }) {
+        janus::log(LogLevel::Err, &format!("Discarding RTP packet: {}", e))
     }
 }
 
 extern "C" fn incoming_rtcp(handle: *mut PluginHandle, video: c_int, buf: *mut c_char, len: c_int) {
-    if handle.is_null() {
-        janus::log(LogLevel::Err, "No session associated with handle!");
-        return;
-    }
-
-    let conn = Arc::clone(Connection::from_ptr(handle));
-    let conn_role = conn.lock().unwrap().role;
-    if let ConnectionRole::Publisher { user_id } = conn_role {
-        janus::log(LogLevel::Huge, &format!("RTCP packet received from user ID {}.", user_id));
-        let relay_rtcp = gateway_callbacks().relay_rtcp;
-        let connections = STATE.connections.read().unwrap();
-        for other in connections.iter() {
-            let other_state = &*(other.lock().unwrap());
-            match other_state.role {
-                ConnectionRole::Subscriber { user_id: subscriber_id, target_id } if target_id == user_id => {
-                    // this connection is subscribing to us, forward our RTCP
-                    janus::log(LogLevel::Huge, &format!("RTCP packet forwarded from user ID {} to {}.", user_id, subscriber_id));
-                    relay_rtcp(other.handle, video, buf, len);
-                },
-                _ => {
-                    // this connection doesn't care about our RTCP
-                }
-            }
-        }
-    } else {
-        janus::log(LogLevel::Huge, "Received RTCP from non-publisher. Discarding.");
+    let content_kind = if video == 1 { ContentKind::VIDEO } else { ContentKind::AUDIO };
+    let relay_rtcp = gateway_callbacks().relay_rtcp;
+    if let Err(e) = relay(handle, content_kind, |other| { relay_rtcp(other.handle, video, buf, len); }) {
+        janus::log(LogLevel::Err, &format!("Discarding RTCP packet: {}", e))
     }
 }
 
 extern "C" fn incoming_data(handle: *mut PluginHandle, buf: *mut c_char, len: c_int) {
-    janus::log(LogLevel::Verb, "SCTP packet received!");
-    if handle.is_null() {
-        janus::log(LogLevel::Err, "No session associated with handle!");
-        return;
-    }
-
     let relay_data = gateway_callbacks().relay_data;
-    let connections = STATE.connections.read().unwrap();
-    for other in connections.iter() {
-        let other_state = &*(other.lock().unwrap());
-        if handle != other.handle {
-            if let ConnectionRole::Publisher { .. } = other_state.role {
-                relay_data(other.handle, buf, len);
-            }
-        }
+    if let Err(e) = relay(handle, ContentKind::DATA, |other| { relay_data(other.handle, buf, len); }) {
+        janus::log(LogLevel::Err, &format!("Discarding data packet: {}", e))
     }
 }
 
@@ -315,66 +303,65 @@ extern "C" fn hangup_media(handle: *mut PluginHandle) {
     }
 }
 
-fn generate_user_id() -> i64 {
-    STATE.next_user_id.fetch_add(1, Ordering::Relaxed) as i64
-}
-
-fn get_user_list() -> HashSet<i64> {
+fn get_user_list() -> HashSet<UserId> {
     let connections = STATE.connections.read().unwrap();
-    connections.iter().filter_map(|c| c.lock().unwrap().role.user_id()).collect()
+    connections.iter().filter_map(|c| c.user_id.load(Ordering::Relaxed)).collect()
 }
 
-fn handle_join(conn: &Connection, txn: *mut c_char, msg: JsonValue) -> MessageProcessingResult {
-    let user_id = match msg.get("user_id") {
-        None => Ok(generate_user_id()),
-        Some(&JsonValue::Number(ref existing_id)) if existing_id.is_i64() => {
-            Ok(existing_id.as_i64().unwrap())
-        },
-        _ => Err(MessageProcessingError::from("Invalid user ID specified (must be an integer.)")),
-    }?;
+fn add_subscription(conn: &Arc<Connection>, to: UserId, kind: ContentKind) {
+    let mut subscriptions = STATE.subscriptions.write().unwrap();
+    let subscribers = subscriptions.entry(to).or_insert_with(Vec::new);
+    subscribers.push(Subscription { conn: Arc::downgrade(conn), kind });
+}
 
-    let role = match msg.get("role") {
-        Some(&JsonValue::String(ref role_str)) if role_str == "publisher" => {
-            janus::log(LogLevel::Info, &format!("Configuring connection {:?} as publisher for {}.", conn, user_id));
-            conn.lock().unwrap().set_role(ConnectionRole::Publisher { user_id })
-        },
-        Some(&JsonValue::String(ref role_str)) if role_str == "subscriber" => {
-            if let Some(&JsonValue::Number(ref target_id)) = msg.get("target_id") {
-                janus::log(LogLevel::Info, &format!("Configuring connection {:?} as subscriber from {} to {}.", conn, user_id, target_id));
-                conn.lock().unwrap().set_role(ConnectionRole::Subscriber { user_id, target_id: target_id.as_i64().unwrap() })
-            } else {
-                Err(From::from("No target ID specified for subscription."))
+fn remove_publication(publisher: &UserId) {
+    STATE.subscriptions.write().unwrap().remove(publisher);
+}
+
+fn handle_join(conn: &Arc<Connection>, txn: *mut c_char, user_id: Option<UserId>, role: ConnectionRole) -> MessageProcessingResult {
+    let other_user_ids = get_user_list();
+    let user_id = match user_id {
+        Some(n) => { conn.user_id.store(n, Ordering::Relaxed); n },
+        None => {
+            let new_user_id = STATE.next_user_id.next(Ordering::Relaxed)
+                .expect("next_user_id is always a non-empty user ID.");
+            conn.user_id.store(new_user_id, Ordering::Relaxed);
+            let notification = from_serde_json(json!({ "event": "join_other", "user_id": new_user_id }));
+            if let Err(e) = notify(new_user_id, notification) {
+                janus::log(LogLevel::Err, &format!("Error sending notification for user join: {:?}", e))
+            }
+            new_user_id
+        }
+    };
+
+    match role {
+        ConnectionRole::Subscriber { target_id } => {
+            add_subscription(&conn, target_id, ContentKind::AUDIO | ContentKind::VIDEO);
+        }
+        ConnectionRole::Publisher => {
+            for other_user_id in &other_user_ids {
+                add_subscription(&conn, *other_user_id, ContentKind::DATA);
             }
         },
-        _ => Err(From::from("Unknown session kind specified (neither publisher nor subscriber.)"))
-    }?;
+    };
 
     let push_event = gateway_callbacks().push_event;
     let response = from_serde_json(json!({
         "event": "join_self",
         "user_id": user_id,
-        "user_ids": get_user_list()
+        "user_ids": other_user_ids
     }));
-    janus::get_result(push_event(conn.handle, &mut PLUGIN, txn, response.ptr, ptr::null_mut()))?;
-
-    if let ConnectionRole::Publisher { .. } = role {
-        notify_publishers(conn.handle, from_serde_json(json!({
-            "event": "join_other",
-            "user_id": user_id
-        })))
-    } else {
-        Ok(())
-    }
+    janus::get_result(push_event(conn.handle, &mut PLUGIN, txn, response.ptr, ptr::null_mut()))
 }
 
-fn handle_list(conn: &Connection, txn: *mut c_char) -> MessageProcessingResult {
+fn handle_list(conn: &Arc<Connection>, txn: *mut c_char) -> MessageProcessingResult {
     let user_list = get_user_list();
     let push_event = gateway_callbacks().push_event;
     let response = from_serde_json(json!({"user_ids": user_list}));
     janus::get_result(push_event(conn.handle, &mut PLUGIN, txn, response.ptr, ptr::null_mut()))
 }
 
-fn handle_jsep(conn: &Connection, txn: *mut c_char, jsep: JsonValue) -> MessageProcessingResult {
+fn handle_jsep(conn: &Arc<Connection>, txn: *mut c_char, jsep: JsonValue) -> MessageProcessingResult {
     if let Some(&JsonValue::String(ref sdp)) = jsep.get("sdp") {
         let offer = janus::sdp::parse_sdp(CString::new(&**sdp)?)?;
         let answer = answer_sdp!(offer, janus::sdp::OfferAnswerParameters::Video, 0);
@@ -396,17 +383,17 @@ fn handle_message_async(RawMessage { jsep, msg, txn, conn }: RawMessage) -> Mess
         Some(ref conn) => {
             // if we have a JSEP, handle it independently of whether or not we have a message
             jsep.map(to_serde_json).map_or(Ok(()), |jsep| {
-                janus::log(LogLevel::Verb, &format!("Processing JSEP on connection {:?}.", conn));
-                handle_jsep(conn, txn, jsep)
+                janus::log(LogLevel::Info, &format!("Processing JSEP on connection {:?}.", conn));
+                handle_jsep(&conn, txn, jsep)
             })?;
 
             // if we have a message, handle that
             msg.map(to_serde_json).map_or(Ok(()), |msg| {
-                MessageKind::classify(&msg).and_then(|x| {
-                    janus::log(LogLevel::Verb, &format!("Processing {:?} on connection {:?}.", x, conn));
+                MessageKind::parse(msg).and_then(|x| {
+                    janus::log(LogLevel::Info, &format!("Processing {:?} on connection {:?}.", x, conn));
                     match x {
-                        Some(MessageKind::Join) => handle_join(conn, txn, msg),
-                        Some(MessageKind::List) => handle_list(conn, txn),
+                        Some(MessageKind::List) => handle_list(&conn, txn),
+                        Some(MessageKind::Join { user_id, role }) => handle_join(&conn, txn, user_id, role),
                         None => Ok(())
                     }
                 })
