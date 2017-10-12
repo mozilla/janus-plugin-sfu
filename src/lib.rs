@@ -12,14 +12,21 @@ extern crate serde_json;
 extern crate serde_derive;
 
 mod userid;
+mod messages;
+mod sessions;
+mod subscriptions;
 
 use userid::{AtomicUserId, UserId};
+use messages::{JsepKind, MessageKind, SessionRole, RawMessage};
+use sessions::Session;
+use subscriptions::{ContentKind, Subscription, SubscriptionMap};
+
 use std::collections::{HashSet, HashMap};
 use std::error::Error;
 use std::ffi::CString;
 use std::os::raw::{c_char, c_int};
 use std::ptr;
-use std::sync::{mpsc, Arc, Mutex, RwLock, Weak};
+use std::sync::{mpsc, Arc, Mutex, RwLock};
 use std::sync::atomic::Ordering;
 use std::thread;
 use serde_json::Value as JsonValue;
@@ -27,82 +34,11 @@ use serde_json::Result as JsonResult;
 use janus::{JanssonValue, RawJanssonValue,
             LogLevel, Plugin, PluginCallbacks, PluginMetadata,
             PluginResultInfo, PluginResultType, PluginSession};
-use janus::session::SessionWrapper;
-
-/// Inefficiently converts a Jansson JSON value to a serde JSON value.
-pub fn to_serde_json(input: JanssonValue) -> JsonValue {
-    serde_json::from_str(&input.to_string(0)).unwrap()
-}
 
 /// Inefficiently converts a serde JSON value to a Jansson JSON value.
-pub fn from_serde_json(input: JsonValue) -> JanssonValue {
+fn from_serde_json(input: JsonValue) -> JanssonValue {
     JanssonValue::from_str(&input.to_string(), 0).unwrap()
 }
-
-bitflags! {
-    pub struct ContentKind: u8 {
-        const AUDIO = 0b00000001;
-        const VIDEO = 0b00000010;
-        const DATA = 0b00000100;
-    }
-}
-
-#[derive(Debug)]
-pub struct Subscription {
-    pub sess: Weak<Session>,
-    pub kind: ContentKind
-}
-
-#[derive(Debug)]
-pub struct SessionState {
-    pub user_id: AtomicUserId
-}
-
-impl Default for SessionState {
-    fn default() -> SessionState {
-        Self { user_id: AtomicUserId::empty() }
-    }
-}
-
-pub type Session = SessionWrapper<SessionState>;
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase", tag = "type")]
-pub enum JsepKind {
-    Offer { sdp: String },
-    Answer { sdp: String }
-}
-
-#[derive(Debug, Copy, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase", tag = "kind")]
-pub enum MessageKind {
-    Join { user_id: Option<UserId>, role: SessionRole },
-    List,
-}
-
-/// Shorthands for establishing a default set of subscriptions associated with a session.
-/// When joining as a publisher, you subscribe to the data of all other users.
-/// When joining as a subscriber, you subscribe to the audio and video of the target user.
-///
-/// These are designed to suit the current common case for clients, where one peer connection has all data
-/// traffic between Janus and the client and the client's outgoing A/V, and N additional connections
-/// carry audio and voice for N other clients.
-#[derive(Debug, Copy, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase", tag = "kind")]
-pub enum SessionRole {
-    Publisher,
-    Subscriber { target_id: UserId }
-}
-
-#[derive(Debug)]
-pub struct RawMessage {
-    pub sess: Weak<Session>,
-    pub txn: *mut c_char,
-    pub msg: Option<JanssonValue>,
-    pub jsep: Option<JanssonValue>,
-}
-
-unsafe impl Send for RawMessage {}
 
 type MessageProcessingError = Box<Error+Send+Sync>;
 type MessageProcessingResult = Result<(), MessageProcessingError>;
@@ -123,8 +59,6 @@ fn gateway_callbacks() -> &'static PluginCallbacks {
     unsafe { CALLBACKS.expect("Callbacks not initialized -- did plugin init() succeed?") }
 }
 
-type SubscriptionMap = HashMap<Option<UserId>, Vec<Subscription>>;
-
 #[derive(Debug)]
 struct State {
     pub sessions: RwLock<Vec<Box<Arc<Session>>>>,
@@ -142,6 +76,11 @@ lazy_static! {
     };
 }
 
+fn get_user_list() -> HashSet<UserId> {
+    let sessions = STATE.sessions.read().unwrap();
+    sessions.iter().filter_map(|c| c.user_id.load(Ordering::Relaxed)).collect()
+}
+
 fn notify(myself: UserId, msg: JanssonValue) -> Result<(), Box<Error+Send+Sync>> {
     let push_event = gateway_callbacks().push_event;
     for other in STATE.sessions.read().unwrap().iter() {
@@ -150,6 +89,24 @@ fn notify(myself: UserId, msg: JanssonValue) -> Result<(), Box<Error+Send+Sync>>
         }
     }
     Ok(())
+}
+
+fn push_error<T>(sess: &Session, txn: *mut c_char, err: Box<T>) -> MessageProcessingResult where T: Error+?Sized {
+    let response = from_serde_json(json!({ "error": format!("{}", err) }));
+    let push_event = gateway_callbacks().push_event;
+    janus::get_result(push_event(sess.handle, &mut PLUGIN, txn, response.ptr, ptr::null_mut()))
+}
+
+fn relay<T>(from: *mut PluginSession, kind: ContentKind, send: T) -> Result<(), Box<Error+Send+Sync>> where T: Fn(&Session) {
+    let sess = Session::from_ptr(from)?;
+    if let Some(user_id) = sess.user_id.load(Ordering::Relaxed) {
+        janus::log(LogLevel::Dbg, &format!("Packet of kind {:?} received from {:?}.", kind, user_id));
+        let subscriptions = STATE.subscriptions.read().unwrap();
+        subscriptions::for_each_subscriber(&subscriptions, user_id, kind, send);
+        Ok(())
+    } else {
+        Err(From::from("No user ID associated with connection; can't relay."))
+    }
 }
 
 extern "C" fn init(callbacks: *mut PluginCallbacks, _config_path: *const c_char) -> c_int {
@@ -206,7 +163,8 @@ extern "C" fn destroy_session(handle: *mut PluginSession, error: *mut c_int) {
             if let Some(user_id) = user_id {
                 let user_exists = STATE.sessions.read().unwrap().iter().any(|ref s| Some(user_id) == s.user_id.load(Ordering::Relaxed));
                 if !user_exists {
-                    remove_publication(user_id);
+                    let mut subscriptions = STATE.subscriptions.write().unwrap();
+                    subscriptions::unpublish(&mut subscriptions, user_id);
                     let response = from_serde_json(json!({"event": "leave", "user_id": user_id}));
                     notify(user_id, response).unwrap_or_else(|e| {
                         janus::log(LogLevel::Err, &format!("Error notifying publishers on leave: {}", e));
@@ -227,33 +185,6 @@ extern "C" fn query_session(_handle: *mut PluginSession) -> *mut RawJanssonValue
 
 extern "C" fn setup_media(_handle: *mut PluginSession) {
     janus::log(LogLevel::Verb, "WebRTC media is now available.");
-}
-
-fn get_subscribers(subscriptions: &SubscriptionMap, to: UserId, kind: ContentKind) -> Vec<&Subscription> {
-    let direct_subscriptions = subscriptions.get(&Some(to)).map(Vec::as_slice).unwrap_or(&[]).iter();
-    let global_subscriptions = subscriptions.get(&None).map(Vec::as_slice).unwrap_or(&[]).iter();
-    let all_subscriptions = direct_subscriptions.chain(global_subscriptions);
-    all_subscriptions.filter(|s| s.kind.contains(kind)).collect()
-}
-
-fn relay<T>(from: *mut PluginSession, kind: ContentKind, send: T) -> Result<(), Box<Error+Send+Sync>> where T: Fn(&Session) {
-    let sess = Session::from_ptr(from)?;
-    if let Some(user_id) = sess.user_id.load(Ordering::Relaxed) {
-        janus::log(LogLevel::Dbg, &format!("Packet of kind {:?} received from {:?}.", kind, user_id));
-        let subscriptions = STATE.subscriptions.read().unwrap();
-        let subscribers = get_subscribers(&subscriptions, user_id, kind);
-        for subscription in subscribers {
-            if let Some(subscriber_sess) = subscription.sess.upgrade() {
-                if subscription.kind.contains(kind) {
-                    janus::log(LogLevel::Dbg, &format!("Forwarding packet from {:?} to {:?}.", user_id, **subscriber_sess));
-                    send(subscriber_sess.as_ref());
-                }
-            }
-        }
-        Ok(())
-    } else {
-        Err(From::from("No user ID associated with connection; can't relay."))
-    }
 }
 
 extern "C" fn incoming_rtp(handle: *mut PluginSession, video: c_int, buf: *mut c_char, len: c_int) {
@@ -287,30 +218,19 @@ extern "C" fn hangup_media(_handle: *mut PluginSession) {
     janus::log(LogLevel::Verb, "Hanging up WebRTC media.");
 }
 
-fn get_user_list() -> HashSet<UserId> {
-    let sessions = STATE.sessions.read().unwrap();
-    sessions.iter().filter_map(|c| c.user_id.load(Ordering::Relaxed)).collect()
-}
-
-fn add_subscription(sess: &Arc<Session>, to: Option<UserId>, kind: ContentKind) {
-    let mut subscriptions = STATE.subscriptions.write().unwrap();
-    let subscribers = subscriptions.entry(to).or_insert_with(Vec::new);
-    subscribers.push(Subscription { sess: Arc::downgrade(sess), kind });
-}
-
-fn remove_publication(publisher: UserId) {
-    STATE.subscriptions.write().unwrap().remove(&Some(publisher));
-}
-
 fn handle_join(sess: &Arc<Session>, txn: *mut c_char, user_id: Option<UserId>, role: SessionRole) -> MessageProcessingResult {
     let other_user_ids = get_user_list();
 
     match role {
         SessionRole::Subscriber { target_id } => {
-            add_subscription(&sess, Some(target_id), ContentKind::AUDIO | ContentKind::VIDEO);
+            let mut subscriptions = STATE.subscriptions.write().unwrap();
+            let subscription = Subscription::new(&sess, ContentKind::AUDIO | ContentKind::VIDEO);
+            subscriptions::subscribe(&mut subscriptions, subscription, Some(target_id));
         }
         SessionRole::Publisher => {
-            add_subscription(&sess, None, ContentKind::DATA);
+            let mut subscriptions = STATE.subscriptions.write().unwrap();
+            let subscription = Subscription::new(&sess, ContentKind::DATA);
+            subscriptions::subscribe(&mut subscriptions, subscription, None);
         },
     };
 
@@ -354,12 +274,6 @@ fn handle_offer(sess: &Arc<Session>, txn: *mut c_char, sdp: String) -> MessagePr
     }));
     let push_event = gateway_callbacks().push_event;
     janus::get_result(push_event(sess.handle, &mut PLUGIN, txn, answer_msg.ptr, answer_jsep.ptr))
-}
-
-fn push_error<T>(sess: &Session, txn: *mut c_char, err: Box<T>) -> MessageProcessingResult where T: Error+?Sized {
-    let response = from_serde_json(json!({ "error": format!("{}", err) }));
-    let push_event = gateway_callbacks().push_event;
-    janus::get_result(push_event(sess.handle, &mut PLUGIN, txn, response.ptr, ptr::null_mut()))
 }
 
 fn handle_message_async(RawMessage { jsep, msg, txn, sess }: RawMessage) -> MessageProcessingResult {

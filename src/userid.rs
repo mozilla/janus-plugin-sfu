@@ -1,3 +1,5 @@
+/// Types for representing cross-session user IDs.
+
 use std::error::Error;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
