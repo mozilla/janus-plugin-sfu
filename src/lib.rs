@@ -58,6 +58,12 @@ pub struct ConnectionState {
     pub user_id: AtomicUserId
 }
 
+impl Default for ConnectionState {
+    fn default() -> ConnectionState {
+        Self { user_id: AtomicUserId::empty() }
+    }
+}
+
 pub type Connection = SessionHandle<ConnectionState>;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -127,43 +133,6 @@ lazy_static! {
     };
 }
 
-extern "C" fn init(callbacks: *mut PluginCallbacks, config_path: *const c_char) -> c_int {
-    if callbacks.is_null() || config_path.is_null() {
-        janus::log(LogLevel::Err, "Invalid parameters for retproxy plugin initialization!");
-        return -1;
-    }
-
-    unsafe { CALLBACKS = callbacks.as_ref() };
-
-    let (messages_tx, messages_rx) = mpsc::sync_channel(0);
-    *(STATE.message_channel.lock().unwrap()) = Some(messages_tx);
-
-    thread::spawn(move || {
-        janus::log(LogLevel::Verb, "Message processing thread is alive.");
-        for msg in messages_rx.iter() {
-            janus::log(LogLevel::Verb, &format!("Processing message: {:?}", msg));
-            handle_message_async(msg).err().map(|e| {
-                janus::log(LogLevel::Err, &format!("Error processing message: {}", e));
-            });
-        }
-    });
-
-    janus::log(LogLevel::Info, "Janus retproxy plugin initialized!");
-    0
-}
-
-extern "C" fn destroy() {
-    janus::log(LogLevel::Info, "Janus retproxy plugin destroyed!");
-}
-
-extern "C" fn create_session(handle: *mut PluginHandle, _error: *mut c_int) {
-    janus::log(LogLevel::Info, &format!("Initializing retproxy session {:?}...", unsafe { &*handle }));
-    let conn = Connection::establish(handle, ConnectionState {
-        user_id: AtomicUserId::empty()
-    });
-    (*STATE.connections.write().unwrap()).push(conn);
-}
-
 fn notify(myself: UserId, msg: JanssonValue) -> Result<(), Box<Error+Send+Sync>> {
     let connections = STATE.connections.read().unwrap();
     let push_event = gateway_callbacks().push_event;
@@ -175,66 +144,100 @@ fn notify(myself: UserId, msg: JanssonValue) -> Result<(), Box<Error+Send+Sync>>
     Ok(())
 }
 
-extern "C" fn destroy_session(handle: *mut PluginHandle, error: *mut c_int) {
-    janus::log(LogLevel::Info, "Destroying retproxy session...");
-    if handle.is_null() {
-        janus::log(LogLevel::Err, "No session associated with handle!");
-        unsafe { *error = -1 };
-        return
-    }
-    let conn = Arc::clone(Connection::from_ptr(handle));
-    let user_id = conn.user_id.load(Ordering::Relaxed);
-    STATE.connections.write().unwrap().retain(|ref c| c.handle != handle);
+extern "C" fn init(callbacks: *mut PluginCallbacks, _config_path: *const c_char) -> c_int {
+    match unsafe { callbacks.as_ref() } {
+        Some(c) => {
+            unsafe { CALLBACKS = Some(c) };
+            let (messages_tx, messages_rx) = mpsc::sync_channel(0);
+            *(STATE.message_channel.lock().unwrap()) = Some(messages_tx);
 
-    if let Some(user_id) = user_id {
-        let user_exists = STATE.connections.read().unwrap().iter().any(|ref c| Some(user_id) == c.user_id.load(Ordering::Relaxed));
-        if !user_exists {
-            remove_publication(&user_id);
-            let response = from_serde_json(json!({"event": "leave", "user_id": user_id}));
-            notify(user_id, response).unwrap_or_else(|e| {
-                janus::log(LogLevel::Err, &format!("Error notifying publishers on leave: {}", e));
+            thread::spawn(move || {
+                janus::log(LogLevel::Verb, "Message processing thread is alive.");
+                for msg in messages_rx.iter() {
+                    janus::log(LogLevel::Verb, &format!("Processing message: {:?}", msg));
+                    handle_message_async(msg).err().map(|e| {
+                        janus::log(LogLevel::Err, &format!("Error processing message: {}", e));
+                    });
+                }
             });
+
+            janus::log(LogLevel::Info, "Janus retproxy plugin initialized!");
+            0
+        },
+        None => {
+            janus::log(LogLevel::Err, "Invalid parameters for retproxy plugin initialization!");
+            -1
         }
     }
 }
 
-extern "C" fn query_session(handle: *mut PluginHandle) -> *mut RawJanssonValue {
-    if handle.is_null() {
-        janus::log(LogLevel::Err, "No session associated with handle!");
-        return ptr::null_mut();
+extern "C" fn destroy() {
+    janus::log(LogLevel::Info, "Janus retproxy plugin destroyed!");
+}
+
+extern "C" fn create_session(handle: *mut PluginHandle, error: *mut c_int) {
+    match Connection::associate(handle, Default::default()) {
+        Ok(conn) => {
+            janus::log(LogLevel::Info, &format!("Initializing retproxy session {:?}...", conn));
+            (*STATE.connections.write().unwrap()).push(conn);
+        },
+        Err(e) => {
+            janus::log(LogLevel::Err, &format!("{}", e));
+            unsafe { *error = -1 };
+        }
     }
+}
+
+extern "C" fn destroy_session(handle: *mut PluginHandle, error: *mut c_int) {
+    match Connection::from_ptr(handle) {
+        Ok(conn) => {
+            janus::log(LogLevel::Info, &format!("Destroying retproxy session {:?}...", conn));
+            let user_id = conn.user_id.load(Ordering::Relaxed);
+            STATE.connections.write().unwrap().retain(|ref c| c.handle != handle);
+
+            if let Some(user_id) = user_id {
+                let user_exists = STATE.connections.read().unwrap().iter().any(|ref c| Some(user_id) == c.user_id.load(Ordering::Relaxed));
+                if !user_exists {
+                    remove_publication(&user_id);
+                    let response = from_serde_json(json!({"event": "leave", "user_id": user_id}));
+                    notify(user_id, response).unwrap_or_else(|e| {
+                        janus::log(LogLevel::Err, &format!("Error notifying publishers on leave: {}", e));
+                    });
+                }
+            }
+        },
+        Err(e) => {
+            janus::log(LogLevel::Err, &format!("{}", e));
+            unsafe { *error = -1 };
+        }
+    }
+}
+
+extern "C" fn query_session(_handle: *mut PluginHandle) -> *mut RawJanssonValue {
     ptr::null_mut()
 }
 
-extern "C" fn setup_media(handle: *mut PluginHandle) {
+extern "C" fn setup_media(_handle: *mut PluginHandle) {
     janus::log(LogLevel::Verb, "WebRTC media is now available.");
-    if handle.is_null() {
-        janus::log(LogLevel::Err, "No session associated with handle!");
-        return;
-    }
 }
 
 fn relay<T>(from: *mut PluginHandle, kind: ContentKind, send: T) -> Result<(), Box<Error+Send+Sync>> where T: Fn(&Connection) {
-    if from.is_null() {
-        Err(From::from("No session associated with handle!"))
-    } else {
-        let conn = Arc::clone(Connection::from_ptr(from));
-        if let Some(user_id) = conn.user_id.load(Ordering::Relaxed) {
-            janus::log(LogLevel::Dbg, &format!("Packet of kind {:?} received from {:?}.", kind, user_id));
-            if let Some(subscriptions) = STATE.subscriptions.read().unwrap().get(&user_id) {
-                for subscription in subscriptions {
-                    if let Some(subscriber_conn) = subscription.conn.upgrade() {
-                        if subscription.kind.contains(kind) {
-                            janus::log(LogLevel::Dbg, &format!("Forwarding packet from {:?} to {:?}.", user_id, **subscriber_conn));
-                            send(subscriber_conn.as_ref());
-                        }
+    let conn = Connection::from_ptr(from)?;
+    if let Some(user_id) = conn.user_id.load(Ordering::Relaxed) {
+        janus::log(LogLevel::Dbg, &format!("Packet of kind {:?} received from {:?}.", kind, user_id));
+        if let Some(subscriptions) = STATE.subscriptions.read().unwrap().get(&user_id) {
+            for subscription in subscriptions {
+                if let Some(subscriber_conn) = subscription.conn.upgrade() {
+                    if subscription.kind.contains(kind) {
+                        janus::log(LogLevel::Dbg, &format!("Forwarding packet from {:?} to {:?}.", user_id, **subscriber_conn));
+                        send(subscriber_conn.as_ref());
                     }
                 }
             }
-            Ok(())
-        } else {
-            Err(From::from("No user ID associated with connection; can't relay."))
         }
+        Ok(())
+    } else {
+        Err(From::from("No user ID associated with connection; can't relay."))
     }
 }
 
@@ -261,20 +264,12 @@ extern "C" fn incoming_data(handle: *mut PluginHandle, buf: *mut c_char, len: c_
     }
 }
 
-extern "C" fn slow_link(handle: *mut PluginHandle, _uplink: c_int, _video: c_int) {
+extern "C" fn slow_link(_handle: *mut PluginHandle, _uplink: c_int, _video: c_int) {
     janus::log(LogLevel::Verb, "Slow link message received!");
-    if handle.is_null() {
-        janus::log(LogLevel::Err, "No session associated with handle!");
-        return;
-    }
 }
 
-extern "C" fn hangup_media(handle: *mut PluginHandle) {
+extern "C" fn hangup_media(_handle: *mut PluginHandle) {
     janus::log(LogLevel::Verb, "Hanging up WebRTC media.");
-    if handle.is_null() {
-        janus::log(LogLevel::Err, "No session associated with handle!");
-        return;
-    }
 }
 
 fn get_user_list() -> HashSet<UserId> {
@@ -397,17 +392,18 @@ extern "C" fn handle_message(handle: *mut PluginHandle, transaction: *mut c_char
                              message: *mut RawJanssonValue, jsep: *mut RawJanssonValue) -> *mut PluginResultInfo {
     janus::log(LogLevel::Verb, "Queueing signalling message.");
     Box::into_raw(
-        if handle.is_null() {
-            janus::create_result(PluginResultType::JANUS_PLUGIN_ERROR, cstr!("No handle associated with message!"), None)
-        } else {
-            let msg = RawMessage {
-                conn: Arc::downgrade(Connection::from_ptr(handle)),
-                txn: transaction,
-                msg: JanssonValue::new(message),
-                jsep: JanssonValue::new(jsep)
-            };
-            STATE.message_channel.lock().unwrap().as_ref().unwrap().send(msg).ok();
-            janus::create_result(PluginResultType::JANUS_PLUGIN_OK_WAIT, cstr!("Processing."), None)
+        match Connection::from_ptr(handle) {
+            Ok(conn) => {
+                let msg = RawMessage {
+                    conn: Arc::downgrade(&conn),
+                    txn: transaction,
+                    msg: JanssonValue::new(message),
+                    jsep: JanssonValue::new(jsep)
+                };
+                STATE.message_channel.lock().unwrap().as_ref().unwrap().send(msg).ok();
+                janus::create_result(PluginResultType::JANUS_PLUGIN_OK_WAIT, cstr!("Processing."), None)
+            },
+            Err(_) => janus::create_result(PluginResultType::JANUS_PLUGIN_ERROR, cstr!("No handle associated with message!"), None)
         }
     )
 }
