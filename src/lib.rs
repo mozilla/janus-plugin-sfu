@@ -80,6 +80,13 @@ pub enum MessageKind {
     List,
 }
 
+/// Shorthands for establishing a default set of subscriptions associated with a session.
+/// When joining as a publisher, you subscribe to the data of all other users.
+/// When joining as a subscriber, you subscribe to the audio and video of the target user.
+///
+/// These are designed to suit the current common case for clients, where one peer connection has all data
+/// traffic between Janus and the client and the client's outgoing A/V, and N additional connections
+/// carry audio and voice for N other clients.
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase", tag = "kind")]
 pub enum SessionRole {
@@ -116,10 +123,12 @@ fn gateway_callbacks() -> &'static PluginCallbacks {
     unsafe { CALLBACKS.expect("Callbacks not initialized -- did plugin init() succeed?") }
 }
 
+type SubscriptionMap = HashMap<Option<UserId>, Vec<Subscription>>;
+
 #[derive(Debug)]
 struct State {
     pub sessions: RwLock<Vec<Box<Arc<Session>>>>,
-    pub subscriptions: RwLock<HashMap<UserId, Vec<Subscription>>>,
+    pub subscriptions: RwLock<SubscriptionMap>,
     pub message_channel: Mutex<Option<mpsc::SyncSender<RawMessage>>>,
     pub next_user_id: AtomicUserId,
 }
@@ -197,7 +206,7 @@ extern "C" fn destroy_session(handle: *mut PluginSession, error: *mut c_int) {
             if let Some(user_id) = user_id {
                 let user_exists = STATE.sessions.read().unwrap().iter().any(|ref s| Some(user_id) == s.user_id.load(Ordering::Relaxed));
                 if !user_exists {
-                    remove_publication(&user_id);
+                    remove_publication(user_id);
                     let response = from_serde_json(json!({"event": "leave", "user_id": user_id}));
                     notify(user_id, response).unwrap_or_else(|e| {
                         janus::log(LogLevel::Err, &format!("Error notifying publishers on leave: {}", e));
@@ -220,17 +229,24 @@ extern "C" fn setup_media(_handle: *mut PluginSession) {
     janus::log(LogLevel::Verb, "WebRTC media is now available.");
 }
 
+fn get_subscribers(subscriptions: &SubscriptionMap, to: UserId, kind: ContentKind) -> Vec<&Subscription> {
+    let direct_subscriptions = subscriptions.get(&Some(to)).map(Vec::as_slice).unwrap_or(&[]).iter();
+    let global_subscriptions = subscriptions.get(&None).map(Vec::as_slice).unwrap_or(&[]).iter();
+    let all_subscriptions = direct_subscriptions.chain(global_subscriptions);
+    all_subscriptions.filter(|s| s.kind.contains(kind)).collect()
+}
+
 fn relay<T>(from: *mut PluginSession, kind: ContentKind, send: T) -> Result<(), Box<Error+Send+Sync>> where T: Fn(&Session) {
     let sess = Session::from_ptr(from)?;
     if let Some(user_id) = sess.user_id.load(Ordering::Relaxed) {
         janus::log(LogLevel::Dbg, &format!("Packet of kind {:?} received from {:?}.", kind, user_id));
-        if let Some(subscriptions) = STATE.subscriptions.read().unwrap().get(&user_id) {
-            for subscription in subscriptions {
-                if let Some(subscriber_sess) = subscription.sess.upgrade() {
-                    if subscription.kind.contains(kind) {
-                        janus::log(LogLevel::Dbg, &format!("Forwarding packet from {:?} to {:?}.", user_id, **subscriber_sess));
-                        send(subscriber_sess.as_ref());
-                    }
+        let subscriptions = STATE.subscriptions.read().unwrap();
+        let subscribers = get_subscribers(&subscriptions, user_id, kind);
+        for subscription in subscribers {
+            if let Some(subscriber_sess) = subscription.sess.upgrade() {
+                if subscription.kind.contains(kind) {
+                    janus::log(LogLevel::Dbg, &format!("Forwarding packet from {:?} to {:?}.", user_id, **subscriber_sess));
+                    send(subscriber_sess.as_ref());
                 }
             }
         }
@@ -276,14 +292,14 @@ fn get_user_list() -> HashSet<UserId> {
     sessions.iter().filter_map(|c| c.user_id.load(Ordering::Relaxed)).collect()
 }
 
-fn add_subscription(sess: &Arc<Session>, to: UserId, kind: ContentKind) {
+fn add_subscription(sess: &Arc<Session>, to: Option<UserId>, kind: ContentKind) {
     let mut subscriptions = STATE.subscriptions.write().unwrap();
     let subscribers = subscriptions.entry(to).or_insert_with(Vec::new);
     subscribers.push(Subscription { sess: Arc::downgrade(sess), kind });
 }
 
-fn remove_publication(publisher: &UserId) {
-    STATE.subscriptions.write().unwrap().remove(publisher);
+fn remove_publication(publisher: UserId) {
+    STATE.subscriptions.write().unwrap().remove(&Some(publisher));
 }
 
 fn handle_join(sess: &Arc<Session>, txn: *mut c_char, user_id: Option<UserId>, role: SessionRole) -> MessageProcessingResult {
@@ -291,12 +307,10 @@ fn handle_join(sess: &Arc<Session>, txn: *mut c_char, user_id: Option<UserId>, r
 
     match role {
         SessionRole::Subscriber { target_id } => {
-            add_subscription(&sess, target_id, ContentKind::AUDIO | ContentKind::VIDEO);
+            add_subscription(&sess, Some(target_id), ContentKind::AUDIO | ContentKind::VIDEO);
         }
         SessionRole::Publisher => {
-            for other_user_id in &other_user_ids {
-                add_subscription(&sess, *other_user_id, ContentKind::DATA);
-            }
+            add_subscription(&sess, None, ContentKind::DATA);
         },
     };
 
