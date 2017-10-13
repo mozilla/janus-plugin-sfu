@@ -40,8 +40,7 @@ fn from_serde_json(input: JsonValue) -> JanssonValue {
     JanssonValue::from_str(&input.to_string(), 0).unwrap()
 }
 
-type MessageProcessingError = Box<Error+Send+Sync>;
-type MessageProcessingResult = Result<(), MessageProcessingError>;
+type MessageProcessingResult = Result<(), Box<Error>>;
 
 const METADATA: PluginMetadata = PluginMetadata {
     version: 1,
@@ -81,9 +80,9 @@ fn get_user_list() -> HashSet<UserId> {
     sessions.iter().filter_map(|c| c.user_id.load(Ordering::Relaxed)).collect()
 }
 
-fn notify(myself: UserId, msg: JanssonValue) -> Result<(), Box<Error+Send+Sync>> {
+fn notify(myself: UserId, msg: JanssonValue) -> Result<(), Box<Error>> {
     let push_event = gateway_callbacks().push_event;
-    for other in STATE.sessions.read().unwrap().iter() {
+    for other in STATE.sessions.read()?.iter() {
         if other.user_id.load(Ordering::Relaxed) != Some(myself) {
             janus::get_result(push_event(other.handle, &mut PLUGIN, ptr::null(), msg.ptr, ptr::null_mut()))?
         }
@@ -91,17 +90,17 @@ fn notify(myself: UserId, msg: JanssonValue) -> Result<(), Box<Error+Send+Sync>>
     Ok(())
 }
 
-fn push_error<T>(sess: &Session, txn: *mut c_char, err: Box<T>) -> MessageProcessingResult where T: Error+?Sized {
+fn push_error(sess: &Session, txn: *mut c_char, err: Box<Error>) -> MessageProcessingResult {
     let response = from_serde_json(json!({ "error": format!("{}", err) }));
     let push_event = gateway_callbacks().push_event;
     janus::get_result(push_event(sess.handle, &mut PLUGIN, txn, response.ptr, ptr::null_mut()))
 }
 
-fn relay<T>(from: *mut PluginSession, kind: ContentKind, send: T) -> Result<(), Box<Error+Send+Sync>> where T: Fn(&Session) {
+fn relay<T>(from: *mut PluginSession, kind: ContentKind, send: T) -> Result<(), Box<Error>> where T: Fn(&Session) {
     let sess = Session::from_ptr(from)?;
     if let Some(user_id) = sess.user_id.load(Ordering::Relaxed) {
         janus::log(LogLevel::Dbg, &format!("Packet of kind {:?} received from {:?}.", kind, user_id));
-        let subscriptions = STATE.subscriptions.read().unwrap();
+        let subscriptions = STATE.subscriptions.read()?;
         subscriptions::for_each_subscriber(&subscriptions, user_id, kind, send);
         Ok(())
     } else {
@@ -223,12 +222,12 @@ fn handle_join(sess: &Arc<Session>, txn: *mut c_char, user_id: Option<UserId>, r
 
     match role {
         SessionRole::Subscriber { target_id } => {
-            let mut subscriptions = STATE.subscriptions.write().unwrap();
+            let mut subscriptions = STATE.subscriptions.write()?;
             let subscription = Subscription::new(&sess, ContentKind::AUDIO | ContentKind::VIDEO);
             subscriptions::subscribe(&mut subscriptions, subscription, Some(target_id));
         }
         SessionRole::Publisher => {
-            let mut subscriptions = STATE.subscriptions.write().unwrap();
+            let mut subscriptions = STATE.subscriptions.write()?;
             let subscription = Subscription::new(&sess, ContentKind::DATA);
             subscriptions::subscribe(&mut subscriptions, subscription, None);
         },
@@ -287,7 +286,7 @@ fn handle_message_async(RawMessage { jsep, msg, txn, sess }: RawMessage) -> Mess
                     match kind {
                         JsepKind::Offer { sdp } => handle_offer(&sess, txn, sdp),
                         JsepKind::Answer { .. } => {
-                            push_error(sess, txn, MessageProcessingError::from("JSEP answers not yet supported."))
+                            push_error(sess, txn, From::from("JSEP answers not yet supported."))
                         }
                     }
                 },
