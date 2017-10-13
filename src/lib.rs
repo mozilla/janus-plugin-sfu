@@ -45,10 +45,10 @@ type MessageProcessingResult = Result<(), Box<Error>>;
 const METADATA: PluginMetadata = PluginMetadata {
     version: 1,
     version_str: cstr!("0.0.1"),
-    description: cstr!("Janus WebRTC reverse proxy for Reticulum."),
-    name: cstr!("Janus retproxy plugin"),
+    description: cstr!("Janus SFU for game networking."),
+    name: cstr!("Janus SFU plugin"),
     author: cstr!("Marshall Quander"),
-    package: cstr!("janus.plugin.retproxy"),
+    package: cstr!("janus.plugin.sfu"),
 };
 
 static mut CALLBACKS: Option<&PluginCallbacks> = None;
