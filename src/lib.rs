@@ -19,7 +19,7 @@ mod subscriptions;
 use userid::{AtomicUserId, UserId};
 use messages::{JsepKind, MessageKind, SessionRole, RawMessage};
 use sessions::Session;
-use subscriptions::{ContentKind, Subscription, SubscriptionMap};
+use subscriptions::{ContentKind, SubscriptionMap};
 
 use std::collections::{HashSet, HashMap};
 use std::error::Error;
@@ -104,7 +104,11 @@ fn relay<T>(from: *mut PluginSession, kind: ContentKind, send: T) -> Result<(), 
     if let Some(user_id) = sess.user_id.load(Ordering::Relaxed) {
         janus::log(LogLevel::Dbg, &format!("Packet of kind {:?} received from {:?}.", kind, user_id));
         let subscriptions = STATE.subscriptions.read()?;
-        subscriptions::for_each_subscriber(&subscriptions, user_id, kind, send);
+        subscriptions::for_each_subscriber(&subscriptions, user_id, kind, |s| {
+            if Some(user_id) != s.user_id.load(Ordering::Relaxed) {
+                send(s)
+            }
+        });
         Ok(())
     } else {
         Err(From::from("No user ID associated with connection; can't relay."))
@@ -128,24 +132,24 @@ extern "C" fn init(callbacks: *mut PluginCallbacks, _config_path: *const c_char)
                 }
             });
 
-            janus::log(LogLevel::Info, "Janus retproxy plugin initialized!");
+            janus::log(LogLevel::Info, "Janus SFU plugin initialized!");
             0
         },
         None => {
-            janus::log(LogLevel::Err, "Invalid parameters for retproxy plugin initialization!");
+            janus::log(LogLevel::Err, "Invalid parameters for SFU plugin initialization!");
             -1
         }
     }
 }
 
 extern "C" fn destroy() {
-    janus::log(LogLevel::Info, "Janus retproxy plugin destroyed!");
+    janus::log(LogLevel::Info, "Janus SFU plugin destroyed!");
 }
 
 extern "C" fn create_session(handle: *mut PluginSession, error: *mut c_int) {
     match Session::associate(handle, Default::default()) {
         Ok(sess) => {
-            janus::log(LogLevel::Info, &format!("Initializing retproxy session {:?}...", sess));
+            janus::log(LogLevel::Info, &format!("Initializing SFU session {:?}...", sess));
             STATE.sessions.write().unwrap().push(sess);
         },
         Err(e) => {
@@ -158,7 +162,7 @@ extern "C" fn create_session(handle: *mut PluginSession, error: *mut c_int) {
 extern "C" fn destroy_session(handle: *mut PluginSession, error: *mut c_int) {
     match Session::from_ptr(handle) {
         Ok(sess) => {
-            janus::log(LogLevel::Info, &format!("Destroying retproxy session {:?}...", sess));
+            janus::log(LogLevel::Info, &format!("Destroying SFU session {:?}...", sess));
             let user_id = sess.user_id.load(Ordering::Relaxed);
             STATE.sessions.write().unwrap().retain(|ref s| s.handle != handle);
 
@@ -222,15 +226,15 @@ extern "C" fn hangup_media(_handle: *mut PluginSession) {
 
 fn handle_join(sess: &Arc<Session>, user_id: Option<UserId>, role: SessionRole) -> MessageProcessingResult {
     match role {
-        SessionRole::Subscriber { target_id } => {
+        SessionRole::Subscriber { publisher_id } => {
             let mut subscriptions = STATE.subscriptions.write()?;
-            let subscription = Subscription::new(&sess, ContentKind::AUDIO | ContentKind::VIDEO);
-            subscriptions::subscribe(&mut subscriptions, subscription, Some(target_id));
+            let kind = ContentKind::AUDIO | ContentKind::VIDEO;
+            subscriptions::subscribe(&mut subscriptions, &sess, kind, Some(publisher_id));
         }
         SessionRole::Publisher => {
             let mut subscriptions = STATE.subscriptions.write()?;
-            let subscription = Subscription::new(&sess, ContentKind::DATA);
-            subscriptions::subscribe(&mut subscriptions, subscription, None);
+            let kind = ContentKind::DATA;
+            subscriptions::subscribe(&mut subscriptions, &sess, kind, None);
         },
     };
 
@@ -256,6 +260,28 @@ fn handle_join(sess: &Arc<Session>, user_id: Option<UserId>, role: SessionRole) 
 
 fn handle_list() -> MessageProcessingResult {
     Ok(json!({ "user_ids": get_user_list() }))
+}
+
+fn handle_subscribe(sess: &Arc<Session>, publisher: Option<UserId>, kind: u8) -> MessageProcessingResult {
+    match ContentKind::from_bits(kind) {
+        Some(k) => {
+            let mut subscriptions = STATE.subscriptions.write()?;
+            subscriptions::subscribe(&mut subscriptions, &sess, k, publisher);
+            Ok(json!({}))
+        },
+        None => Err(From::from("Invalid content kind."))
+    }
+}
+
+fn handle_unsubscribe(sess: &Arc<Session>, publisher: Option<UserId>, kind: u8) -> MessageProcessingResult {
+    match ContentKind::from_bits(kind) {
+        Some(k) => {
+            let mut subscriptions = STATE.subscriptions.write()?;
+            subscriptions::unsubscribe(&mut subscriptions, &sess, k, publisher);
+            Ok(json!({}))
+        },
+        None => Err(From::from("Invalid content kind."))
+    }
 }
 
 fn handle_offer(sess: &Arc<Session>, txn: *mut c_char, sdp: String) -> Result<(), Box<Error>> {
@@ -298,6 +324,8 @@ fn handle_message_async(RawMessage { jsep, msg, txn, sess }: RawMessage) -> Resu
                     match kind {
                         MessageKind::List => handle_list(),
                         MessageKind::Join { user_id, role } => handle_join(&sess, user_id, role),
+                        MessageKind::Subscribe { publisher_id, content_kind } => handle_subscribe(&sess, publisher_id, content_kind),
+                        MessageKind::Unsubscribe { publisher_id, content_kind } => handle_unsubscribe(&sess, publisher_id, content_kind)
                     }
                 },
                 Err(e) => Err(Box::new(e))
@@ -393,11 +421,31 @@ mod tests {
 
         #[test]
         fn parse_subscriber() {
-            let json = r#"{"kind": "join", "user_id": 1, "role": {"kind": "subscriber", "target_id": 2}}"#;
+            let json = r#"{"kind": "join", "user_id": 1, "role": {"kind": "subscriber", "publisher_id": 2}}"#;
             let result: MessageKind = serde_json::from_str(json).unwrap();
             assert_eq!(result, MessageKind::Join {
                 user_id: Some(UserId::try_from(1).unwrap()),
-                role: SessionRole::Subscriber { target_id: UserId::try_from(2).unwrap() }
+                role: SessionRole::Subscriber { publisher_id: UserId::try_from(2).unwrap() }
+            });
+        }
+
+        #[test]
+        fn parse_subscribe() {
+            let json = r#"{"kind": "subscribe", "publisher_id": 2, "content_kind": 1}"#;
+            let result: MessageKind = serde_json::from_str(json).unwrap();
+            assert_eq!(result, MessageKind::Subscribe {
+                publisher_id: Some(UserId::try_from(2).unwrap()),
+                content_kind: 1
+            });
+        }
+
+        #[test]
+        fn parse_unsubscribe() {
+            let json = r#"{"kind": "unsubscribe", "content_kind": 2}"#;
+            let result: MessageKind = serde_json::from_str(json).unwrap();
+            assert_eq!(result, MessageKind::Unsubscribe {
+                publisher_id: None,
+                content_kind: 2
             });
         }
     }

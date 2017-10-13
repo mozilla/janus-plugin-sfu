@@ -1,6 +1,6 @@
 var janus = null;
 var publisher = null;
-var id = "retproxy-" + Janus.randomString(12);
+var id = "sfu-" + Janus.randomString(12);
 var user_id = null;
 
 function getQueryParams(qs) {
@@ -37,7 +37,7 @@ function init() {
 	success: function() {
 	    // Attach to echo test plugin
 	    janus.attach({
-		plugin: "janus.plugin.retproxy",
+		plugin: "janus.plugin.sfu",
                 opaqueId: id,
 		success: function(pluginHandle) {
 		    publisher = pluginHandle;
@@ -78,9 +78,9 @@ function init() {
 		onmessage: function(msg, jsep) {
 		    Janus.debug(" ::: Got a message :::");
 		    Janus.debug(JSON.stringify(msg));
-                    if(msg["event"] === "join_self") {
-                        user_id = msg["user_id"];
-                        var user_ids = msg["user_ids"];
+                    if(msg["data"] && msg.data["user_id"]) {
+                        user_id = msg.data["user_id"];
+                        var user_ids = msg.data["user_ids"];
                         for (var i = 0; i < user_ids.length; i++) {
                             var target_id = user_ids[i];
                             if (user_id !== target_id) {
@@ -89,7 +89,7 @@ function init() {
                             }
                         }
                     }
-                    if(msg["event"] === "join_other") {
+                    if(msg["event"] === "join") {
                         var target_id = msg["user_id"];
                         if (user_id !== target_id) {
                             Janus.debug("Creating subscriber to " + target_id);
@@ -134,7 +134,7 @@ function init() {
 function createSubscriber(user_id, target_id) {
     var subscriber = null;
     janus.attach({
-	plugin: "janus.plugin.retproxy",
+	plugin: "janus.plugin.sfu",
         opaqueId: id,
 	success: function(pluginHandle) {
 	    subscriber = pluginHandle;
@@ -146,7 +146,7 @@ function createSubscriber(user_id, target_id) {
 		success: function(jsep) {
 		    Janus.debug("Got SDP!");
 		    Janus.debug(jsep);
-		    subscriber.send({"message": {"kind": "join", "user_id": user_id, "role": {"kind": "subscriber", "target_id": target_id}}, "jsep": jsep});
+		    subscriber.send({"message": {"kind": "join", "user_id": user_id, "role": {"kind": "subscriber", "publisher_id": target_id}}, "jsep": jsep});
 		},
 		error: function(error) {
 		    Janus.error("WebRTC error:", error);

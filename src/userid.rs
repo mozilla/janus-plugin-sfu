@@ -1,4 +1,4 @@
-/// Types for representing cross-session user IDs.
+/// Types for representing unique entity IDs.
 
 use std::error::Error;
 use std::sync::atomic::{AtomicUsize, Ordering};

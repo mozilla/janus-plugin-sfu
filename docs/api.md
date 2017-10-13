@@ -51,7 +51,7 @@ You may pass a role descriptor object, joining as either a "subscriber":
 ```json
 {
     "kind": "subscriber",
-    "target_id": [unsigned integer user ID]
+    "publisher_id": [unsigned integer user ID]
 }
 ```
 
@@ -65,7 +65,7 @@ or a "publisher":
 
 Passing either of these will set up an initial set of subscriptions; a "publisher" connection will be subscribed to the
 data channel traffic of all other users in the room, and a "subscriber" connection will be subscribed to the audio and
-video traffic of the user specified by the `target_id`.
+video traffic of the user specified by the `publisher_id`.
 
 Until Janus supports Unified Plan, the expectation is that most clients will have a single "publisher" connection that
 carries all data channel traffic and outgoing audio/video, and many "subscriber" connections which carry incoming audio
@@ -78,6 +78,36 @@ Lists all user IDs in a room, including your own, if you are in it.
 ```json
 {
     "kind": "list"
+}
+```
+
+### Subscribe
+
+Subscribes to some kind of content, either from a specific user ID or from the whole room.
+
+```json
+{
+    "kind": "subscribe",
+    "publisher_id": [none|unsigned integer user ID],
+    "content_kind": unsigned integer content kind
+}
+```
+
+`content_kind` is currently a bit vector where 1 is audio, 2 is video, and 4 is data.
+
+
+### Unsubscribe
+
+Removes an existing subscription. Note that the spec for the subscription must currently be identical to when you
+subscribed to it! For example, if you subscribe to (None, 1) and then you unsubscribe from ($UID, 1), you won't then get
+content from everyone except $UID, and if you subscribe to ($UID, 255) and then you unsubscribe from ($UID, 1), you
+won't get all content except audio from $UID.
+
+```json
+{
+    "kind": "unsubscribe",
+    "publisher_id": [none|unsigned integer user ID],
+    "content_kind": unsigned integer content kind
 }
 ```
 

@@ -33,6 +33,13 @@ pub enum MessageKind {
     /// otherwise, this session won't be subscribed to anything.
     Join { user_id: Option<UserId>, role: SessionRole },
 
+    /// Indicates that a client wishes to subscribe to all traffic coming from the publisher_id of the given kind.
+    /// If publisher_id is not specified, then the subscription is for all traffic of this kind from all users.
+    Subscribe { publisher_id: Option<UserId>, content_kind: u8 }, // todo: parse ContentKind directly
+
+    /// Indicates that a client wishes to remove a previously established subscription.
+    Unsubscribe { publisher_id: Option<UserId>, content_kind: u8 }, // todo: parse ContentKind directly
+
     /// Requests a list of currently connected user IDs from the server.
     List,
 }
@@ -50,7 +57,7 @@ pub enum SessionRole {
     Publisher,
 
     /// Subscribe to the audio and video of the target user.
-    Subscriber { target_id: UserId }
+    Subscriber { publisher_id: UserId }
 }
 
 /// A single signalling message that came in off the wire, associated with one session.

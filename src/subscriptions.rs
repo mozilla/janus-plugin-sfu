@@ -7,6 +7,7 @@ use userid::UserId;
 
 bitflags! {
     /// A particular kind of traffic transported over a connection.
+    #[derive(Serialize, Deserialize)]
     pub struct ContentKind: u8 {
         /// Audio traffic.
         const AUDIO = 0b00000001;
@@ -41,8 +42,15 @@ impl Subscription {
 /// (even ones that didn't exist when the subscription was established.)
 pub type SubscriptionMap = HashMap<Option<UserId>, Vec<Subscription>>;
 
-pub fn subscribe(subscriptions: &mut SubscriptionMap, subscription: Subscription, publisher: Option<UserId>) {
-    subscriptions.entry(publisher).or_insert_with(Vec::new).push(subscription);
+pub fn subscribe(subscriptions: &mut SubscriptionMap, sess: &Arc<Session>, kind: ContentKind, publisher: Option<UserId>) {
+    subscriptions.entry(publisher).or_insert_with(Vec::new).push(Subscription::new(sess, kind));
+}
+
+pub fn unsubscribe(subscriptions: &mut SubscriptionMap, sess: &Arc<Session>, kind: ContentKind, publisher: Option<UserId>) {
+    subscriptions.entry(publisher).or_insert_with(Vec::new).retain(|ref sub| {
+        let matches = if let Some(s) = sub.sess.upgrade() { s.handle == sess.handle && sub.kind == kind } else { false };
+        !matches
+    });
 }
 
 pub fn unpublish(subscriptions: &mut SubscriptionMap, publisher: UserId) {
