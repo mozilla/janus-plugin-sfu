@@ -34,7 +34,7 @@ All messages should be formatted as JSON objects.
 Joins a room and associates your connection with a user ID. No incoming or outgoing traffic will be relayed until you
 join a room.
 
-```json
+```
 {
     "kind": "join",
     "user_id": [none|unsigned integer ID],
@@ -48,7 +48,7 @@ for subscriptions, so changing your user ID will make it impossible for people t
 
 You may pass a role descriptor object, joining as either a "subscriber":
 
-```json
+```
 {
     "kind": "subscriber",
     "publisher_id": [unsigned integer user ID]
@@ -57,7 +57,7 @@ You may pass a role descriptor object, joining as either a "subscriber":
 
 or a "publisher":
 
-```json
+```
 {
     "kind": "publisher"
 }
@@ -75,7 +75,7 @@ and video streams from other clients.
 
 Lists all user IDs in a room, including your own, if you are in it.
 
-```json
+```
 {
     "kind": "list"
 }
@@ -85,7 +85,7 @@ Lists all user IDs in a room, including your own, if you are in it.
 
 Subscribes to some kind of content, either from a specific user ID or from the whole room.
 
-```json
+```
 {
     "kind": "subscribe",
     "publisher_id": [none|unsigned integer user ID],
@@ -103,7 +103,7 @@ subscribed to it! For example, if you subscribe to (None, 1) and then you unsubs
 content from everyone except $UID, and if you subscribe to ($UID, 255) and then you unsubscribe from ($UID, 1), you
 won't get all content except audio from $UID.
 
-```json
+```
 {
     "kind": "unsubscribe",
     "publisher_id": [none|unsigned integer user ID],
