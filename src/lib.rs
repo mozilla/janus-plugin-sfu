@@ -40,7 +40,7 @@ fn from_serde_json(input: JsonValue) -> JanssonValue {
     JanssonValue::from_str(&input.to_string(), 0).unwrap()
 }
 
-type MessageProcessingResult = Result<(), Box<Error>>;
+type MessageProcessingResult = Result<JsonValue, Box<Error>>;
 
 const METADATA: PluginMetadata = PluginMetadata {
     version: 1,
@@ -90,10 +90,13 @@ fn notify(myself: UserId, msg: JanssonValue) -> Result<(), Box<Error>> {
     Ok(())
 }
 
-fn push_error(sess: &Session, txn: *mut c_char, err: Box<Error>) -> MessageProcessingResult {
-    let response = from_serde_json(json!({ "error": format!("{}", err) }));
+fn push_response(sess: &Session, txn: *mut c_char, result: MessageProcessingResult) -> Result<(), Box<Error>> {
     let push_event = gateway_callbacks().push_event;
-    janus::get_result(push_event(sess.handle, &mut PLUGIN, txn, response.ptr, ptr::null_mut()))
+    let response = match result {
+        Ok(resp) => json!({ "success": true, "data": resp }),
+        Err(err) => json!({ "success": false, "error": format!("{}", err) })
+    };
+    janus::get_result(push_event(sess.handle, &mut PLUGIN, txn, from_serde_json(response).ptr, ptr::null_mut()))
 }
 
 fn relay<T>(from: *mut PluginSession, kind: ContentKind, send: T) -> Result<(), Box<Error>> where T: Fn(&Session) {
@@ -164,7 +167,7 @@ extern "C" fn destroy_session(handle: *mut PluginSession, error: *mut c_int) {
                 if !user_exists {
                     let mut subscriptions = STATE.subscriptions.write().unwrap();
                     subscriptions::unpublish(&mut subscriptions, user_id);
-                    let response = from_serde_json(json!({"event": "leave", "user_id": user_id}));
+                    let response = from_serde_json(json!({ "event": "leave", "user_id": user_id }));
                     notify(user_id, response).unwrap_or_else(|e| {
                         janus::log(LogLevel::Err, &format!("Error notifying publishers on leave: {}", e));
                     });
@@ -217,9 +220,7 @@ extern "C" fn hangup_media(_handle: *mut PluginSession) {
     janus::log(LogLevel::Verb, "Hanging up WebRTC media.");
 }
 
-fn handle_join(sess: &Arc<Session>, txn: *mut c_char, user_id: Option<UserId>, role: SessionRole) -> MessageProcessingResult {
-    let other_user_ids = get_user_list();
-
+fn handle_join(sess: &Arc<Session>, user_id: Option<UserId>, role: SessionRole) -> MessageProcessingResult {
     match role {
         SessionRole::Subscriber { target_id } => {
             let mut subscriptions = STATE.subscriptions.write()?;
@@ -233,36 +234,31 @@ fn handle_join(sess: &Arc<Session>, txn: *mut c_char, user_id: Option<UserId>, r
         },
     };
 
-    match user_id {
-        Some(n) => Ok(sess.user_id.store(n, Ordering::Relaxed)),
+    let new_user_id = match user_id {
+        Some(n) => { sess.user_id.store(n, Ordering::Relaxed); n },
         None => {
             let new_user_id = STATE.next_user_id.next(Ordering::Relaxed)
                 .expect("next_user_id is always a non-empty user ID.");
             sess.user_id.store(new_user_id, Ordering::Relaxed);
-            let notification = from_serde_json(json!({ "event": "join_other", "user_id": new_user_id }));
+            let notification = from_serde_json(json!({ "event": "join", "user_id": new_user_id }));
             if let Err(e) = notify(new_user_id, notification) {
                 janus::log(LogLevel::Err, &format!("Error sending notification for user join: {:?}", e))
             }
-
-            let push_event = gateway_callbacks().push_event;
-            let response = from_serde_json(json!({
-                "event": "join_self",
-                "user_id": new_user_id,
-                "user_ids": other_user_ids
-            }));
-            janus::get_result(push_event(sess.handle, &mut PLUGIN, txn, response.ptr, ptr::null_mut()))
+            new_user_id
         }
-    }
+    };
+
+    Ok(json!({
+        "user_id": new_user_id,
+        "user_ids": get_user_list()
+    }))
 }
 
-fn handle_list(sess: &Arc<Session>, txn: *mut c_char) -> MessageProcessingResult {
-    let user_list = get_user_list();
-    let push_event = gateway_callbacks().push_event;
-    let response = from_serde_json(json!({"user_ids": user_list}));
-    janus::get_result(push_event(sess.handle, &mut PLUGIN, txn, response.ptr, ptr::null_mut()))
+fn handle_list() -> MessageProcessingResult {
+    Ok(json!({ "user_ids": get_user_list() }))
 }
 
-fn handle_offer(sess: &Arc<Session>, txn: *mut c_char, sdp: String) -> MessageProcessingResult {
+fn handle_offer(sess: &Arc<Session>, txn: *mut c_char, sdp: String) -> Result<(), Box<Error>> {
     let offer = janus::sdp::parse_sdp(CString::new(sdp)?)?;
     let answer = answer_sdp!(offer, janus::sdp::OfferAnswerParameters::Video, 0);
     let answer_str = janus::sdp::write_sdp(&answer);
@@ -275,7 +271,7 @@ fn handle_offer(sess: &Arc<Session>, txn: *mut c_char, sdp: String) -> MessagePr
     janus::get_result(push_event(sess.handle, &mut PLUGIN, txn, answer_msg.ptr, answer_jsep.ptr))
 }
 
-fn handle_message_async(RawMessage { jsep, msg, txn, sess }: RawMessage) -> MessageProcessingResult {
+fn handle_message_async(RawMessage { jsep, msg, txn, sess }: RawMessage) -> Result<(), Box<Error>> {
     if let Some(ref sess) = sess.upgrade() {
         // if we have a JSEP, handle it independently of whether or not we have a message
         jsep.map_or(Ok(()), |x| {
@@ -286,26 +282,27 @@ fn handle_message_async(RawMessage { jsep, msg, txn, sess }: RawMessage) -> Mess
                     match kind {
                         JsepKind::Offer { sdp } => handle_offer(&sess, txn, sdp),
                         JsepKind::Answer { .. } => {
-                            push_error(sess, txn, From::from("JSEP answers not yet supported."))
+                            push_response(sess, txn, Err(From::from("JSEP answers not yet supported.")))
                         }
                     }
                 },
-                Err(e) => push_error(sess, txn, Box::new(e))
+                Err(e) => push_response(sess, txn, Err(Box::new(e)))
             }
         })?;
         // if we have a message, handle that
         msg.map_or(Ok(()), |x| {
             let result: JsonResult<MessageKind> = serde_json::from_str(&x.to_string(0));
-            match result {
+            let response: MessageProcessingResult = match result {
                 Ok(kind) => {
                     janus::log(LogLevel::Info, &format!("Processing {:?} on connection {:?}.", kind, sess));
                     match kind {
-                        MessageKind::List => handle_list(&sess, txn),
-                        MessageKind::Join { user_id, role } => handle_join(&sess, txn, user_id, role),
+                        MessageKind::List => handle_list(),
+                        MessageKind::Join { user_id, role } => handle_join(&sess, user_id, role),
                     }
                 },
-                Err(e) => push_error(sess, txn, Box::new(e))
-            }
+                Err(e) => Err(Box::new(e))
+            };
+            push_response(sess, txn, response)
         })
     } else {
         // getting messages for destroyed connections is slightly concerning,
