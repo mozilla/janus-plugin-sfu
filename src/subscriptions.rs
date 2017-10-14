@@ -37,9 +37,6 @@ impl Subscription {
 }
 
 /// A data structure mapping publishers to subscribers.
-///
-/// The special key None indicates that a given subscription is meant to subscribe to all publishers
-/// (even ones that didn't exist when the subscription was established.)
 pub type SubscriptionMap = HashMap<UserId, Vec<Subscription>>;
 
 pub fn subscribe(subscriptions: &mut SubscriptionMap, sess: &Arc<Session>, kind: ContentKind, publisher: UserId) {
