@@ -32,13 +32,13 @@ All messages should be formatted as JSON objects.
 #### Join
 
 Joins a room and associates your connection with a user ID. No incoming or outgoing traffic will be relayed until you
-join a room.
+join a room. You can only join one room with any connection.
 
 ```
 {
     "kind": "join",
-    "user_id": [none|unsigned integer ID],
-    "role": [none|role descriptor object]
+    "room_id": unsigned integer ID
+    "user_id": [none|unsigned integer ID]
 }
 ```
 
@@ -46,38 +46,24 @@ The first time you join a room, you should allow Janus to assign you a user ID; 
 someone else's. For future connections, you should provide your user ID again. User IDs are used to identify the target
 for subscriptions, so changing your user ID will make it impossible for people to subscribe to your audio.
 
-You may pass a role descriptor object, joining as either a "subscriber":
+### List rooms
+
+Lists all rooms that anyone is connected to, including your own.
 
 ```
 {
-    "kind": "subscriber",
-    "publisher_id": [unsigned integer user ID]
+    "kind": "listrooms"
 }
 ```
 
-or a "publisher":
+### List users
+
+Lists all users in the given room, including you, if you're in it.
 
 ```
 {
-    "kind": "publisher"
-}
-```
-
-Passing either of these will set up an initial set of subscriptions; a "publisher" connection will be subscribed to the
-data channel traffic of all other users in the room, and a "subscriber" connection will be subscribed to the audio and
-video traffic of the user specified by the `publisher_id`.
-
-Until Janus supports Unified Plan, the expectation is that most clients will have a single "publisher" connection that
-carries all data channel traffic and outgoing audio/video, and many "subscriber" connections which carry incoming audio
-and video streams from other clients.
-
-### List
-
-Lists all user IDs in a room, including your own, if you are in it.
-
-```
-{
-    "kind": "list"
+    "kind": "listusers"
+    "room_id": unsigned integer room ID
 }
 ```
 
@@ -88,25 +74,43 @@ Subscribes to some kind of content, either from a specific user ID or from the w
 ```
 {
     "kind": "subscribe",
-    "publisher_id": [none|unsigned integer user ID],
+    "specs": [spec]
+}
+```
+
+where each spec describes a subscription:
+
+```
+{
+    "publisher_id": unsigned integer user ID,
     "content_kind": unsigned integer content kind
 }
 ```
 
 `content_kind` is currently a bit vector where 1 is audio, 2 is video, and 4 is data.
 
+Until Janus supports Unified Plan, the expectation is that most clients will have a single "publisher" connection that
+subscribes to all data channel traffic, and many "subscriber" connections which subscribe to incoming audio and video
+streams from other clients.
 
 ### Unsubscribe
 
-Removes an existing subscription. Note that the spec for the subscription must currently be identical to when you
-subscribed to it! For example, if you subscribe to (None, 1) and then you unsubscribe from ($UID, 1), you won't then get
-content from everyone except $UID, and if you subscribe to ($UID, 255) and then you unsubscribe from ($UID, 1), you
+Removes some existing subscription specs. Note that the spec for the subscription must currently be identical to when you
+subscribed to it! For example, if you subscribe to ($UID, 255) and then you unsubscribe from ($UID, 1), you
 won't get all content except audio from $UID.
 
 ```
 {
     "kind": "unsubscribe",
-    "publisher_id": [none|unsigned integer user ID],
+    "specs": [spec]
+}
+```
+
+where each spec describes a subscription:
+
+```
+{
+    "publisher_id": unsigned integer user ID,
     "content_kind": unsigned integer content kind
 }
 ```

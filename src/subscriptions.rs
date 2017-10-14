@@ -3,7 +3,7 @@
 use sessions::Session;
 use std::collections::HashMap;
 use std::sync::{Arc, Weak};
-use userid::UserId;
+use entityids::UserId;
 
 bitflags! {
     /// A particular kind of traffic transported over a connection.
@@ -40,13 +40,13 @@ impl Subscription {
 ///
 /// The special key None indicates that a given subscription is meant to subscribe to all publishers
 /// (even ones that didn't exist when the subscription was established.)
-pub type SubscriptionMap = HashMap<Option<UserId>, Vec<Subscription>>;
+pub type SubscriptionMap = HashMap<UserId, Vec<Subscription>>;
 
-pub fn subscribe(subscriptions: &mut SubscriptionMap, sess: &Arc<Session>, kind: ContentKind, publisher: Option<UserId>) {
+pub fn subscribe(subscriptions: &mut SubscriptionMap, sess: &Arc<Session>, kind: ContentKind, publisher: UserId) {
     subscriptions.entry(publisher).or_insert_with(Vec::new).push(Subscription::new(sess, kind));
 }
 
-pub fn unsubscribe(subscriptions: &mut SubscriptionMap, sess: &Arc<Session>, kind: ContentKind, publisher: Option<UserId>) {
+pub fn unsubscribe(subscriptions: &mut SubscriptionMap, sess: &Arc<Session>, kind: ContentKind, publisher: UserId) {
     subscriptions.entry(publisher).or_insert_with(Vec::new).retain(|ref sub| {
         let matches = if let Some(s) = sub.sess.upgrade() { s.handle == sess.handle && sub.kind == kind } else { false };
         !matches
@@ -54,13 +54,11 @@ pub fn unsubscribe(subscriptions: &mut SubscriptionMap, sess: &Arc<Session>, kin
 }
 
 pub fn unpublish(subscriptions: &mut SubscriptionMap, publisher: UserId) {
-    subscriptions.remove(&Some(publisher));
+    subscriptions.remove(&publisher);
 }
 
 pub fn subscribers_to(subscriptions: &SubscriptionMap, publisher: UserId, kind: ContentKind) -> Vec<&Subscription> {
-    let direct_subscriptions = subscriptions.get(&Some(publisher)).map(Vec::as_slice).unwrap_or(&[]).iter();
-    let global_subscriptions = subscriptions.get(&None).map(Vec::as_slice).unwrap_or(&[]).iter();
-    let all_subscriptions = direct_subscriptions.chain(global_subscriptions);
+    let all_subscriptions = subscriptions.get(&publisher).map(Vec::as_slice).unwrap_or(&[]).iter();
     all_subscriptions.filter(|s| s.kind.contains(kind)).collect()
 }
 

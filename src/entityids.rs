@@ -3,6 +3,45 @@
 use std::error::Error;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
+/// A room ID representing a Janus multicast room.
+///
+/// Room IDs are represented as usizes >= 1; 0 indicates an un-set room ID.
+#[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+pub struct RoomId(usize);
+
+impl RoomId {
+    /// Attempts to construct a room ID from a usize. Any usize >= 1 is valid.
+    pub fn try_from(val: usize) -> Result<Self, Box<Error+Send+Sync>> {
+        match val {
+            0 => Err(From::from("Room IDs must be positive integers.")),
+            _ => Ok(RoomId(val))
+        }
+    }
+}
+
+// An atomic container representing an optional room ID.
+#[derive(Debug)]
+pub struct AtomicRoomId {
+    v: AtomicUsize
+}
+
+impl AtomicRoomId {
+    pub fn empty() -> Self {
+        Self { v: AtomicUsize::new(0) }
+    }
+
+    pub fn load(&self, order: Ordering) -> Option<RoomId> {
+        match self.v.load(order) {
+            0 => None,
+            n => Some(RoomId(n))
+        }
+    }
+
+    pub fn store(&self, val: RoomId, order: Ordering) {
+        self.v.store(val.0, order);
+    }
+}
+
 /// A user ID representing a single Janus client. Used to correlate multiple Janus connections back to the same
 /// conceptual user for managing subscriptions.
 ///
@@ -12,7 +51,7 @@ pub struct UserId(usize);
 
 impl UserId {
     /// Attempts to construct a user ID from a usize. Any usize >= 1 is valid.
-    pub fn try_from(val: usize) -> Result<UserId, Box<Error+Send+Sync>> {
+    pub fn try_from(val: usize) -> Result<Self, Box<Error+Send+Sync>> {
         match val {
             0 => Err(From::from("User IDs must be positive integers.")),
             _ => Ok(UserId(val))
@@ -61,7 +100,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn basic_functionality() {
+    fn basic_userid_functionality() {
         let a = AtomicUserId::empty();
         let b = AtomicUserId::first();
         assert_eq!(None, a.next(Ordering::SeqCst));

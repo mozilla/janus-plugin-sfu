@@ -11,13 +11,13 @@ extern crate serde_json;
 #[macro_use]
 extern crate serde_derive;
 
-mod userid;
+mod entityids;
 mod messages;
 mod sessions;
 mod subscriptions;
 
-use userid::{AtomicUserId, UserId};
-use messages::{JsepKind, MessageKind, SessionRole, RawMessage};
+use entityids::{AtomicUserId, RoomId, UserId};
+use messages::{JsepKind, MessageKind, SubscriptionSpec, RawMessage};
 use sessions::Session;
 use subscriptions::{ContentKind, SubscriptionMap};
 
@@ -75,9 +75,15 @@ lazy_static! {
     };
 }
 
-fn get_user_list() -> HashSet<UserId> {
-    let sessions = STATE.sessions.read().unwrap();
-    sessions.iter().filter_map(|c| c.user_id.load(Ordering::Relaxed)).collect()
+fn get_room_ids(sessions: &Vec<Box<Arc<Session>>>) -> HashSet<RoomId> {
+    sessions.iter().filter_map(|s| s.room_id.load(Ordering::Relaxed)).collect()
+}
+
+fn get_user_ids(sessions: &Vec<Box<Arc<Session>>>, room_id: RoomId) -> HashSet<UserId> {
+    sessions.iter()
+        .filter(|s| s.room_id.load(Ordering::Relaxed) == Some(room_id))
+        .filter_map(|s| s.user_id.load(Ordering::Relaxed))
+        .collect()
 }
 
 fn notify(myself: UserId, msg: JanssonValue) -> Result<(), Box<Error>> {
@@ -102,14 +108,19 @@ fn push_response(sess: &Session, txn: *mut c_char, result: MessageProcessingResu
 fn relay<T>(from: *mut PluginSession, kind: ContentKind, send: T) -> Result<(), Box<Error>> where T: Fn(&Session) {
     let sess = Session::from_ptr(from)?;
     if let Some(user_id) = sess.user_id.load(Ordering::Relaxed) {
-        janus::log(LogLevel::Dbg, &format!("Packet of kind {:?} received from {:?}.", kind, user_id));
-        let subscriptions = STATE.subscriptions.read()?;
-        subscriptions::for_each_subscriber(&subscriptions, user_id, kind, |s| {
-            if Some(user_id) != s.user_id.load(Ordering::Relaxed) {
-                send(s)
-            }
-        });
-        Ok(())
+        if let Some(room_id) = sess.room_id.load(Ordering::Relaxed) {
+            janus::log(LogLevel::Dbg, &format!("Packet of kind {:?} received in room {:?} from {:?}.", kind, room_id, user_id));
+            let subscriptions = STATE.subscriptions.read()?;
+            subscriptions::for_each_subscriber(&subscriptions, user_id, kind, |s| {
+                if Some(user_id) != s.user_id.load(Ordering::Relaxed) {
+                    // if there's a cross-room subscription, relay it -- presume the client knows what it's doing.
+                    send(s)
+                }
+            });
+            Ok(())
+        } else {
+            Err(From::from("No room ID associated with connection; can't relay."))
+        }
     } else {
         Err(From::from("No user ID associated with connection; can't relay."))
     }
@@ -224,20 +235,8 @@ extern "C" fn hangup_media(_handle: *mut PluginSession) {
     janus::log(LogLevel::Verb, "Hanging up WebRTC media.");
 }
 
-fn handle_join(sess: &Arc<Session>, user_id: Option<UserId>, role: SessionRole) -> MessageProcessingResult {
-    match role {
-        SessionRole::Subscriber { publisher_id } => {
-            let mut subscriptions = STATE.subscriptions.write()?;
-            let kind = ContentKind::AUDIO | ContentKind::VIDEO;
-            subscriptions::subscribe(&mut subscriptions, &sess, kind, Some(publisher_id));
-        }
-        SessionRole::Publisher => {
-            let mut subscriptions = STATE.subscriptions.write()?;
-            let kind = ContentKind::DATA;
-            subscriptions::subscribe(&mut subscriptions, &sess, kind, None);
-        },
-    };
-
+fn handle_join(sess: &Arc<Session>, room_id: RoomId, user_id: Option<UserId>) -> MessageProcessingResult {
+    sess.room_id.store(room_id, Ordering::Relaxed);
     let new_user_id = match user_id {
         Some(n) => { sess.user_id.store(n, Ordering::Relaxed); n },
         None => {
@@ -252,36 +251,47 @@ fn handle_join(sess: &Arc<Session>, user_id: Option<UserId>, role: SessionRole) 
         }
     };
 
+    let sessions = STATE.sessions.read()?;
     Ok(json!({
         "user_id": new_user_id,
-        "user_ids": get_user_list()
+        "user_ids": get_user_ids(&sessions, room_id)
     }))
 }
 
-fn handle_list() -> MessageProcessingResult {
-    Ok(json!({ "user_ids": get_user_list() }))
+fn handle_list_users(room_id: RoomId) -> MessageProcessingResult {
+    let sessions = STATE.sessions.read()?;
+    Ok(json!({ "user_ids": get_user_ids(&sessions, room_id) }))
 }
 
-fn handle_subscribe(sess: &Arc<Session>, publisher: Option<UserId>, kind: u8) -> MessageProcessingResult {
-    match ContentKind::from_bits(kind) {
-        Some(k) => {
-            let mut subscriptions = STATE.subscriptions.write()?;
-            subscriptions::subscribe(&mut subscriptions, &sess, k, publisher);
-            Ok(json!({}))
-        },
-        None => Err(From::from("Invalid content kind."))
-    }
+fn handle_list_rooms() -> MessageProcessingResult {
+    let sessions = STATE.sessions.read()?;
+    Ok(json!({ "user_ids": get_room_ids(&sessions) }))
 }
 
-fn handle_unsubscribe(sess: &Arc<Session>, publisher: Option<UserId>, kind: u8) -> MessageProcessingResult {
-    match ContentKind::from_bits(kind) {
-        Some(k) => {
-            let mut subscriptions = STATE.subscriptions.write()?;
-            subscriptions::unsubscribe(&mut subscriptions, &sess, k, publisher);
-            Ok(json!({}))
-        },
-        None => Err(From::from("Invalid content kind."))
+fn handle_subscribe(sess: &Arc<Session>, specs: Vec<SubscriptionSpec>) -> MessageProcessingResult {
+    for SubscriptionSpec { publisher_id, content_kind } in specs {
+        match ContentKind::from_bits(content_kind) {
+            Some(kind) => {
+                let mut subscriptions = STATE.subscriptions.write()?;
+                subscriptions::subscribe(&mut subscriptions, &sess, kind, publisher_id);
+            },
+            None => return Err(From::from("Invalid content kind."))
+        }
     }
+    Ok(json!({}))
+}
+
+fn handle_unsubscribe(sess: &Arc<Session>, specs: Vec<SubscriptionSpec>) -> MessageProcessingResult {
+    for SubscriptionSpec { publisher_id, content_kind } in specs {
+        match ContentKind::from_bits(content_kind) {
+            Some(kind) => {
+                let mut subscriptions = STATE.subscriptions.write()?;
+                subscriptions::unsubscribe(&mut subscriptions, &sess, kind, publisher_id);
+            },
+            None => return Err(From::from("Invalid content kind."))
+        }
+    }
+    Ok(json!({}))
 }
 
 fn handle_offer(sess: &Arc<Session>, txn: *mut c_char, sdp: String) -> Result<(), Box<Error>> {
@@ -322,10 +332,11 @@ fn handle_message_async(RawMessage { jsep, msg, txn, sess }: RawMessage) -> Resu
                 Ok(kind) => {
                     janus::log(LogLevel::Info, &format!("Processing {:?} on connection {:?}.", kind, sess));
                     match kind {
-                        MessageKind::List => handle_list(),
-                        MessageKind::Join { user_id, role } => handle_join(&sess, user_id, role),
-                        MessageKind::Subscribe { publisher_id, content_kind } => handle_subscribe(&sess, publisher_id, content_kind),
-                        MessageKind::Unsubscribe { publisher_id, content_kind } => handle_unsubscribe(&sess, publisher_id, content_kind)
+                        MessageKind::ListRooms => handle_list_rooms(),
+                        MessageKind::ListUsers { room_id } => handle_list_users(room_id),
+                        MessageKind::Join { room_id, user_id } => handle_join(&sess, room_id, user_id),
+                        MessageKind::Subscribe { specs } => handle_subscribe(&sess, specs),
+                        MessageKind::Unsubscribe { specs } => handle_unsubscribe(&sess, specs)
                     }
                 },
                 Err(e) => Err(Box::new(e))
@@ -406,46 +417,60 @@ mod tests {
         use super::*;
 
         #[test]
-        fn parse_list() {
-            let json = r#"{"kind": "list"}"#;
+        fn parse_list_rooms() {
+            let json = r#"{"kind": "listrooms"}"#;
             let result: MessageKind = serde_json::from_str(json).unwrap();
-            assert_eq!(result, MessageKind::List);
+            assert_eq!(result, MessageKind::ListRooms);
         }
 
         #[test]
-        fn parse_publisher() {
-            let json = r#"{"kind": "join", "role": {"kind": "publisher"}}"#;
+        fn parse_list_users() {
+            let json = r#"{"kind": "listusers", "room_id": 5}"#;
             let result: MessageKind = serde_json::from_str(json).unwrap();
-            assert_eq!(result, MessageKind::Join { user_id: None, role: SessionRole::Publisher });
+            assert_eq!(result, MessageKind::ListUsers { room_id: RoomId::try_from(5).unwrap() });
         }
 
         #[test]
-        fn parse_subscriber() {
-            let json = r#"{"kind": "join", "user_id": 1, "role": {"kind": "subscriber", "publisher_id": 2}}"#;
+        fn parse_join_no_user_id() {
+            let json = r#"{"kind": "join", "room_id": 5}"#;
             let result: MessageKind = serde_json::from_str(json).unwrap();
             assert_eq!(result, MessageKind::Join {
-                user_id: Some(UserId::try_from(1).unwrap()),
-                role: SessionRole::Subscriber { publisher_id: UserId::try_from(2).unwrap() }
+                user_id: None,
+                room_id: RoomId::try_from(5).unwrap()
+            });
+        }
+
+        #[test]
+        fn parse_join_user_id() {
+            let json = r#"{"kind": "join", "user_id": 10, "room_id": 5}"#;
+            let result: MessageKind = serde_json::from_str(json).unwrap();
+            assert_eq!(result, MessageKind::Join {
+                user_id: Some(UserId::try_from(10).unwrap()),
+                room_id: RoomId::try_from(5).unwrap()
             });
         }
 
         #[test]
         fn parse_subscribe() {
-            let json = r#"{"kind": "subscribe", "publisher_id": 2, "content_kind": 1}"#;
+            let json = r#"{"kind": "subscribe", "specs": [{"publisher_id": 2, "content_kind": 1}]}"#;
             let result: MessageKind = serde_json::from_str(json).unwrap();
             assert_eq!(result, MessageKind::Subscribe {
-                publisher_id: Some(UserId::try_from(2).unwrap()),
-                content_kind: 1
+                specs: vec!(SubscriptionSpec {
+                    publisher_id: UserId::try_from(2).unwrap(),
+                    content_kind: 1
+                })
             });
         }
 
         #[test]
         fn parse_unsubscribe() {
-            let json = r#"{"kind": "unsubscribe", "content_kind": 2}"#;
+            let json = r#"{"kind": "unsubscribe", "specs": [{"publisher_id": 5, "content_kind": 2}]}"#;
             let result: MessageKind = serde_json::from_str(json).unwrap();
             assert_eq!(result, MessageKind::Unsubscribe {
-                publisher_id: None,
-                content_kind: 2
+                specs: vec!(SubscriptionSpec {
+                    publisher_id: UserId::try_from(5).unwrap(),
+                    content_kind: 2
+                })
             });
         }
     }

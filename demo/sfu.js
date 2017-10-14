@@ -49,7 +49,7 @@ function init() {
 			success: function(jsep) {
 			    Janus.debug("Got SDP!");
 			    Janus.debug(jsep);
-			    publisher.send({"message": {"kind": "join", "role": {"kind": "publisher"}}, "jsep": jsep});
+			    publisher.send({"message": {"kind": "join", "room_id": 1}, "jsep": jsep});
 			},
 			error: function(error) {
 			    Janus.error("WebRTC error:", error);
@@ -84,7 +84,9 @@ function init() {
                         for (var i = 0; i < user_ids.length; i++) {
                             var target_id = user_ids[i];
                             if (user_id !== target_id) {
-                                Janus.debug("Creating subscriber to " + target_id);
+                                Janus.debug("Subscribing to data for " + target_id);
+			        publisher.send({"message": {"kind": "subscribe", specs: [{"publisher_id": target_id, "content_kind": 4 /* data */}]}});
+                                Janus.debug("Creating audio subscriber connection to " + target_id);
                                 createSubscriber(user_id, target_id);
                             }
                         }
@@ -92,7 +94,9 @@ function init() {
                     if(msg["event"] === "join") {
                         var target_id = msg["user_id"];
                         if (user_id !== target_id) {
-                            Janus.debug("Creating subscriber to " + target_id);
+                            Janus.debug("Subscribing to data for " + target_id);
+			    publisher.send({"message": {"kind": "subscribe", specs:[{"publisher_id": target_id, "content_kind": 4 /* data */}]}});
+                            Janus.debug("Creating audio subscriber connection to " + target_id);
                             createSubscriber(user_id, target_id);
                         }
                     }
@@ -146,7 +150,8 @@ function createSubscriber(user_id, target_id) {
 		success: function(jsep) {
 		    Janus.debug("Got SDP!");
 		    Janus.debug(jsep);
-		    subscriber.send({"message": {"kind": "join", "user_id": user_id, "role": {"kind": "subscriber", "publisher_id": target_id}}, "jsep": jsep});
+		    subscriber.send({"message": {"kind": "join", "room_id": 1, "user_id": user_id}, "jsep": jsep});
+                    subscriber.send({"message": {"kind": "subscribe", "specs": [{"publisher_id": target_id, "content_kind": 3 /* audio + video */}]}});
 		},
 		error: function(error) {
 		    Janus.error("WebRTC error:", error);
