@@ -99,7 +99,7 @@ fn notify(myself: UserId, msg: JanssonValue) -> Result<(), Box<Error>> {
 fn push_response(sess: &Session, txn: *mut c_char, result: MessageProcessingResult) -> Result<(), Box<Error>> {
     let push_event = gateway_callbacks().push_event;
     let response = match result {
-        Ok(resp) => json!({ "success": true, "data": resp }),
+        Ok(resp) => json!({ "success": true, "response": resp }),
         Err(err) => json!({ "success": false, "error": format!("{}", err) })
     };
     janus::get_result(push_event(sess.handle, &mut PLUGIN, txn, from_serde_json(response).ptr, ptr::null_mut()))
