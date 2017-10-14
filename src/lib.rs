@@ -86,7 +86,8 @@ fn get_user_ids(sessions: &Vec<Box<Arc<Session>>>, room_id: RoomId) -> HashSet<U
         .collect()
 }
 
-fn notify(myself: UserId, msg: JanssonValue) -> Result<(), Box<Error>> {
+fn notify(myself: UserId, json: JsonValue) -> Result<(), Box<Error>> {
+    let msg = from_serde_json(json);
     let push_event = gateway_callbacks().push_event;
     for other in STATE.sessions.read()?.iter() {
         if other.user_id.load(Ordering::Relaxed) != Some(myself) {
@@ -175,6 +176,7 @@ extern "C" fn destroy_session(handle: *mut PluginSession, error: *mut c_int) {
         Ok(sess) => {
             janus::log(LogLevel::Info, &format!("Destroying SFU session {:?}...", sess));
             let user_id = sess.user_id.load(Ordering::Relaxed);
+            let room_id = sess.room_id.load(Ordering::Relaxed);
             STATE.sessions.write().unwrap().retain(|ref s| s.handle != handle);
 
             if let Some(user_id) = user_id {
@@ -182,7 +184,7 @@ extern "C" fn destroy_session(handle: *mut PluginSession, error: *mut c_int) {
                 if !user_exists {
                     let mut subscriptions = STATE.subscriptions.write().unwrap();
                     subscriptions::unpublish(&mut subscriptions, user_id);
-                    let response = from_serde_json(json!({ "event": "leave", "user_id": user_id }));
+                    let response = json!({ "event": "leave", "user_id": user_id, "room_id": room_id });
                     notify(user_id, response).unwrap_or_else(|e| {
                         janus::log(LogLevel::Err, &format!("Error notifying publishers on leave: {}", e));
                     });
@@ -243,7 +245,7 @@ fn handle_join(sess: &Arc<Session>, room_id: RoomId, user_id: Option<UserId>) ->
             let new_user_id = STATE.next_user_id.next(Ordering::Relaxed)
                 .expect("next_user_id is always a non-empty user ID.");
             sess.user_id.store(new_user_id, Ordering::Relaxed);
-            let notification = from_serde_json(json!({ "event": "join", "user_id": new_user_id }));
+            let notification = json!({ "event": "join", "user_id": new_user_id, "room_id": room_id });
             if let Err(e) = notify(new_user_id, notification) {
                 janus::log(LogLevel::Err, &format!("Error sending notification for user join: {:?}", e))
             }
