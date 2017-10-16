@@ -31,13 +31,14 @@ use std::sync::atomic::Ordering;
 use std::thread;
 use serde_json::Value as JsonValue;
 use serde_json::Result as JsonResult;
-use janus::{JanssonValue, RawJanssonValue,
+use janus::{JanssonValue, RawJanssonValue, JanssonDecodingFlags, JanssonEncodingFlags,
             LogLevel, Plugin, PluginCallbacks, PluginMetadata,
             PluginResultInfo, PluginResultType, PluginSession};
+use janus::sdp::Sdp;
 
 /// Inefficiently converts a serde JSON value to a Jansson JSON value.
 fn from_serde_json(input: JsonValue) -> JanssonValue {
-    JanssonValue::from_str(&input.to_string(), 0).unwrap()
+    JanssonValue::from_str(&input.to_string(), JanssonDecodingFlags::empty()).unwrap()
 }
 
 type MessageProcessingResult = Result<JsonValue, Box<Error>>;
@@ -297,9 +298,9 @@ fn handle_unsubscribe(sess: &Arc<Session>, specs: Vec<SubscriptionSpec>) -> Mess
 }
 
 fn handle_offer(sess: &Arc<Session>, txn: *mut c_char, sdp: String) -> Result<(), Box<Error>> {
-    let offer = janus::sdp::parse_sdp(CString::new(sdp)?)?;
+    let offer = Sdp::parse(CString::new(sdp)?)?;
     let answer = answer_sdp!(offer, janus::sdp::OfferAnswerParameters::Video, 0);
-    let answer_str = janus::sdp::write_sdp(&answer);
+    let answer_str = Sdp::to_string(&answer);
     let answer_msg = from_serde_json(json!({}));
     let answer_jsep = from_serde_json(json!({
         "type": "answer",
@@ -313,7 +314,7 @@ fn handle_message_async(RawMessage { jsep, msg, txn, sess }: RawMessage) -> Resu
     if let Some(ref sess) = sess.upgrade() {
         // if we have a JSEP, handle it independently of whether or not we have a message
         jsep.map_or(Ok(()), |x| {
-            let result: JsonResult<JsepKind> = serde_json::from_str(&x.to_string(0));
+            let result: JsonResult<JsepKind> = serde_json::from_str(&x.to_string(JanssonEncodingFlags::empty()));
             match result {
                 Ok(kind) => {
                     janus::log(LogLevel::Info, &format!("Processing {:?} on connection {:?}.", kind, sess));
@@ -329,7 +330,7 @@ fn handle_message_async(RawMessage { jsep, msg, txn, sess }: RawMessage) -> Resu
         })?;
         // if we have a message, handle that
         msg.map_or(Ok(()), |x| {
-            let result: JsonResult<MessageKind> = serde_json::from_str(&x.to_string(0));
+            let result: JsonResult<MessageKind> = serde_json::from_str(&x.to_string(JanssonEncodingFlags::empty()));
             let response: MessageProcessingResult = match result {
                 Ok(kind) => {
                     janus::log(LogLevel::Info, &format!("Processing {:?} on connection {:?}.", kind, sess));
