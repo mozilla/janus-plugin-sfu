@@ -1,5 +1,4 @@
 /// Types for representing unique entity IDs.
-
 use std::error::Error;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -11,10 +10,10 @@ pub struct RoomId(usize);
 
 impl RoomId {
     /// Attempts to construct a room ID from a usize. Any usize >= 1 is valid.
-    pub fn try_from(val: usize) -> Result<Self, Box<Error+Send+Sync>> {
+    pub fn try_from(val: usize) -> Result<Self, Box<Error + Send + Sync>> {
         match val {
             0 => Err(From::from("Room IDs must be positive integers.")),
-            _ => Ok(RoomId(val))
+            _ => Ok(RoomId(val)),
         }
     }
 }
@@ -22,18 +21,20 @@ impl RoomId {
 // An atomic container representing an optional room ID.
 #[derive(Debug)]
 pub struct AtomicRoomId {
-    v: AtomicUsize
+    v: AtomicUsize,
 }
 
 impl AtomicRoomId {
     pub fn empty() -> Self {
-        Self { v: AtomicUsize::new(0) }
+        Self {
+            v: AtomicUsize::new(0),
+        }
     }
 
     pub fn load(&self, order: Ordering) -> Option<RoomId> {
         match self.v.load(order) {
             0 => None,
-            n => Some(RoomId(n))
+            n => Some(RoomId(n)),
         }
     }
 
@@ -51,10 +52,10 @@ pub struct UserId(usize);
 
 impl UserId {
     /// Attempts to construct a user ID from a usize. Any usize >= 1 is valid.
-    pub fn try_from(val: usize) -> Result<Self, Box<Error+Send+Sync>> {
+    pub fn try_from(val: usize) -> Result<Self, Box<Error + Send + Sync>> {
         match val {
             0 => Err(From::from("User IDs must be positive integers.")),
-            _ => Ok(UserId(val))
+            _ => Ok(UserId(val)),
         }
     }
 }
@@ -63,29 +64,33 @@ impl UserId {
 /// AtomicUserId::first() followed by repeated invocations of AtomicUserId::next().
 #[derive(Debug)]
 pub struct AtomicUserId {
-    v: AtomicUsize
+    v: AtomicUsize,
 }
 
 impl AtomicUserId {
     pub fn empty() -> Self {
-        Self { v: AtomicUsize::new(0) }
+        Self {
+            v: AtomicUsize::new(0),
+        }
     }
 
     pub fn first() -> Self {
-        Self { v: AtomicUsize::new(1) }
+        Self {
+            v: AtomicUsize::new(1),
+        }
     }
 
     pub fn next(&self, order: Ordering) -> Option<UserId> {
         match self.v.fetch_add(1, order) {
             0 => None,
-            n => Some(UserId(n))
+            n => Some(UserId(n)),
         }
     }
 
     pub fn load(&self, order: Ordering) -> Option<UserId> {
         match self.v.load(order) {
             0 => None,
-            n => Some(UserId(n))
+            n => Some(UserId(n)),
         }
     }
 

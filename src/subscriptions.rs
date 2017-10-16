@@ -1,9 +1,8 @@
 /// Types and code related to managing session subscriptions to incoming data.
-
+use entityids::UserId;
 use sessions::Session;
 use std::collections::HashMap;
 use std::sync::{Arc, Weak};
-use entityids::UserId;
 
 bitflags! {
     /// A particular kind of traffic transported over a connection.
@@ -22,12 +21,11 @@ bitflags! {
 /// i.e. the session "subscribes" to the traffic.
 #[derive(Debug)]
 pub struct Subscription {
-
     /// The subscriber to this traffic. Null if the subscriber has been destroyed since subscribing.
     pub sess: Weak<Session>,
 
     /// The kind or kinds of traffic subscribed to.
-    pub kind: ContentKind
+    pub kind: ContentKind,
 }
 
 impl Subscription {

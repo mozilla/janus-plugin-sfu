@@ -3,13 +3,13 @@ extern crate bitflags;
 #[macro_use]
 extern crate cstr_macro;
 #[macro_use]
-extern crate lazy_static;
-#[macro_use]
 extern crate janus_plugin as janus;
 #[macro_use]
-extern crate serde_json;
+extern crate lazy_static;
 #[macro_use]
 extern crate serde_derive;
+#[macro_use]
+extern crate serde_json;
 
 mod entityids;
 mod messages;
@@ -17,11 +17,14 @@ mod sessions;
 mod subscriptions;
 
 use entityids::{AtomicUserId, RoomId, UserId};
-use messages::{JsepKind, MessageKind, SubscriptionSpec, RawMessage};
+use janus::{JanssonDecodingFlags, JanssonEncodingFlags, JanssonValue, LogLevel, Plugin, PluginCallbacks, PluginMetadata, PluginResultInfo,
+            PluginResultType, PluginSession, RawJanssonValue};
+use janus::sdp::Sdp;
+use messages::{JsepKind, MessageKind, RawMessage, SubscriptionSpec};
+use serde_json::Result as JsonResult;
+use serde_json::Value as JsonValue;
 use sessions::Session;
-use subscriptions::{ContentKind, SubscriptionMap};
-
-use std::collections::{HashSet, HashMap};
+use std::collections::HashSet;
 use std::error::Error;
 use std::ffi::CString;
 use std::os::raw::{c_char, c_int};
@@ -29,12 +32,7 @@ use std::ptr;
 use std::sync::{mpsc, Arc, Mutex, RwLock};
 use std::sync::atomic::Ordering;
 use std::thread;
-use serde_json::Value as JsonValue;
-use serde_json::Result as JsonResult;
-use janus::{JanssonValue, RawJanssonValue, JanssonDecodingFlags, JanssonEncodingFlags,
-            LogLevel, Plugin, PluginCallbacks, PluginMetadata,
-            PluginResultInfo, PluginResultType, PluginSession};
-use janus::sdp::Sdp;
+use subscriptions::{ContentKind, SubscriptionMap};
 
 /// Inefficiently converts a serde JSON value to a Jansson JSON value.
 fn from_serde_json(input: JsonValue) -> JanssonValue {
@@ -70,7 +68,7 @@ struct State {
 lazy_static! {
     static ref STATE: State = State {
         sessions: RwLock::new(Vec::new()),
-        subscriptions: RwLock::new(HashMap::new()),
+        subscriptions: RwLock::new(SubscriptionMap::new()),
         message_channel: Mutex::new(None),
         next_user_id: AtomicUserId::first()
     };
@@ -102,7 +100,7 @@ fn push_response(sess: &Session, txn: *mut c_char, result: MessageProcessingResu
     let push_event = gateway_callbacks().push_event;
     let response = match result {
         Ok(resp) => json!({ "success": true, "response": resp }),
-        Err(err) => json!({ "success": false, "error": format!("{}", err) })
+        Err(err) => json!({ "success": false, "error": format!("{}", err) }),
     };
     janus::get_result(push_event(sess.handle, &mut PLUGIN, txn, from_serde_json(response).ptr, ptr::null_mut()))
 }
@@ -147,7 +145,7 @@ extern "C" fn init(callbacks: *mut PluginCallbacks, _config_path: *const c_char)
 
             janus::log(LogLevel::Info, "Janus SFU plugin initialized!");
             0
-        },
+        }
         None => {
             janus::log(LogLevel::Err, "Invalid parameters for SFU plugin initialization!");
             -1
@@ -164,7 +162,7 @@ extern "C" fn create_session(handle: *mut PluginSession, error: *mut c_int) {
         Ok(sess) => {
             janus::log(LogLevel::Info, &format!("Initializing SFU session {:?}...", sess));
             STATE.sessions.write().unwrap().push(sess);
-        },
+        }
         Err(e) => {
             janus::log(LogLevel::Err, &format!("{}", e));
             unsafe { *error = -1 };
@@ -191,7 +189,7 @@ extern "C" fn destroy_session(handle: *mut PluginSession, error: *mut c_int) {
                     });
                 }
             }
-        },
+        }
         Err(e) => {
             janus::log(LogLevel::Err, &format!("{}", e));
             unsafe { *error = -1 };
@@ -277,8 +275,8 @@ fn handle_subscribe(sess: &Arc<Session>, specs: Vec<SubscriptionSpec>) -> Messag
             Some(kind) => {
                 let mut subscriptions = STATE.subscriptions.write()?;
                 subscriptions::subscribe(&mut subscriptions, &sess, kind, publisher_id);
-            },
-            None => return Err(From::from("Invalid content kind."))
+            }
+            None => return Err(From::from("Invalid content kind.")),
         }
     }
     Ok(json!({}))
@@ -290,7 +288,7 @@ fn handle_unsubscribe(sess: &Arc<Session>, specs: Vec<SubscriptionSpec>) -> Mess
             Some(kind) => {
                 let mut subscriptions = STATE.subscriptions.write()?;
                 subscriptions::unsubscribe(&mut subscriptions, &sess, kind, publisher_id);
-            },
+            }
             None => return Err(From::from("Invalid content kind."))
         }
     }
@@ -320,12 +318,10 @@ fn handle_message_async(RawMessage { jsep, msg, txn, sess }: RawMessage) -> Resu
                     janus::log(LogLevel::Info, &format!("Processing {:?} on connection {:?}.", kind, sess));
                     match kind {
                         JsepKind::Offer { sdp } => handle_offer(&sess, txn, sdp),
-                        JsepKind::Answer { .. } => {
-                            push_response(sess, txn, Err(From::from("JSEP answers not yet supported.")))
-                        }
+                        JsepKind::Answer { .. } => push_response(sess, txn, Err(From::from("JSEP answers not yet supported."))),
                     }
-                },
-                Err(e) => push_response(sess, txn, Err(Box::new(e)))
+                }
+                Err(e) => push_response(sess, txn, Err(Box::new(e))),
             }
         })?;
         // if we have a message, handle that
@@ -341,8 +337,8 @@ fn handle_message_async(RawMessage { jsep, msg, txn, sess }: RawMessage) -> Resu
                         MessageKind::Subscribe { specs } => handle_subscribe(&sess, specs),
                         MessageKind::Unsubscribe { specs } => handle_unsubscribe(&sess, specs)
                     }
-                },
-                Err(e) => Err(Box::new(e))
+                }
+                Err(e) => Err(Box::new(e)),
             };
             push_response(sess, txn, response)
         })
