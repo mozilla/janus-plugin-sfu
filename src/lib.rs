@@ -6,6 +6,7 @@ extern crate cstr_macro;
 extern crate janus_plugin as janus;
 #[macro_use]
 extern crate lazy_static;
+extern crate serde;
 #[macro_use]
 extern crate serde_derive;
 #[macro_use]
@@ -37,6 +38,11 @@ use subscriptions::{ContentKind, SubscriptionMap};
 /// Inefficiently converts a serde JSON value to a Jansson JSON value.
 fn from_serde_json(input: JsonValue) -> JanssonValue {
     JanssonValue::from_str(&input.to_string(), JanssonDecodingFlags::empty()).unwrap()
+}
+
+/// Inefficiently converts a Jansson JSON value to a serde JSON value.
+fn to_serde_json<T>(input: JanssonValue) -> JsonResult<T> where T: serde::de::DeserializeOwned {
+    serde_json::from_str(input.to_libcstring(JanssonEncodingFlags::empty()).to_str().unwrap())
 }
 
 type MessageProcessingResult = Result<JsonValue, Box<Error>>;
@@ -312,7 +318,7 @@ fn handle_message_async(RawMessage { jsep, msg, txn, sess }: RawMessage) -> Resu
     if let Some(ref sess) = sess.upgrade() {
         // if we have a JSEP, handle it independently of whether or not we have a message
         jsep.map_or(Ok(()), |x| {
-            let result: JsonResult<JsepKind> = serde_json::from_str(&x.to_string(JanssonEncodingFlags::empty()));
+            let result: JsonResult<JsepKind> = to_serde_json(x);
             match result {
                 Ok(kind) => {
                     janus::log(LogLevel::Info, &format!("Processing {:?} on connection {:?}.", kind, sess));
@@ -326,7 +332,7 @@ fn handle_message_async(RawMessage { jsep, msg, txn, sess }: RawMessage) -> Resu
         })?;
         // if we have a message, handle that
         msg.map_or(Ok(()), |x| {
-            let result: JsonResult<MessageKind> = serde_json::from_str(&x.to_string(JanssonEncodingFlags::empty()));
+            let result: JsonResult<MessageKind> = to_serde_json(x);
             let response: MessageProcessingResult = match result {
                 Ok(kind) => {
                     janus::log(LogLevel::Info, &format!("Processing {:?} on connection {:?}.", kind, sess));
