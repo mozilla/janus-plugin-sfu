@@ -92,6 +92,7 @@ fn get_user_ids(sessions: &Vec<Box<Arc<Session>>>, room_id: RoomId) -> HashSet<U
 }
 
 fn notify(myself: UserId, json: JsonValue) -> Result<(), Box<Error>> {
+    janus::log(LogLevel::Info, &format!("{:?} sending notification: {}.", myself, json));
     let msg = from_serde_json(json);
     let push_event = gateway_callbacks().push_event;
     for other in STATE.sessions.read()?.iter() {
@@ -108,6 +109,7 @@ fn push_response(sess: &Session, txn: *mut c_char, result: MessageProcessingResu
         Ok(resp) => json!({ "success": true, "response": resp }),
         Err(err) => json!({ "success": false, "error": format!("{}", err) }),
     };
+    janus::log(LogLevel::Info, &format!("{:?} sending response to {:?}: {}.", sess.handle, txn, response));
     janus::get_result(push_event(sess.handle, &mut PLUGIN, txn, from_serde_json(response).ptr, ptr::null_mut()))
 }
 
