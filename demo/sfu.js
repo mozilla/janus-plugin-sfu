@@ -78,9 +78,9 @@ function init() {
 		onmessage: function(msg, jsep) {
 		    Janus.debug(" ::: Got a message :::");
 		    Janus.debug(JSON.stringify(msg));
-                    if(msg["data"] && msg.data["user_id"]) {
-                        user_id = msg.data["user_id"];
-                        var user_ids = msg.data["user_ids"];
+                    if(msg["response"] && msg.response["user_id"]) {
+                        user_id = msg.response["user_id"];
+                        var user_ids = msg.response["user_ids"];
                         for (var i = 0; i < user_ids.length; i++) {
                             var target_id = user_ids[i];
                             if (user_id !== target_id) {
@@ -136,6 +136,7 @@ function init() {
 }
 
 function createSubscriber(user_id, target_id) {
+    Janus.debug("Creating subscriber for " + user_id + " to " + target_id);
     var subscriber = null;
     janus.attach({
 	plugin: "janus.plugin.sfu",
@@ -208,5 +209,4 @@ function createSubscriber(user_id, target_id) {
 	    Janus.log(" ::: Got a cleanup notification :::");
 	}
     });
-
 }
