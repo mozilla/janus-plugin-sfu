@@ -41,41 +41,44 @@ force_rebuild=$([[ $force_rebuild == "true" ]] && echo "true") || true
 
 cd "$working_directory"
 
+git-get () {
+    repo=$1
+    version=$2
+    if [ ! -e $repo ]; then
+        git clone https://github.com/$repo $repo
+    fi
+    cd $repo
+    git checkout master
+    git pull
+    git checkout -f $version
+    git clean -fdx
+}
+
 if [[ $force_rebuild || ! -e /opt/janus/bin/janus ]]; then
     banner 'getting janus source'
-    git clone https://github.com/meetecho/janus-gateway.git meetecho/janus-gateway
-    cd meetecho/janus-gateway
-    git checkout v0.2.4
-    git clean -fdx
+    git-get meetecho/janus-gateway v0.2.4
     cd "$working_directory"
 
     banner 'installing janus compilation dependencies'
-    sudo apt-get update
-    sudo apt-get install -y dh-autoreconf pkg-config libglib2.0-dev \
+    sudo apt -y install dh-autoreconf pkg-config libglib2.0-dev \
         libjansson-dev libnice-dev libssl-dev gengetopt libmicrohttpd-dev cmake
 
     if [[ $force_rebuild || ! -e /usr/lib/libsrtp.so ]]; then
-        wget https://github.com/cisco/libsrtp/archive/v2.0.0.tar.gz
-        tar xfv v2.0.0.tar.gz
-        cd libsrtp-2.0.0
+        git-get cisco/libsrtp v2.0.0
         ./configure --prefix=/usr --enable-openssl
         make shared_library && sudo make install
         cd "$working_directory"
     fi
 
     if [[ $force_rebuild || ! -e /usr/lib/libusrsctp.so ]]; then
-        git clone https://github.com/sctplab/usrsctp
-        cd usrsctp
+        git-get sctplab/usrsctp 2d26613
         ./bootstrap
         ./configure --prefix=/usr && make && sudo make install
         cd "$working_directory"
     fi
 
     if [[ $force_rebuild || ! -e /usr/lib/libwebsockets.so ]]; then
-        git clone git://git.libwebsockets.org/libwebsockets
-        cd libwebsockets
-        git checkout v2.0.0
-        git clean -fdx
+        git-get warmcat/libwebsockets v2.0.0
         mkdir build
         cd build
         cmake -DCMAKE_INSTALL_PREFIX:PATH=/usr -DCMAKE_C_FLAGS="-fpic" ..
@@ -101,10 +104,7 @@ if [[ $force_rebuild || ! -e /opt/janus/lib/janus/plugins/libjanus_plugin_sfu.so
     rm rustup.sh
 
     banner 'getting, building and installing janus-plugin-sfu'
-    git clone https://github.com/mquander/janus-plugin-sfu.git mquander/janus-plugin-sfu
-    cd mquander/janus-plugin-sfu
-    git checkout master
-    git clean -fdx
+    git-get mquander/janus-plugin-sfu master
     cargo build --release
     sudo cp target/release/libjanus_plugin_sfu.so /opt/janus/lib/janus/plugins/
     cd "$working_directory"
