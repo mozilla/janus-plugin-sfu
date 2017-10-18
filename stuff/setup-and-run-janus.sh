@@ -5,6 +5,8 @@
 #
 # Janus will be installed into /opt/janus.
 
+set -e
+
 banner () {
     msg=$1
     echo ''
