@@ -16,9 +16,11 @@ banner () {
     echo ''
 }
 
+banner 'installing script dependencies'
+sudo apt update
+sudo apt -y install python || true
+
 if [[ ! -e $(which docopts) ]]; then
-    banner 'installing script dependencies'
-    sudo apt -y install python
     curl https://bootstrap.pypa.io/get-pip.py -sSf > get-pip.py
     sudo python get-pip.py
     rm get-pip.py
