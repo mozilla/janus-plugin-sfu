@@ -103,14 +103,14 @@ fn notify(myself: UserId, json: JsonValue) -> Result<(), Box<Error>> {
     Ok(())
 }
 
-fn push_response(sess: &Session, txn: *mut c_char, result: MessageProcessingResult) -> Result<(), Box<Error>> {
+fn push_response(from: &Session, txn: *mut c_char, result: MessageProcessingResult) -> Result<(), Box<Error>> {
     let push_event = gateway_callbacks().push_event;
     let response = match result {
         Ok(resp) => json!({ "success": true, "response": resp }),
         Err(err) => json!({ "success": false, "error": format!("{}", err) }),
     };
-    janus::log(LogLevel::Info, &format!("{:?} sending response to {:?}: {}.", sess.handle, txn, response));
-    janus::get_result(push_event(sess.handle, &mut PLUGIN, txn, from_serde_json(response).as_mut_ref(), ptr::null_mut()))
+    janus::log(LogLevel::Info, &format!("{:?} sending response to {:?}: {}.", from.handle, txn, response));
+    janus::get_result(push_event(from.handle, &mut PLUGIN, txn, from_serde_json(response).as_mut_ref(), ptr::null_mut()))
 }
 
 fn relay<T>(from: *mut PluginSession, kind: ContentKind, send: T) -> Result<(), Box<Error>> where T: Fn(&Session) {
@@ -244,14 +244,14 @@ extern "C" fn hangup_media(_handle: *mut PluginSession) {
     janus::log(LogLevel::Verb, "Hanging up WebRTC media.");
 }
 
-fn handle_join(sess: &Arc<Session>, room_id: RoomId, user_id: Option<UserId>) -> MessageProcessingResult {
-    sess.room_id.store(room_id, Ordering::Relaxed);
+fn process_join(from: &Arc<Session>, room_id: RoomId, user_id: Option<UserId>) -> MessageProcessingResult {
+    from.room_id.store(room_id, Ordering::Relaxed);
     let new_user_id = match user_id {
-        Some(n) => { sess.user_id.store(n, Ordering::Relaxed); n },
+        Some(n) => { from.user_id.store(n, Ordering::Relaxed); n },
         None => {
             let new_user_id = STATE.next_user_id.next(Ordering::Relaxed)
                 .expect("next_user_id is always a non-empty user ID.");
-            sess.user_id.store(new_user_id, Ordering::Relaxed);
+            from.user_id.store(new_user_id, Ordering::Relaxed);
             let notification = json!({ "event": "join", "user_id": new_user_id, "room_id": room_id });
             if let Err(e) = notify(new_user_id, notification) {
                 janus::log(LogLevel::Err, &format!("Error sending notification for user join: {:?}", e))
@@ -267,22 +267,22 @@ fn handle_join(sess: &Arc<Session>, room_id: RoomId, user_id: Option<UserId>) ->
     }))
 }
 
-fn handle_list_users(room_id: RoomId) -> MessageProcessingResult {
+fn process_list_users(room_id: RoomId) -> MessageProcessingResult {
     let sessions = STATE.sessions.read()?;
     Ok(json!({ "user_ids": get_user_ids(&sessions, room_id) }))
 }
 
-fn handle_list_rooms() -> MessageProcessingResult {
+fn process_list_rooms() -> MessageProcessingResult {
     let sessions = STATE.sessions.read()?;
     Ok(json!({ "user_ids": get_room_ids(&sessions) }))
 }
 
-fn handle_subscribe(sess: &Arc<Session>, specs: Vec<SubscriptionSpec>) -> MessageProcessingResult {
+fn process_subscribe(from: &Arc<Session>, specs: Vec<SubscriptionSpec>) -> MessageProcessingResult {
     for SubscriptionSpec { publisher_id, content_kind } in specs {
         match ContentKind::from_bits(content_kind) {
             Some(kind) => {
                 let mut subscriptions = STATE.subscriptions.write()?;
-                subscriptions::subscribe(&mut subscriptions, &sess, kind, publisher_id);
+                subscriptions::subscribe(&mut subscriptions, from, kind, publisher_id);
             }
             None => return Err(From::from("Invalid content kind.")),
         }
@@ -290,12 +290,12 @@ fn handle_subscribe(sess: &Arc<Session>, specs: Vec<SubscriptionSpec>) -> Messag
     Ok(json!({}))
 }
 
-fn handle_unsubscribe(sess: &Arc<Session>, specs: Vec<SubscriptionSpec>) -> MessageProcessingResult {
+fn process_unsubscribe(from: &Arc<Session>, specs: Vec<SubscriptionSpec>) -> MessageProcessingResult {
     for SubscriptionSpec { publisher_id, content_kind } in specs {
         match ContentKind::from_bits(content_kind) {
             Some(kind) => {
                 let mut subscriptions = STATE.subscriptions.write()?;
-                subscriptions::unsubscribe(&mut subscriptions, &sess, kind, publisher_id);
+                subscriptions::unsubscribe(&mut subscriptions, from, kind, publisher_id);
             }
             None => return Err(From::from("Invalid content kind."))
         }
@@ -303,7 +303,23 @@ fn handle_unsubscribe(sess: &Arc<Session>, specs: Vec<SubscriptionSpec>) -> Mess
     Ok(json!({}))
 }
 
-fn handle_offer(sess: &Arc<Session>, txn: *mut c_char, sdp: String) -> Result<(), Box<Error>> {
+fn process_message(from: &Arc<Session>, msg: JanssonValue) -> MessageProcessingResult {
+    match to_serde_json(msg) {
+        Ok(kind) => {
+            janus::log(LogLevel::Info, &format!("Processing {:?} on connection {:?}.", kind, from));
+            match kind {
+                MessageKind::ListRooms => process_list_rooms(),
+                MessageKind::ListUsers { room_id } => process_list_users(room_id),
+                MessageKind::Join { room_id, user_id } => process_join(from, room_id, user_id),
+                MessageKind::Subscribe { specs } => process_subscribe(from, specs),
+                MessageKind::Unsubscribe { specs } => process_unsubscribe(from, specs)
+            }
+        }
+        Err(e) => Err(Box::new(e)),
+    }
+}
+
+fn handle_offer(from: &Arc<Session>, txn: *mut c_char, sdp: String) -> Result<(), Box<Error>> {
     let offer = Sdp::parse(CString::new(sdp)?)?;
     let answer = answer_sdp!(offer, janus::sdp::OfferAnswerParameters::Video, 0);
     let answer_str = Sdp::to_string(&answer);
@@ -313,42 +329,28 @@ fn handle_offer(sess: &Arc<Session>, txn: *mut c_char, sdp: String) -> Result<()
         "sdp": answer_str.to_str()?
     }));
     let push_event = gateway_callbacks().push_event;
-    janus::get_result(push_event(sess.handle, &mut PLUGIN, txn, answer_msg.as_mut_ref(), answer_jsep.as_mut_ref()))
+    janus::get_result(push_event(from.handle, &mut PLUGIN, txn, answer_msg.as_mut_ref(), answer_jsep.as_mut_ref()))
 }
 
-fn handle_message_async(RawMessage { jsep, msg, txn, sess }: RawMessage) -> Result<(), Box<Error>> {
-    if let Some(ref sess) = sess.upgrade() {
+fn handle_message_async(RawMessage { jsep, msg, txn, from }: RawMessage) -> Result<(), Box<Error>> {
+    if let Some(ref from) = from.upgrade() {
         // if we have a JSEP, handle it independently of whether or not we have a message
         jsep.map_or(Ok(()), |x| {
             let result: JsonResult<JsepKind> = to_serde_json(x);
             match result {
                 Ok(kind) => {
-                    janus::log(LogLevel::Info, &format!("Processing {:?} on connection {:?}.", kind, sess));
+                    janus::log(LogLevel::Info, &format!("Processing {:?} from {:?}.", kind, from));
                     match kind {
-                        JsepKind::Offer { sdp } => handle_offer(&sess, txn, sdp),
-                        JsepKind::Answer { .. } => push_response(sess, txn, Err(From::from("JSEP answers not yet supported."))),
+                        JsepKind::Offer { sdp } => handle_offer(from, txn, sdp),
+                        JsepKind::Answer { .. } => push_response(from, txn, Err(From::from("JSEP answers not yet supported."))),
                     }
                 }
-                Err(e) => push_response(sess, txn, Err(Box::new(e))),
+                Err(e) => push_response(from, txn, Err(Box::new(e))),
             }
         })?;
         // if we have a message, handle that
         msg.map_or(Ok(()), |x| {
-            let result: JsonResult<MessageKind> = to_serde_json(x);
-            let response: MessageProcessingResult = match result {
-                Ok(kind) => {
-                    janus::log(LogLevel::Info, &format!("Processing {:?} on connection {:?}.", kind, sess));
-                    match kind {
-                        MessageKind::ListRooms => handle_list_rooms(),
-                        MessageKind::ListUsers { room_id } => handle_list_users(room_id),
-                        MessageKind::Join { room_id, user_id } => handle_join(&sess, room_id, user_id),
-                        MessageKind::Subscribe { specs } => handle_subscribe(&sess, specs),
-                        MessageKind::Unsubscribe { specs } => handle_unsubscribe(&sess, specs)
-                    }
-                }
-                Err(e) => Err(Box::new(e)),
-            };
-            push_response(sess, txn, response)
+            push_response(from, txn, process_message(from, x))
         })
     } else {
         // getting messages for destroyed connections is slightly concerning,
@@ -364,7 +366,7 @@ extern "C" fn handle_message(handle: *mut PluginSession, transaction: *mut c_cha
         match Session::from_ptr(handle) {
             Ok(sess) => {
                 let msg = RawMessage {
-                    sess: Arc::downgrade(&sess),
+                    from: Arc::downgrade(&sess),
                     txn: transaction,
                     msg: unsafe { JanssonValue::new(message) },
                     jsep: unsafe { JanssonValue::new(jsep) }

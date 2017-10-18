@@ -61,9 +61,9 @@ pub struct SubscriptionSpec {
 /// These will be queued up asynchronously and processed in order later.
 #[derive(Debug)]
 pub struct RawMessage {
-    /// A reference to the session state. Possibly null if the session has been destroyed
+    /// A reference to the sender's session. Possibly null if the session has been destroyed
     /// in between receiving and processing this message.
-    pub sess: Weak<Session>,
+    pub from: Weak<Session>,
 
     /// The transaction ID used to mark any responses to this message.
     pub txn: *mut c_char,
