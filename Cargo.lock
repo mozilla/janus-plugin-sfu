@@ -66,12 +66,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 [[package]]
 name = "jansson-sys"
 version = "0.1.0"
-source = "git+https://github.com/mquander/janus-plugin-rs#474615b36bcdc5cb610f92e4b091ec94ce3157c7"
+source = "git+https://github.com/mquander/janus-plugin-rs#282ee6daf2e700257c5c4545f702b41783ee0bf2"
 
 [[package]]
 name = "janus-plugin"
 version = "0.1.0"
-source = "git+https://github.com/mquander/janus-plugin-rs#474615b36bcdc5cb610f92e4b091ec94ce3157c7"
+source = "git+https://github.com/mquander/janus-plugin-rs#282ee6daf2e700257c5c4545f702b41783ee0bf2"
 dependencies = [
  "bitflags 1.0.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "chrono 0.4.0 (registry+https://github.com/rust-lang/crates.io-index)",
@@ -86,7 +86,7 @@ dependencies = [
 [[package]]
 name = "janus-plugin-sys"
 version = "0.1.0"
-source = "git+https://github.com/mquander/janus-plugin-rs#474615b36bcdc5cb610f92e4b091ec94ce3157c7"
+source = "git+https://github.com/mquander/janus-plugin-rs#282ee6daf2e700257c5c4545f702b41783ee0bf2"
 dependencies = [
  "glib-sys 0.4.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "jansson-sys 0.1.0 (git+https://github.com/mquander/janus-plugin-rs)",

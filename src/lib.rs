@@ -97,7 +97,7 @@ fn notify(myself: UserId, json: JsonValue) -> Result<(), Box<Error>> {
     let push_event = gateway_callbacks().push_event;
     for other in STATE.sessions.read()?.iter() {
         if other.user_id.load(Ordering::Relaxed) != Some(myself) {
-            janus::get_result(push_event(other.handle, &mut PLUGIN, ptr::null(), msg.ptr, ptr::null_mut()))?
+            janus::get_result(push_event(other.handle, &mut PLUGIN, ptr::null(), msg.as_mut_ref(), ptr::null_mut()))?
         }
     }
     Ok(())
@@ -110,7 +110,7 @@ fn push_response(sess: &Session, txn: *mut c_char, result: MessageProcessingResu
         Err(err) => json!({ "success": false, "error": format!("{}", err) }),
     };
     janus::log(LogLevel::Info, &format!("{:?} sending response to {:?}: {}.", sess.handle, txn, response));
-    janus::get_result(push_event(sess.handle, &mut PLUGIN, txn, from_serde_json(response).ptr, ptr::null_mut()))
+    janus::get_result(push_event(sess.handle, &mut PLUGIN, txn, from_serde_json(response).as_mut_ref(), ptr::null_mut()))
 }
 
 fn relay<T>(from: *mut PluginSession, kind: ContentKind, send: T) -> Result<(), Box<Error>> where T: Fn(&Session) {
@@ -313,7 +313,7 @@ fn handle_offer(sess: &Arc<Session>, txn: *mut c_char, sdp: String) -> Result<()
         "sdp": answer_str.to_str()?
     }));
     let push_event = gateway_callbacks().push_event;
-    janus::get_result(push_event(sess.handle, &mut PLUGIN, txn, answer_msg.ptr, answer_jsep.ptr))
+    janus::get_result(push_event(sess.handle, &mut PLUGIN, txn, answer_msg.as_mut_ref(), answer_jsep.as_mut_ref()))
 }
 
 fn handle_message_async(RawMessage { jsep, msg, txn, sess }: RawMessage) -> Result<(), Box<Error>> {
@@ -366,8 +366,8 @@ extern "C" fn handle_message(handle: *mut PluginSession, transaction: *mut c_cha
                 let msg = RawMessage {
                     sess: Arc::downgrade(&sess),
                     txn: transaction,
-                    msg: JanssonValue::new(message),
-                    jsep: JanssonValue::new(jsep)
+                    msg: unsafe { JanssonValue::new(message) },
+                    jsep: unsafe { JanssonValue::new(jsep) }
                 };
                 STATE.message_channel.lock().unwrap().as_ref().unwrap().send(msg).ok();
                 janus::create_result(PluginResultType::JANUS_PLUGIN_OK_WAIT, cstr!("Processing."), None)

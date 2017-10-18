@@ -75,4 +75,5 @@ pub struct RawMessage {
     pub jsep: Option<JanssonValue>,
 }
 
+// covers the txn pointer -- careful that the other fields are really threadsafe!
 unsafe impl Send for RawMessage {}
