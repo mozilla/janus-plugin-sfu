@@ -37,7 +37,7 @@ EOF
 )"
 
 working_directory=$(realpath "$working_directory")
-force_rebuild=$([[ $force_rebuild == "true" ]] && echo "true")
+force_rebuild=$([[ $force_rebuild == "true" ]] && echo "true") || true
 
 cd "$working_directory"
 
