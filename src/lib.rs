@@ -35,6 +35,14 @@ use std::sync::atomic::Ordering;
 use std::thread;
 use subscriptions::{ContentKind, SubscriptionMap};
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(untagged)]
+enum OptionalPayload<T> {
+    Some(T),
+    None {}
+}
+
+
 /// Inefficiently converts a serde JSON value to a Jansson JSON value.
 fn from_serde_json(input: JsonValue) -> JanssonValue {
     JanssonValue::from_str(&input.to_string(), JanssonDecodingFlags::empty()).unwrap()
@@ -45,7 +53,11 @@ fn to_serde_json<T>(input: JanssonValue) -> JsonResult<T> where T: serde::de::De
     serde_json::from_str(input.to_libcstring(JanssonEncodingFlags::empty()).to_str().unwrap())
 }
 
+/// A result which carries a signalling message to send to a client.
 type MessageProcessingResult = Result<JsonValue, Box<Error>>;
+
+/// A result which carries a JSEP offer or answer to send to a client.
+type JsepResult = Result<JsonValue, Box<Error>>;
 
 const METADATA: PluginMetadata = PluginMetadata {
     version: 1,
@@ -101,16 +113,6 @@ fn notify(myself: UserId, json: JsonValue) -> Result<(), Box<Error>> {
         }
     }
     Ok(())
-}
-
-fn push_response(from: &Session, txn: *mut c_char, result: MessageProcessingResult) -> Result<(), Box<Error>> {
-    let push_event = gateway_callbacks().push_event;
-    let response = match result {
-        Ok(resp) => json!({ "success": true, "response": resp }),
-        Err(err) => json!({ "success": false, "error": format!("{}", err) }),
-    };
-    janus::log(LogLevel::Info, &format!("{:?} sending response to {:?}: {}.", from.handle, txn, response));
-    janus::get_result(push_event(from.handle, &mut PLUGIN, txn, from_serde_json(response).as_mut_ref(), ptr::null_mut()))
 }
 
 fn relay<T>(from: *mut PluginSession, kind: ContentKind, send: T) -> Result<(), Box<Error>> where T: Fn(&Session) {
@@ -217,7 +219,7 @@ extern "C" fn incoming_rtp(handle: *mut PluginSession, video: c_int, buf: *mut c
     let content_kind = if video == 1 { ContentKind::VIDEO } else { ContentKind::AUDIO };
     let relay_rtp = gateway_callbacks().relay_rtp;
     if let Err(e) = relay(handle, content_kind, |other| { relay_rtp(other.handle, video, buf, len); }) {
-        janus::log(LogLevel::Err, &format!("Discarding RTP packet: {}", e))
+        janus::log(LogLevel::Huge, &format!("Discarding RTP packet: {}", e))
     }
 }
 
@@ -225,14 +227,14 @@ extern "C" fn incoming_rtcp(handle: *mut PluginSession, video: c_int, buf: *mut 
     let content_kind = if video == 1 { ContentKind::VIDEO } else { ContentKind::AUDIO };
     let relay_rtcp = gateway_callbacks().relay_rtcp;
     if let Err(e) = relay(handle, content_kind, |other| { relay_rtcp(other.handle, video, buf, len); }) {
-        janus::log(LogLevel::Err, &format!("Discarding RTCP packet: {}", e))
+        janus::log(LogLevel::Huge, &format!("Discarding RTCP packet: {}", e))
     }
 }
 
 extern "C" fn incoming_data(handle: *mut PluginSession, buf: *mut c_char, len: c_int) {
     let relay_data = gateway_callbacks().relay_data;
     if let Err(e) = relay(handle, ContentKind::DATA, |other| { relay_data(other.handle, buf, len); }) {
-        janus::log(LogLevel::Err, &format!("Discarding data packet: {}", e))
+        janus::log(LogLevel::Huge, &format!("Discarding data packet: {}", e))
     }
 }
 
@@ -304,8 +306,9 @@ fn process_unsubscribe(from: &Arc<Session>, specs: Vec<SubscriptionSpec>) -> Mes
 }
 
 fn process_message(from: &Arc<Session>, msg: JanssonValue) -> MessageProcessingResult {
-    match to_serde_json(msg) {
-        Ok(kind) => {
+    match to_serde_json::<OptionalPayload<MessageKind>>(msg) {
+        Ok(OptionalPayload::None {}) => Ok(json!({})),
+        Ok(OptionalPayload::Some(kind)) => {
             janus::log(LogLevel::Info, &format!("Processing {:?} on connection {:?}.", kind, from));
             match kind {
                 MessageKind::ListRooms => process_list_rooms(),
@@ -319,39 +322,51 @@ fn process_message(from: &Arc<Session>, msg: JanssonValue) -> MessageProcessingR
     }
 }
 
-fn handle_offer(from: &Arc<Session>, txn: *mut c_char, sdp: String) -> Result<(), Box<Error>> {
+fn process_offer(sdp: String) -> JsepResult {
     let offer = Sdp::parse(CString::new(sdp)?)?;
     let answer = answer_sdp!(offer, janus::sdp::OfferAnswerParameters::Video, 0);
     let answer_str = Sdp::to_string(&answer);
-    let answer_msg = from_serde_json(json!({}));
-    let answer_jsep = from_serde_json(json!({
-        "type": "answer",
-        "sdp": answer_str.to_str()?
-    }));
+    Ok(serde_json::to_value(JsepKind::Answer { sdp: answer_str.to_str()?.to_owned() })?)
+}
+
+fn process_jsep(from: &Arc<Session>, jsep: JanssonValue) -> JsepResult {
+    match to_serde_json::<OptionalPayload<JsepKind>>(jsep) {
+        Ok(OptionalPayload::None {}) => Ok(json!({})),
+        Ok(OptionalPayload::Some(kind)) => {
+            janus::log(LogLevel::Info, &format!("Processing {:?} from {:?}.", kind, from));
+            match kind {
+                JsepKind::Offer { sdp } => process_offer(sdp),
+                JsepKind::Answer { .. } => Err(From::from("JSEP answers not yet supported.")),
+            }
+        }
+        Err(e) => Err(Box::new(e)),
+    }
+}
+
+fn push_response(from: &Session, txn: *mut c_char, msg: JsonValue, jsep: Option<JsonValue>) -> Result<(), Box<Error>> {
     let push_event = gateway_callbacks().push_event;
-    janus::get_result(push_event(from.handle, &mut PLUGIN, txn, answer_msg.as_mut_ref(), answer_jsep.as_mut_ref()))
+    let jsep = jsep.unwrap_or_else(|| json!({}));
+    janus::log(LogLevel::Info, &format!("{:?} sending response to {:?}: msg = {}.", from.handle, txn, msg));
+    janus::get_result(push_event(from.handle, &mut PLUGIN, txn, from_serde_json(msg).as_mut_ref(), from_serde_json(jsep).as_mut_ref()))
 }
 
 fn handle_message_async(RawMessage { jsep, msg, txn, from }: RawMessage) -> Result<(), Box<Error>> {
     if let Some(ref from) = from.upgrade() {
         // if we have a JSEP, handle it independently of whether or not we have a message
-        jsep.map_or(Ok(()), |x| {
-            let result: JsonResult<JsepKind> = to_serde_json(x);
-            match result {
-                Ok(kind) => {
-                    janus::log(LogLevel::Info, &format!("Processing {:?} from {:?}.", kind, from));
-                    match kind {
-                        JsepKind::Offer { sdp } => handle_offer(from, txn, sdp),
-                        JsepKind::Answer { .. } => push_response(from, txn, Err(From::from("JSEP answers not yet supported."))),
-                    }
-                }
-                Err(e) => push_response(from, txn, Err(Box::new(e))),
-            }
-        })?;
-        // if we have a message, handle that
-        msg.map_or(Ok(()), |x| {
-            push_response(from, txn, process_message(from, x))
-        })
+        let jsep_result = jsep.map(|x| process_jsep(from, x));
+        let msg_result = msg.map(|x| process_message(from, x));
+        if let Some(Err(msg_err)) = msg_result {
+            let resp = json!({ "success": false, "error": format!("Error processing message: {}", msg_err)});
+            return push_response(from, txn, resp, None)
+        }
+        if let Some(Err(jsep_err)) = jsep_result {
+            let resp = json!({ "success": false, "error": format!("Error processing JSEP: {}", jsep_err)});
+            return push_response(from, txn, resp, None);
+        }
+        let msg_resp = msg_result.map_or(json!({ "success": true }), |x| {
+            json!({ "success": true, "response": x.ok().unwrap() })
+        });
+        push_response(from, txn, msg_resp, jsep_result.map(|x| x.ok().unwrap()))
     } else {
         // getting messages for destroyed connections is slightly concerning,
         // because messages shouldn't be backed up for that long, so warn if it happens
@@ -424,6 +439,13 @@ mod tests {
     mod message_parsing {
 
         use super::*;
+
+        #[test]
+        fn parse_empty() {
+            let json = r#"{}"#;
+            let result: OptionalPayload<MessageKind> = serde_json::from_str(json).unwrap();
+            assert_eq!(result, OptionalPayload::None {});
+        }
 
         #[test]
         fn parse_list_rooms() {
