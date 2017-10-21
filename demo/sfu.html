@@ -3,21 +3,11 @@
   <head>
     <meta charset="utf-8">
     <title>Test harness for retproxy</title>
-    <script type="text/javascript" src="https://cdnjs.cloudflare.com/ajax/libs/webrtc-adapter/3.4.3/adapter.min.js"></script>
-    <script type="text/javascript" src="https://janus.conf.meetecho.com/janus.nojquery.js"></script>
-    <script type="text/javascript" src="sfu.js"></script>
   </head>
   <body>
-    <script>
-     document.addEventListener("DOMContentLoaded", function() {
-         Janus.init({debug: "all", callback: function() {
-             if(!Janus.isWebrtcSupported()) {
-	         Janus.error("No WebRTC support detected.");
-	         return;
-             }
-         }});
-         init();
-     });
-    </script>
+    <p>Janus test page.</p>
+    <script type="text/javascript" src="https://cdnjs.cloudflare.com/ajax/libs/webrtc-adapter/3.4.3/adapter.min.js"></script>
+    <script type="text/javascript" src="https://cdn.rawgit.com/mquander/minijanus.js/master/bundle.js"></script>
+    <script type="text/javascript" src="sfu.js"></script>
   </body>
 </html>
