@@ -43,12 +43,24 @@ function handleMessage(session, ev) {
     }
 }
 
+function negotiateIce(conn, handle) {
+    return new Promise((resolve, reject) => {
+        conn.addEventListener("icecandidate", ev => {
+            handle.sendTrickle(ev.candidate || null).then(() => {
+                if (!ev.candidate) { // this was the last candidate on our end and now they received it
+                    resolve();
+                }
+            });
+        });
+    });
+};
+
 function attachPublisher(session) {
     console.info("Attaching publisher for session: ", session);
     var conn = new RTCPeerConnection(PEER_CONNECTION_CONFIG);
-    var handle = new Minijanus.JanusPluginHandle(session, conn);
+    var handle = new Minijanus.JanusPluginHandle(session);
     var publisher = handle.attach("janus.plugin.sfu").then(() => {
-        var iceReady = handle.negotiateIce();
+        var iceReady = negotiateIce(conn, handle);
         var unreliableChannel = conn.createDataChannel("unreliable", { ordered: false, maxRetransmits: 0 });
         var reliableChannel = conn.createDataChannel("reliable", { ordered: true });
         var mediaReady = navigator.mediaDevices.getUserMedia({ audio: true });
@@ -83,7 +95,7 @@ function attachPublisher(session) {
 function attachSubscriber(session, otherId) {
     console.info("Attaching subscriber to " + otherId + " for session: ", session);
     var conn = new RTCPeerConnection(PEER_CONNECTION_CONFIG);
-    var handle = new Minijanus.JanusPluginHandle(session, conn);
+    var handle = new Minijanus.JanusPluginHandle(session);
     conn.addEventListener("track", function(ev) {
         var receiverEl = document.createElement("audio");
         document.body.appendChild(receiverEl);
@@ -92,7 +104,7 @@ function attachSubscriber(session, otherId) {
     });
 
     var subscriber = handle.attach("janus.plugin.sfu").then(() => {
-        var iceReady = handle.negotiateIce();
+        var iceReady = negotiateIce(conn, handle);
         var offerReady = conn.createOffer({ offerToReceiveAudio: true });
         var localReady = offerReady.then(conn.setLocalDescription.bind(conn));
         var remoteReady = offerReady
