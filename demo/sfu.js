@@ -73,21 +73,16 @@ function attachPublisher(session) {
         var remoteReady = offerReady
             .then(handle.sendJsep.bind(handle))
             .then(answer => conn.setRemoteDescription(answer.jsep));
-        return Promise.all([iceReady, localReady, remoteReady]).then(() => {
-            console.info("Publisher connection established: ", handle);
-            return handle;
-        });
+        return Promise.all([iceReady, localReady, remoteReady]);
     });
 
-    return publisher.then(handle => {
-        return handle.sendMessage({ kind: "join", room_id: ROOM_ID }).then(reply => {
-            var response = reply.plugindata.data.response;
-            USER_ID = response.user_id;
-            response.user_ids.forEach(otherId => {
-                if (USER_ID !== otherId) {
-                    attachSubscriber(session, otherId);
-                }
-            });
+    return publisher.then(() => publisher.sendMessage({ kind: "join", room_id: ROOM_ID })).then(reply => {
+        var response = reply.plugindata.data.response;
+        USER_ID = response.user_id;
+        response.user_ids.forEach(otherId => {
+            if (USER_ID !== otherId) {
+                attachSubscriber(session, otherId);
+            }
         });
     });
 }
@@ -95,7 +90,6 @@ function attachPublisher(session) {
 function attachSubscriber(session, otherId) {
     console.info("Attaching subscriber to " + otherId + " for session: ", session);
     var conn = new RTCPeerConnection(PEER_CONNECTION_CONFIG);
-    var handle = new Minijanus.JanusPluginHandle(session);
     conn.addEventListener("track", function(ev) {
         var receiverEl = document.createElement("audio");
         document.body.appendChild(receiverEl);
@@ -103,6 +97,7 @@ function attachSubscriber(session, otherId) {
         receiverEl.play();
     });
 
+    var handle = new Minijanus.JanusPluginHandle(session);
     var subscriber = handle.attach("janus.plugin.sfu").then(() => {
         var iceReady = negotiateIce(conn, handle);
         var offerReady = conn.createOffer({ offerToReceiveAudio: true });
@@ -110,13 +105,10 @@ function attachSubscriber(session, otherId) {
         var remoteReady = offerReady
             .then(handle.sendJsep.bind(handle))
             .then(answer => conn.setRemoteDescription(answer.jsep));
-        return Promise.all([iceReady, localReady, remoteReady]).then(() => {
-            console.info("Subscriber connection established: ", handle);
-            return handle;
-        });
+        return Promise.all([iceReady, localReady, remoteReady]);
     });
 
-    return subscriber.then(handle => {
+    return subscriber.then(() => {
         return handle.sendMessage({ kind: "join", room_id: ROOM_ID, user_id: USER_ID, subscription_specs: [
             { content_kind: 255, publisher_id: otherId }
         ]});
