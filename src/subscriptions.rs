@@ -1,7 +1,9 @@
 /// Types and code related to managing session subscriptions to incoming data.
 use entityids::UserId;
 use sessions::Session;
+use messages::SubscriptionSpec;
 use std::collections::HashMap;
+use std::error::Error;
 use std::sync::{Arc, Weak};
 
 bitflags! {
@@ -12,8 +14,8 @@ bitflags! {
         const AUDIO = 0b00000001;
         /// Video traffic.
         const VIDEO = 0b00000010;
-        /// Data channel traffic.
-        const DATA = 0b00000100;
+        /// Video traffic.
+        const ALL = 0b11111111;
     }
 }
 
@@ -41,6 +43,18 @@ pub fn subscribe(subscriptions: &mut SubscriptionMap, sess: &Arc<Session>, kind:
     subscriptions.entry(publisher).or_insert_with(Vec::new).push(Subscription::new(sess, kind));
 }
 
+pub fn subscribe_all(subscriptions: &mut SubscriptionMap, sess: &Arc<Session>, specs: &Vec<SubscriptionSpec>) -> Result<(), Box<Error>> {
+    for &SubscriptionSpec { publisher_id, content_kind } in specs {
+        match ContentKind::from_bits(content_kind) {
+            Some(kind) => {
+                subscribe(subscriptions, sess, kind, publisher_id);
+            }
+            None => return Err(From::from("Invalid content kind.")),
+        }
+    }
+    Ok(())
+}
+
 pub fn unsubscribe(subscriptions: &mut SubscriptionMap, sess: &Arc<Session>, kind: ContentKind, publisher: UserId) {
     subscriptions.entry(publisher).or_insert_with(Vec::new).retain(|ref sub| {
         let matches = if let Some(s) = sub.sess.upgrade() { s.handle == sess.handle && sub.kind == kind } else { false };
@@ -48,16 +62,31 @@ pub fn unsubscribe(subscriptions: &mut SubscriptionMap, sess: &Arc<Session>, kin
     });
 }
 
+pub fn unsubscribe_all(subscriptions: &mut SubscriptionMap, sess: &Arc<Session>, specs: &Vec<SubscriptionSpec>) -> Result<(), Box<Error>> {
+    for &SubscriptionSpec { publisher_id, content_kind } in specs {
+        match ContentKind::from_bits(content_kind) {
+            Some(kind) => {
+                unsubscribe(subscriptions, sess, kind, publisher_id);
+            }
+            None => return Err(From::from("Invalid content kind.")),
+        }
+    }
+    Ok(())
+}
+
 pub fn unpublish(subscriptions: &mut SubscriptionMap, publisher: UserId) {
     subscriptions.remove(&publisher);
 }
 
-pub fn subscribers_to(subscriptions: &SubscriptionMap, publisher: UserId, kind: ContentKind) -> Vec<&Subscription> {
+pub fn subscribers_to(subscriptions: &SubscriptionMap, publisher: UserId, kind: Option<ContentKind>) -> Vec<&Subscription> {
     let all_subscriptions = subscriptions.get(&publisher).map(Vec::as_slice).unwrap_or(&[]).iter();
-    all_subscriptions.filter(|s| s.kind.contains(kind)).collect()
+    match kind {
+        None => all_subscriptions.collect(),
+        Some(k) => all_subscriptions.filter(|s| { s.kind.contains(k) }).collect()
+    }
 }
 
-pub fn for_each_subscriber<T>(subscriptions: &SubscriptionMap, publisher: UserId, kind: ContentKind, send: T) where T: Fn(&Session) {
+pub fn for_each_subscriber<T>(subscriptions: &SubscriptionMap, publisher: UserId, kind: Option<ContentKind>, send: T) where T: Fn(&Session) {
     for subscription in subscribers_to(subscriptions, publisher, kind) {
         if let Some(subscriber_sess) = subscription.sess.upgrade() {
             send(subscriber_sess.as_ref());

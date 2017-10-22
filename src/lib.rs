@@ -20,7 +20,7 @@ mod subscriptions;
 use entityids::{AtomicUserId, RoomId, UserId};
 use janus::{JanssonDecodingFlags, JanssonEncodingFlags, JanssonValue, LogLevel, Plugin, PluginCallbacks, PluginMetadata, PluginResultInfo,
             PluginResultType, PluginSession, RawJanssonValue};
-use janus::sdp::Sdp;
+use janus::sdp::{MediaType, Sdp};
 use messages::{JsepKind, MessageKind, RawMessage, SubscriptionSpec};
 use serde_json::Result as JsonResult;
 use serde_json::Value as JsonValue;
@@ -115,7 +115,7 @@ fn notify(myself: UserId, json: JsonValue) -> Result<(), Box<Error>> {
     Ok(())
 }
 
-fn relay<T>(from: *mut PluginSession, kind: ContentKind, send: T) -> Result<(), Box<Error>> where T: Fn(&Session) {
+fn relay<T>(from: *mut PluginSession, kind: Option<ContentKind>, send: T) -> Result<(), Box<Error>> where T: Fn(&Session) {
     let sess = Session::from_ptr(from)?;
     if let Some(user_id) = sess.user_id.load(Ordering::Relaxed) {
         if let Some(room_id) = sess.room_id.load(Ordering::Relaxed) {
@@ -218,7 +218,7 @@ extern "C" fn setup_media(_handle: *mut PluginSession) {
 extern "C" fn incoming_rtp(handle: *mut PluginSession, video: c_int, buf: *mut c_char, len: c_int) {
     let content_kind = if video == 1 { ContentKind::VIDEO } else { ContentKind::AUDIO };
     let relay_rtp = gateway_callbacks().relay_rtp;
-    if let Err(e) = relay(handle, content_kind, |other| { relay_rtp(other.handle, video, buf, len); }) {
+    if let Err(e) = relay(handle, Some(content_kind), |other| { relay_rtp(other.handle, video, buf, len); }) {
         janus::log(LogLevel::Huge, &format!("Discarding RTP packet: {}", e))
     }
 }
@@ -226,14 +226,17 @@ extern "C" fn incoming_rtp(handle: *mut PluginSession, video: c_int, buf: *mut c
 extern "C" fn incoming_rtcp(handle: *mut PluginSession, video: c_int, buf: *mut c_char, len: c_int) {
     let content_kind = if video == 1 { ContentKind::VIDEO } else { ContentKind::AUDIO };
     let relay_rtcp = gateway_callbacks().relay_rtcp;
-    if let Err(e) = relay(handle, content_kind, |other| { relay_rtcp(other.handle, video, buf, len); }) {
+    if let Err(e) = relay(handle, Some(content_kind), |other| { relay_rtcp(other.handle, video, buf, len); }) {
         janus::log(LogLevel::Huge, &format!("Discarding RTCP packet: {}", e))
     }
 }
 
 extern "C" fn incoming_data(handle: *mut PluginSession, buf: *mut c_char, len: c_int) {
     let relay_data = gateway_callbacks().relay_data;
-    if let Err(e) = relay(handle, ContentKind::DATA, |other| { relay_data(other.handle, buf, len); }) {
+    let result = relay(handle, None, |other| {
+        relay_data(other.handle, buf, len);
+    });
+    if let Err(e) = result {
         janus::log(LogLevel::Huge, &format!("Discarding data packet: {}", e))
     }
 }
@@ -246,14 +249,21 @@ extern "C" fn hangup_media(_handle: *mut PluginSession) {
     janus::log(LogLevel::Verb, "Hanging up WebRTC media.");
 }
 
-fn process_join(from: &Arc<Session>, room_id: RoomId, user_id: Option<UserId>) -> MessageProcessingResult {
+fn process_join(from: &Arc<Session>, room_id: RoomId, user_id: Option<UserId>, subscription_specs: Option<Vec<SubscriptionSpec>>) -> MessageProcessingResult {
     from.room_id.store(room_id, Ordering::Relaxed);
+    let subscription_specs = subscription_specs.unwrap_or_else(Vec::new);
+    let mut subscriptions = STATE.subscriptions.write()?;
     let new_user_id = match user_id {
-        Some(n) => { from.user_id.store(n, Ordering::Relaxed); n },
+        Some(n) => {
+            from.user_id.store(n, Ordering::Relaxed);
+            subscriptions::subscribe_all(&mut subscriptions, from, &subscription_specs)?;
+            n
+        },
         None => {
             let new_user_id = STATE.next_user_id.next(Ordering::Relaxed)
                 .expect("next_user_id is always a non-empty user ID.");
             from.user_id.store(new_user_id, Ordering::Relaxed);
+            subscriptions::subscribe_all(&mut subscriptions, from, &subscription_specs)?;
             let notification = json!({ "event": "join", "user_id": new_user_id, "room_id": room_id });
             if let Err(e) = notify(new_user_id, notification) {
                 janus::log(LogLevel::Err, &format!("Error sending notification for user join: {:?}", e))
@@ -280,29 +290,13 @@ fn process_list_rooms() -> MessageProcessingResult {
 }
 
 fn process_subscribe(from: &Arc<Session>, specs: Vec<SubscriptionSpec>) -> MessageProcessingResult {
-    for SubscriptionSpec { publisher_id, content_kind } in specs {
-        match ContentKind::from_bits(content_kind) {
-            Some(kind) => {
-                let mut subscriptions = STATE.subscriptions.write()?;
-                subscriptions::subscribe(&mut subscriptions, from, kind, publisher_id);
-            }
-            None => return Err(From::from("Invalid content kind.")),
-        }
-    }
-    Ok(json!({}))
+    let mut subscriptions = STATE.subscriptions.write()?;
+    subscriptions::subscribe_all(&mut subscriptions, from, &specs).map(|_| json!({}))
 }
 
 fn process_unsubscribe(from: &Arc<Session>, specs: Vec<SubscriptionSpec>) -> MessageProcessingResult {
-    for SubscriptionSpec { publisher_id, content_kind } in specs {
-        match ContentKind::from_bits(content_kind) {
-            Some(kind) => {
-                let mut subscriptions = STATE.subscriptions.write()?;
-                subscriptions::unsubscribe(&mut subscriptions, from, kind, publisher_id);
-            }
-            None => return Err(From::from("Invalid content kind."))
-        }
-    }
-    Ok(json!({}))
+    let mut subscriptions = STATE.subscriptions.write()?;
+    subscriptions::unsubscribe_all(&mut subscriptions, from, &specs).map(|_| json!({}))
 }
 
 fn process_message(from: &Arc<Session>, msg: JanssonValue) -> MessageProcessingResult {
@@ -313,7 +307,7 @@ fn process_message(from: &Arc<Session>, msg: JanssonValue) -> MessageProcessingR
             match kind {
                 MessageKind::ListRooms => process_list_rooms(),
                 MessageKind::ListUsers { room_id } => process_list_users(room_id),
-                MessageKind::Join { room_id, user_id } => process_join(from, room_id, user_id),
+                MessageKind::Join { room_id, user_id, subscription_specs } => process_join(from, room_id, user_id, subscription_specs),
                 MessageKind::Subscribe { specs } => process_subscribe(from, specs),
                 MessageKind::Unsubscribe { specs } => process_unsubscribe(from, specs)
             }
@@ -322,10 +316,12 @@ fn process_message(from: &Arc<Session>, msg: JanssonValue) -> MessageProcessingR
     }
 }
 
-fn process_offer(sdp: String) -> JsepResult {
+fn process_offer(from: &Arc<Session>, sdp: String) -> JsepResult {
     let offer = Sdp::parse(CString::new(sdp)?)?;
     let answer = answer_sdp!(offer, janus::sdp::OfferAnswerParameters::Video, 0);
     let answer_str = Sdp::to_string(&answer);
+    from.has_data.store(answer.get_mlines().contains_key(&MediaType::JANUS_SDP_APPLICATION), Ordering::Relaxed);
+    janus::log(LogLevel::Info, &format!("{:?}.", answer.get_mlines()));
     Ok(serde_json::to_value(JsepKind::Answer { sdp: answer_str.to_str()?.to_owned() })?)
 }
 
@@ -335,7 +331,7 @@ fn process_jsep(from: &Arc<Session>, jsep: JanssonValue) -> JsepResult {
         Ok(OptionalPayload::Some(kind)) => {
             janus::log(LogLevel::Info, &format!("Processing {:?} from {:?}.", kind, from));
             match kind {
-                JsepKind::Offer { sdp } => process_offer(sdp),
+                JsepKind::Offer { sdp } => process_offer(from, sdp),
                 JsepKind::Answer { .. } => Err(From::from("JSEP answers not yet supported.")),
             }
         }
@@ -463,11 +459,12 @@ mod tests {
 
         #[test]
         fn parse_join_no_user_id() {
-            let json = r#"{"kind": "join", "room_id": 5}"#;
+            let json = r#"{"kind": "join", "room_id": 5, "subscription_specs": []}"#;
             let result: MessageKind = serde_json::from_str(json).unwrap();
             assert_eq!(result, MessageKind::Join {
                 user_id: None,
-                room_id: RoomId::try_from(5).unwrap()
+                room_id: RoomId::try_from(5).unwrap(),
+                subscription_specs: Some(vec!()),
             });
         }
 
@@ -477,7 +474,8 @@ mod tests {
             let result: MessageKind = serde_json::from_str(json).unwrap();
             assert_eq!(result, MessageKind::Join {
                 user_id: Some(UserId::try_from(10).unwrap()),
-                room_id: RoomId::try_from(5).unwrap()
+                room_id: RoomId::try_from(5).unwrap(),
+                subscription_specs: None,
             });
         }
 

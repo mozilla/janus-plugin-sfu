@@ -26,11 +26,13 @@ pub enum MessageKind {
     /// The first session associated with a client should pass no user ID; the server will generate
     /// an ID and return it. Subsequent sessions associated with the same client should pass the same ID.
     ///
-    /// If a role is specified, subscriptions for this session will be configured apropos the given role;
-    /// otherwise, this session won't be subscribed to anything.
+    /// If subscriptions are specified, some initial subscriptions for this session will be configured. This is
+    /// useful to save a round trip and to make sure that subscriptions are established before other clients
+    /// get a join event for this user.
     Join {
         room_id: RoomId,
         user_id: Option<UserId>,
+        subscription_specs: Option<Vec<SubscriptionSpec>>
     },
 
     /// Indicates that a client wishes to subscribe to traffic described by the given subscription specifications.

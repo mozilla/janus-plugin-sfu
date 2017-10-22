@@ -1,6 +1,7 @@
 /// Types for representing Janus session state.
 use entityids::{AtomicRoomId, AtomicUserId};
 use janus::session::SessionWrapper;
+use std::sync::atomic::AtomicBool;
 
 /// The state associated with a single session.
 #[derive(Debug)]
@@ -16,11 +17,15 @@ pub struct SessionState {
     ///
     /// By convention, this starts out empty during every session and is immutable once set.
     pub room_id: AtomicRoomId,
+
+    /// Whether or not this session has negotiated a data connection.
+    pub has_data: AtomicBool,
 }
 
 impl Default for SessionState {
     fn default() -> Self {
         Self {
+            has_data: AtomicBool::new(false),
             room_id: AtomicRoomId::empty(),
             user_id: AtomicUserId::empty(),
         }
