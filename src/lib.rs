@@ -1,3 +1,4 @@
+extern crate atom;
 #[macro_use]
 extern crate bitflags;
 #[macro_use]
@@ -12,36 +13,27 @@ extern crate serde_derive;
 #[macro_use]
 extern crate serde_json;
 
-mod entityids;
 mod messages;
 mod sessions;
 mod subscriptions;
 
-use entityids::{AtomicUserId, RoomId, UserId};
+use atom::AtomSetOnce;
+use messages::{RoomId, UserId};
 use janus::{JanssonDecodingFlags, JanssonEncodingFlags, JanssonValue, LogLevel, Plugin, PluginCallbacks, PluginMetadata, PluginResultInfo,
             PluginResultType, PluginSession, RawJanssonValue};
-use janus::sdp::{MediaType, Sdp};
-use messages::{JsepKind, MessageKind, RawMessage, SubscriptionSpec};
+use janus::sdp::Sdp;
+use messages::{JsepKind, MessageKind, OptionalField, RawMessage, SubscriptionSpec};
 use serde_json::Result as JsonResult;
 use serde_json::Value as JsonValue;
-use sessions::Session;
+use sessions::{Session, SessionState};
 use std::collections::HashSet;
 use std::error::Error;
 use std::ffi::CString;
 use std::os::raw::{c_char, c_int};
 use std::ptr;
 use std::sync::{mpsc, Arc, Mutex, RwLock};
-use std::sync::atomic::Ordering;
 use std::thread;
 use subscriptions::{ContentKind, SubscriptionMap};
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(untagged)]
-enum OptionalPayload<T> {
-    Some(T),
-    None {}
-}
-
 
 /// Inefficiently converts a serde JSON value to a Jansson JSON value.
 fn from_serde_json(input: JsonValue) -> JanssonValue {
@@ -80,7 +72,6 @@ struct State {
     pub sessions: RwLock<Vec<Box<Arc<Session>>>>,
     pub subscriptions: RwLock<SubscriptionMap>,
     pub message_channel: Mutex<Option<mpsc::SyncSender<RawMessage>>>,
-    pub next_user_id: AtomicUserId,
 }
 
 lazy_static! {
@@ -88,51 +79,64 @@ lazy_static! {
         sessions: RwLock::new(Vec::new()),
         subscriptions: RwLock::new(SubscriptionMap::new()),
         message_channel: Mutex::new(None),
-        next_user_id: AtomicUserId::first()
     };
 }
 
 fn get_room_ids(sessions: &Vec<Box<Arc<Session>>>) -> HashSet<RoomId> {
-    sessions.iter().filter_map(|s| s.room_id.load(Ordering::Relaxed)).collect()
+    sessions.iter().filter_map(|s| s.get()).map(|s| s.room_id).collect()
 }
 
 fn get_user_ids(sessions: &Vec<Box<Arc<Session>>>, room_id: RoomId) -> HashSet<UserId> {
-    sessions.iter()
-        .filter(|s| s.room_id.load(Ordering::Relaxed) == Some(room_id))
-        .filter_map(|s| s.user_id.load(Ordering::Relaxed))
-        .collect()
+    sessions.iter().filter_map(|s| s.get()).filter(|s| s.room_id == room_id).map(|s| s.user_id).collect()
 }
 
-fn send_notification(myself: UserId, json: JsonValue) -> Result<(), Box<Error>> {
+fn send_notification(myself: &SessionState, json: JsonValue) -> Result<(), Box<Error>> {
     janus::log(LogLevel::Info, &format!("{:?} sending notification: {}.", myself, json));
     let msg = from_serde_json(json);
     let push_event = gateway_callbacks().push_event;
     for other in STATE.sessions.read()?.iter() {
-        if other.notify.load(Ordering::Relaxed) && other.user_id.load(Ordering::Relaxed) != Some(myself) {
-            janus::get_result(push_event(other.handle, &mut PLUGIN, ptr::null(), msg.as_mut_ref(), ptr::null_mut()))?
+        if let Some(other_state) = other.get() {
+            if other_state.user_id != myself.user_id && other_state.notify {
+                janus::get_result(push_event(other.handle, &mut PLUGIN, ptr::null(), msg.as_mut_ref(), ptr::null_mut()))?
+            }
         }
     }
     Ok(())
 }
 
-fn relay<T>(from: *mut PluginSession, kind: Option<ContentKind>, send: T) -> Result<(), Box<Error>> where T: Fn(&Session) {
+fn send_data<T>(from: *mut PluginSession, send: T) -> Result<(), Box<Error>> where T: Fn(&Session) {
     let sess = Session::from_ptr(from)?;
-    if let Some(user_id) = sess.user_id.load(Ordering::Relaxed) {
-        if let Some(room_id) = sess.room_id.load(Ordering::Relaxed) {
-            janus::log(LogLevel::Dbg, &format!("Packet of kind {:?} received in room {:?} from {:?}.", kind, room_id, user_id));
-            let subscriptions = STATE.subscriptions.read()?;
-            subscriptions::for_each_subscriber(&subscriptions, user_id, kind, |s| {
-                if Some(user_id) != s.user_id.load(Ordering::Relaxed) {
-                    // if there's a cross-room subscription, relay it -- presume the client knows what it's doing.
-                    send(s)
+    if let Some(state) = sess.get() {
+        janus::log(LogLevel::Dbg, &format!("Data packet received in room {:?} from {:?}.", state.room_id, state.user_id));
+        for other in STATE.sessions.read()?.iter() {
+            if let Some(other_state) = other.get() {
+                if other_state.room_id == state.room_id && other_state.user_id != state.user_id {
+                    send(&other)
                 }
-            });
-            Ok(())
-        } else {
-            Err(From::from("No room ID associated with connection; can't relay."))
+            }
         }
+    }
+    Ok(())
+}
+
+fn publish<T>(from: *mut PluginSession, kind: Option<ContentKind>, send: T) -> Result<(), Box<Error>> where T: Fn(&Session) {
+    let sess = Session::from_ptr(from)?;
+    if let Some(state) = sess.get() {
+        janus::log(LogLevel::Dbg, &format!("Packet of kind {:?} received in room {:?} from {:?}.", kind, state.room_id, state.user_id));
+        let subscriptions = STATE.subscriptions.read()?;
+        for subscription in subscriptions::subscribers_to(&subscriptions, state.user_id, kind) {
+            if let Some(subscriber) = subscription.sess.upgrade() {
+                if let Some(subscriber_state) = subscriber.get() {
+                    if state.user_id != subscriber_state.user_id {
+                        // if there's a cross-room subscription, relay it -- presume the client knows what it's doing.
+                        send(&subscriber);
+                    }
+                }
+            }
+        }
+        Ok(())
     } else {
-        Err(From::from("No user ID associated with connection; can't relay."))
+        Err(From::from("Session not yet configured; can't relay."))
     }
 }
 
@@ -168,7 +172,7 @@ extern "C" fn destroy() {
 }
 
 extern "C" fn create_session(handle: *mut PluginSession, error: *mut c_int) {
-    match Session::associate(handle, Default::default()) {
+    match Session::associate(handle, AtomSetOnce::empty()) {
         Ok(sess) => {
             janus::log(LogLevel::Info, &format!("Initializing SFU session {:?}...", sess));
             STATE.sessions.write().unwrap().push(sess);
@@ -184,17 +188,20 @@ extern "C" fn destroy_session(handle: *mut PluginSession, error: *mut c_int) {
     match Session::from_ptr(handle) {
         Ok(sess) => {
             janus::log(LogLevel::Info, &format!("Destroying SFU session {:?}...", sess));
-            let user_id = sess.user_id.load(Ordering::Relaxed);
-            let room_id = sess.room_id.load(Ordering::Relaxed);
             STATE.sessions.write().unwrap().retain(|ref s| s.handle != handle);
 
-            if let Some(user_id) = user_id {
-                let user_exists = STATE.sessions.read().unwrap().iter().any(|ref s| Some(user_id) == s.user_id.load(Ordering::Relaxed));
+            if let Some(state) = sess.get() {
+                let user_exists = STATE.sessions.read().unwrap().iter().any(|ref s| {
+                    match s.get() {
+                        None => false,
+                        Some(other_state) => state.user_id == other_state.user_id
+                    }
+                });
                 if !user_exists {
                     let mut subscriptions = STATE.subscriptions.write().unwrap();
-                    subscriptions::unpublish(&mut subscriptions, user_id);
-                    let response = json!({ "event": "leave", "user_id": user_id, "room_id": room_id });
-                    send_notification(user_id, response).unwrap_or_else(|e| {
+                    subscriptions::unpublish(&mut subscriptions, state.user_id);
+                    let response = json!({ "event": "leave", "user_id": state.user_id, "room_id": state.room_id });
+                    send_notification(state, response).unwrap_or_else(|e| {
                         janus::log(LogLevel::Err, &format!("Error notifying publishers on leave: {}", e));
                     });
                 }
@@ -218,7 +225,7 @@ extern "C" fn setup_media(_handle: *mut PluginSession) {
 extern "C" fn incoming_rtp(handle: *mut PluginSession, video: c_int, buf: *mut c_char, len: c_int) {
     let content_kind = if video == 1 { ContentKind::VIDEO } else { ContentKind::AUDIO };
     let relay_rtp = gateway_callbacks().relay_rtp;
-    if let Err(e) = relay(handle, Some(content_kind), |other| { relay_rtp(other.handle, video, buf, len); }) {
+    if let Err(e) = publish(handle, Some(content_kind), |other| { relay_rtp(other.handle, video, buf, len); }) {
         janus::log(LogLevel::Huge, &format!("Discarding RTP packet: {}", e))
     }
 }
@@ -226,17 +233,14 @@ extern "C" fn incoming_rtp(handle: *mut PluginSession, video: c_int, buf: *mut c
 extern "C" fn incoming_rtcp(handle: *mut PluginSession, video: c_int, buf: *mut c_char, len: c_int) {
     let content_kind = if video == 1 { ContentKind::VIDEO } else { ContentKind::AUDIO };
     let relay_rtcp = gateway_callbacks().relay_rtcp;
-    if let Err(e) = relay(handle, Some(content_kind), |other| { relay_rtcp(other.handle, video, buf, len); }) {
+    if let Err(e) = publish(handle, Some(content_kind), |other| { relay_rtcp(other.handle, video, buf, len); }) {
         janus::log(LogLevel::Huge, &format!("Discarding RTCP packet: {}", e))
     }
 }
 
 extern "C" fn incoming_data(handle: *mut PluginSession, buf: *mut c_char, len: c_int) {
     let relay_data = gateway_callbacks().relay_data;
-    let result = relay(handle, None, |other| {
-        relay_data(other.handle, buf, len);
-    });
-    if let Err(e) = result {
+    if let Err(e) = send_data(handle, |other| { relay_data(other.handle, buf, len); }) {
         janus::log(LogLevel::Huge, &format!("Discarding data packet: {}", e))
     }
 }
@@ -249,35 +253,29 @@ extern "C" fn hangup_media(_handle: *mut PluginSession) {
     janus::log(LogLevel::Verb, "Hanging up WebRTC media.");
 }
 
-fn process_join(from: &Arc<Session>, room_id: RoomId, user_id: Option<UserId>, notify: Option<bool>, subscription_specs: Option<Vec<SubscriptionSpec>>) -> MessageProcessingResult {
-    from.room_id.store(room_id, Ordering::Relaxed);
-    from.notify.store(notify.unwrap_or(false), Ordering::Relaxed);
+fn process_join(from: &Arc<Session>, room_id: RoomId, user_id: UserId, notify: Option<bool>, subscription_specs: Option<Vec<SubscriptionSpec>>) -> MessageProcessingResult {
+    let state = Box::new(SessionState {
+        user_id,
+        room_id,
+        notify: notify.unwrap_or(false)
+    });
+
+    if from.set_if_none(state).is_some() {
+        return Err(From::from("Users may only join once!"))
+    }
+
     let subscription_specs = subscription_specs.unwrap_or_else(Vec::new);
     let mut subscriptions = STATE.subscriptions.write()?;
-    let new_user_id = match user_id {
-        Some(n) => {
-            from.user_id.store(n, Ordering::Relaxed);
-            subscriptions::subscribe_all(&mut subscriptions, from, &subscription_specs)?;
-            n
-        },
-        None => {
-            let new_user_id = STATE.next_user_id.next(Ordering::Relaxed)
-                .expect("next_user_id is always a non-empty user ID.");
-            from.user_id.store(new_user_id, Ordering::Relaxed);
-            subscriptions::subscribe_all(&mut subscriptions, from, &subscription_specs)?;
-            let notification = json!({ "event": "join", "user_id": new_user_id, "room_id": room_id });
-            if let Err(e) = send_notification(new_user_id, notification) {
-                janus::log(LogLevel::Err, &format!("Error sending notification for user join: {:?}", e))
-            }
-            new_user_id
+    subscriptions::subscribe_all(&mut subscriptions, from, &subscription_specs)?;
+    if notify == Some(true) {
+        let notification = json!({ "event": "join", "user_id": user_id, "room_id": room_id });
+        if let Err(e) = send_notification(from.get().unwrap(), notification) {
+            janus::log(LogLevel::Err, &format!("Error sending notification for user join: {:?}", e))
         }
-    };
+    }
 
     let sessions = STATE.sessions.read()?;
-    Ok(json!({
-        "user_id": new_user_id,
-        "user_ids": get_user_ids(&sessions, room_id)
-    }))
+    Ok(json!({ "user_ids": get_user_ids(&sessions, room_id) }))
 }
 
 fn process_list_users(room_id: RoomId) -> MessageProcessingResult {
@@ -301,9 +299,9 @@ fn process_unsubscribe(from: &Arc<Session>, specs: Vec<SubscriptionSpec>) -> Mes
 }
 
 fn process_message(from: &Arc<Session>, msg: JanssonValue) -> MessageProcessingResult {
-    match to_serde_json::<OptionalPayload<MessageKind>>(msg) {
-        Ok(OptionalPayload::None {}) => Ok(json!({})),
-        Ok(OptionalPayload::Some(kind)) => {
+    match to_serde_json::<OptionalField<MessageKind>>(msg) {
+        Ok(OptionalField::None {}) => Ok(json!({})),
+        Ok(OptionalField::Some(kind)) => {
             janus::log(LogLevel::Info, &format!("Processing {:?} on connection {:?}.", kind, from));
             match kind {
                 MessageKind::ListRooms => process_list_rooms(),
@@ -318,22 +316,20 @@ fn process_message(from: &Arc<Session>, msg: JanssonValue) -> MessageProcessingR
     }
 }
 
-fn process_offer(from: &Arc<Session>, sdp: String) -> JsepResult {
+fn process_offer(sdp: String) -> JsepResult {
     let offer = Sdp::parse(CString::new(sdp)?)?;
     let answer = answer_sdp!(offer, janus::sdp::OfferAnswerParameters::Video, 0);
     let answer_str = Sdp::to_string(&answer);
-    from.has_data.store(answer.get_mlines().contains_key(&MediaType::JANUS_SDP_APPLICATION), Ordering::Relaxed);
-    janus::log(LogLevel::Info, &format!("{:?}.", answer.get_mlines()));
     Ok(serde_json::to_value(JsepKind::Answer { sdp: answer_str.to_str()?.to_owned() })?)
 }
 
 fn process_jsep(from: &Arc<Session>, jsep: JanssonValue) -> JsepResult {
-    match to_serde_json::<OptionalPayload<JsepKind>>(jsep) {
-        Ok(OptionalPayload::None {}) => Ok(json!({})),
-        Ok(OptionalPayload::Some(kind)) => {
+    match to_serde_json::<OptionalField<JsepKind>>(jsep) {
+        Ok(OptionalField::None {}) => Ok(json!({})),
+        Ok(OptionalField::Some(kind)) => {
             janus::log(LogLevel::Info, &format!("Processing {:?} from {:?}.", kind, from));
             match kind {
-                JsepKind::Offer { sdp } => process_offer(from, sdp),
+                JsepKind::Offer { sdp } => process_offer(sdp),
                 JsepKind::Answer { .. } => Err(From::from("JSEP answers not yet supported.")),
             }
         }
@@ -409,102 +405,3 @@ const PLUGIN: Plugin = build_plugin!(
 );
 
 export_plugin!(&PLUGIN);
-
-#[cfg(test)]
-mod tests {
-
-    use super::*;
-
-    mod jsep_parsing {
-
-        use super::*;
-
-        #[test]
-        fn parse_offer() {
-            let jsep = r#"{"type": "offer", "sdp": "..."}"#;
-            let result: JsepKind = serde_json::from_str(jsep).unwrap();
-            assert_eq!(result, JsepKind::Offer { sdp: "...".to_owned() });
-        }
-
-        #[test]
-        fn parse_answer() {
-            let jsep = r#"{"type": "answer", "sdp": "..."}"#;
-            let result: JsepKind = serde_json::from_str(jsep).unwrap();
-            assert_eq!(result, JsepKind::Answer { sdp: "...".to_owned() });
-        }
-    }
-
-    mod message_parsing {
-
-        use super::*;
-
-        #[test]
-        fn parse_empty() {
-            let json = r#"{}"#;
-            let result: OptionalPayload<MessageKind> = serde_json::from_str(json).unwrap();
-            assert_eq!(result, OptionalPayload::None {});
-        }
-
-        #[test]
-        fn parse_list_rooms() {
-            let json = r#"{"kind": "listrooms"}"#;
-            let result: MessageKind = serde_json::from_str(json).unwrap();
-            assert_eq!(result, MessageKind::ListRooms);
-        }
-
-        #[test]
-        fn parse_list_users() {
-            let json = r#"{"kind": "listusers", "room_id": 5}"#;
-            let result: MessageKind = serde_json::from_str(json).unwrap();
-            assert_eq!(result, MessageKind::ListUsers { room_id: RoomId::try_from(5).unwrap() });
-        }
-
-        #[test]
-        fn parse_join_no_user_id() {
-            let json = r#"{"kind": "join", "room_id": 5, "notify": true, "subscription_specs": []}"#;
-            let result: MessageKind = serde_json::from_str(json).unwrap();
-            assert_eq!(result, MessageKind::Join {
-                user_id: None,
-                room_id: RoomId::try_from(5).unwrap(),
-                notify: Some(true),
-                subscription_specs: Some(vec!()),
-            });
-        }
-
-        #[test]
-        fn parse_join_user_id() {
-            let json = r#"{"kind": "join", "user_id": 10, "room_id": 5}"#;
-            let result: MessageKind = serde_json::from_str(json).unwrap();
-            assert_eq!(result, MessageKind::Join {
-                user_id: Some(UserId::try_from(10).unwrap()),
-                room_id: RoomId::try_from(5).unwrap(),
-                notify: None,
-                subscription_specs: None,
-            });
-        }
-
-        #[test]
-        fn parse_subscribe() {
-            let json = r#"{"kind": "subscribe", "specs": [{"publisher_id": 2, "content_kind": 1}]}"#;
-            let result: MessageKind = serde_json::from_str(json).unwrap();
-            assert_eq!(result, MessageKind::Subscribe {
-                specs: vec!(SubscriptionSpec {
-                    publisher_id: UserId::try_from(2).unwrap(),
-                    content_kind: 1
-                })
-            });
-        }
-
-        #[test]
-        fn parse_unsubscribe() {
-            let json = r#"{"kind": "unsubscribe", "specs": [{"publisher_id": 5, "content_kind": 2}]}"#;
-            let result: MessageKind = serde_json::from_str(json).unwrap();
-            assert_eq!(result, MessageKind::Unsubscribe {
-                specs: vec!(SubscriptionSpec {
-                    publisher_id: UserId::try_from(5).unwrap(),
-                    content_kind: 2
-                })
-            });
-        }
-    }
-}

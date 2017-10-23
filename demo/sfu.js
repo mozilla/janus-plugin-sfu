@@ -1,4 +1,4 @@
-var USER_ID = null; // set on initial connection
+var USER_ID = Math.floor(Math.random() * (1000000001));
 var ROOM_ID = 42;
 
 const PEER_CONNECTION_CONFIG = {
@@ -88,6 +88,7 @@ function attachPublisher(session) {
     return handle.attach("janus.plugin.sfu").then(() => {
         var iceReady = negotiateIce(conn, handle);
         var channel = conn.createDataChannel("reliable", { ordered: true });
+        channel.addEventListener("message", ev => console.info("Message received on channel: ", ev));
         var mediaReady = navigator.mediaDevices.getUserMedia({ audio: true });
         var offerReady = mediaReady
             .then(media => {
@@ -100,10 +101,9 @@ function attachPublisher(session) {
             .then(answer => conn.setRemoteDescription(answer.jsep));
         var connectionReady = Promise.all([iceReady, localReady, remoteReady]);
         return connectionReady
-            .then(() => handle.sendMessage({ kind: "join", room_id: ROOM_ID, notify: true }))
+            .then(() => handle.sendMessage({ kind: "join", room_id: ROOM_ID, user_id: USER_ID, notify: true }))
             .then(reply => {
                 var response = reply.plugindata.data.response;
-                USER_ID = response.user_id;
                 response.user_ids.forEach(otherId => {
                     if (USER_ID !== otherId) {
                         addUser(session, otherId);

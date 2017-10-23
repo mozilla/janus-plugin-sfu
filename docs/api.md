@@ -1,6 +1,6 @@
 # Signalling API
 
-**This documentation is in-progress and currently incomplete.**
+**This API is very WIP. So is this documentation.**
 
 The plugin exposes a signalling API for establishing connections and managing connection state.
 
@@ -14,10 +14,13 @@ expect consumers of this plugin to use WebSockets, but you can probably use what
 
 2. Create an RTC connection and perform session negotation.
 
-3. Join a room. If you have a user ID, send your user ID; else obtain a user ID. Establish an initial set of subscriptions;
-   subscriptions tell the server which data from other clients to send down your connection.
+3. Determine your user ID. This should be a unique ID that nobody else is likely to share. In the future, we will actually
+   have authentication; as it stands just pick a big random ID and pray for no collisions. I'm serious.
 
-4. When done, close your connection, which will implicitly leave the room.
+4. Join a room. Establish an initial set of subscriptions; subscriptions tell the server which data from other clients
+   to send down your connection.
+
+5. When done, close your connection, which will implicitly leave the room.
 
 ## Application protocol
 
@@ -38,15 +41,11 @@ join a room. You can only join one room with any connection.
 {
     "kind": "join",
     "room_id": unsigned integer ID
-    "user_id": [none|unsigned integer ID],
+    "user_id": unsigned integer ID,
     "notify": [none|boolean],
     "subscription_specs": [none|array of spec objects]
 }
 ```
-
-The first time you join a room, you should allow Janus to assign you a user ID; if you don't, you might overlap with
-someone else's. For future connections, you should provide your user ID again. User IDs are used to identify the target
-for subscriptions, so changing your user ID will make it impossible for people to subscribe to your audio.
 
 If `notify: true` is passed, you will receive notifications from Janus for this handle when things relevant to your
 interest occur in the room; for example, if someone joins or leaves. If you create multiple connections, you probably

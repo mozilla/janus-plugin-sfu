@@ -1,5 +1,5 @@
 /// Types and code related to managing session subscriptions to incoming data.
-use entityids::UserId;
+use messages::UserId;
 use sessions::Session;
 use messages::SubscriptionSpec;
 use std::collections::HashMap;
@@ -83,13 +83,5 @@ pub fn subscribers_to(subscriptions: &SubscriptionMap, publisher: UserId, kind: 
     match kind {
         None => all_subscriptions.collect(),
         Some(k) => all_subscriptions.filter(|s| { s.kind.contains(k) }).collect()
-    }
-}
-
-pub fn for_each_subscriber<T>(subscriptions: &SubscriptionMap, publisher: UserId, kind: Option<ContentKind>, send: T) where T: Fn(&Session) {
-    for subscription in subscribers_to(subscriptions, publisher, kind) {
-        if let Some(subscriber_sess) = subscription.sess.upgrade() {
-            send(subscriber_sess.as_ref());
-        }
     }
 }

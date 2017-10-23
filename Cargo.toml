@@ -9,6 +9,7 @@ publish = false
 crate_type = ["cdylib"]
 
 [dependencies]
+atom = "0.3.4"
 bitflags = "1.0.0"
 cstr-macro = "0.1.0"
 janus-plugin = { git = "https://github.com/mquander/janus-plugin-rs" }
