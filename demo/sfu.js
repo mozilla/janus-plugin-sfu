@@ -8,12 +8,21 @@ const PEER_CONNECTION_CONFIG = {
     ]
 };
 
+// global helper for interactive use
+var c = {
+    session: null,
+    publisher: null,
+    subscribers: {}
+};
+
 function init() {
     var ws = new WebSocket("ws://localhost:8188", "janus-protocol");
     ws.addEventListener("open", () => {
-        var session = new Minijanus.JanusSession(ws.send.bind(ws));
+        var session = c.session = new Minijanus.JanusSession(ws.send.bind(ws));
         ws.addEventListener("message", ev => handleMessage(session, ev));
-        session.create().then(() => attachPublisher(session));
+        session.create().then(() => attachPublisher(session)).then(x => {
+            c.publisher = x;
+        });
     });
 }
 
@@ -26,11 +35,11 @@ function handleMessage(session, ev) {
             switch (contents.event) {
             case "join":
                 if (USER_ID !== contents.user_id) {
-                    attachSubscriber(session, USER_ID, contents.user_id);
+                    addUser(session, contents.user_id);
                 }
                 break;
             case "leave":
-                // todo: tear down subscriber
+                removeUser(session, contents.user_id);
                 break;
             case undefined:
                 // a non-plugin event
@@ -55,14 +64,30 @@ function negotiateIce(conn, handle) {
     });
 };
 
+function addUser(session, userId) {
+    console.info("Adding user " + userId + ".");
+    attachSubscriber(session, userId).then(x => {
+        c.subscribers[userId] = x;
+    });
+}
+
+function removeUser(session, userId) {
+    console.info("Removing user " + userId + ".");
+    var subscriber = c.subscribers[userId];
+    if (subscriber != null) {
+        subscriber.handle.detach();
+        subscriber.conn.close();
+        delete c.subscribers[userId];
+    }
+}
+
 function attachPublisher(session) {
     console.info("Attaching publisher for session: ", session);
     var conn = new RTCPeerConnection(PEER_CONNECTION_CONFIG);
     var handle = new Minijanus.JanusPluginHandle(session);
-    var publisher = handle.attach("janus.plugin.sfu").then(() => {
+    return handle.attach("janus.plugin.sfu").then(() => {
         var iceReady = negotiateIce(conn, handle);
-        var unreliableChannel = conn.createDataChannel("unreliable", { ordered: false, maxRetransmits: 0 });
-        var reliableChannel = conn.createDataChannel("reliable", { ordered: true });
+        var channel = conn.createDataChannel("reliable", { ordered: true });
         var mediaReady = navigator.mediaDevices.getUserMedia({ audio: true });
         var offerReady = mediaReady
             .then(media => {
@@ -73,17 +98,19 @@ function attachPublisher(session) {
         var remoteReady = offerReady
             .then(handle.sendJsep.bind(handle))
             .then(answer => conn.setRemoteDescription(answer.jsep));
-        return Promise.all([iceReady, localReady, remoteReady]);
-    });
-
-    return publisher.then(() => publisher.sendMessage({ kind: "join", room_id: ROOM_ID })).then(reply => {
-        var response = reply.plugindata.data.response;
-        USER_ID = response.user_id;
-        response.user_ids.forEach(otherId => {
-            if (USER_ID !== otherId) {
-                attachSubscriber(session, otherId);
-            }
-        });
+        var connectionReady = Promise.all([iceReady, localReady, remoteReady]);
+        return connectionReady
+            .then(() => handle.sendMessage({ kind: "join", room_id: ROOM_ID, notify: true }))
+            .then(reply => {
+                var response = reply.plugindata.data.response;
+                USER_ID = response.user_id;
+                response.user_ids.forEach(otherId => {
+                    if (USER_ID !== otherId) {
+                        addUser(session, otherId);
+                    }
+                });
+                return { handle: handle, conn: conn, channel: channel };
+            });
     });
 }
 
@@ -98,21 +125,25 @@ function attachSubscriber(session, otherId) {
     });
 
     var handle = new Minijanus.JanusPluginHandle(session);
-    var subscriber = handle.attach("janus.plugin.sfu").then(() => {
-        var iceReady = negotiateIce(conn, handle);
-        var offerReady = conn.createOffer({ offerToReceiveAudio: true });
-        var localReady = offerReady.then(conn.setLocalDescription.bind(conn));
-        var remoteReady = offerReady
-            .then(handle.sendJsep.bind(handle))
-            .then(answer => conn.setRemoteDescription(answer.jsep));
-        return Promise.all([iceReady, localReady, remoteReady]);
-    });
+    return handle.attach("janus.plugin.sfu")
+        .then(() => {
+            var iceReady = negotiateIce(conn, handle);
+            var offerReady = conn.createOffer({ offerToReceiveAudio: true });
+            var localReady = offerReady.then(conn.setLocalDescription.bind(conn));
+            var remoteReady = offerReady
+                .then(handle.sendJsep.bind(handle))
+                .then(answer => conn.setRemoteDescription(answer.jsep));
+            var connectionReady = Promise.all([iceReady, localReady, remoteReady]);
+            return connectionReady.then(() => {
+                return handle.sendMessage({ kind: "join", room_id: ROOM_ID, user_id: USER_ID, subscription_specs: [
+                    { content_kind: 255, publisher_id: otherId }
+                ]});
 
-    return subscriber.then(() => {
-        return handle.sendMessage({ kind: "join", room_id: ROOM_ID, user_id: USER_ID, subscription_specs: [
-            { content_kind: 255, publisher_id: otherId }
-        ]});
-    });
+            }).then(reply => {
+                return { handle: handle, conn: conn };
+            });
+
+        });
 }
 
 init();

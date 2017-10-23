@@ -103,12 +103,12 @@ fn get_user_ids(sessions: &Vec<Box<Arc<Session>>>, room_id: RoomId) -> HashSet<U
         .collect()
 }
 
-fn notify(myself: UserId, json: JsonValue) -> Result<(), Box<Error>> {
+fn send_notification(myself: UserId, json: JsonValue) -> Result<(), Box<Error>> {
     janus::log(LogLevel::Info, &format!("{:?} sending notification: {}.", myself, json));
     let msg = from_serde_json(json);
     let push_event = gateway_callbacks().push_event;
     for other in STATE.sessions.read()?.iter() {
-        if other.user_id.load(Ordering::Relaxed) != Some(myself) {
+        if other.notify.load(Ordering::Relaxed) && other.user_id.load(Ordering::Relaxed) != Some(myself) {
             janus::get_result(push_event(other.handle, &mut PLUGIN, ptr::null(), msg.as_mut_ref(), ptr::null_mut()))?
         }
     }
@@ -194,7 +194,7 @@ extern "C" fn destroy_session(handle: *mut PluginSession, error: *mut c_int) {
                     let mut subscriptions = STATE.subscriptions.write().unwrap();
                     subscriptions::unpublish(&mut subscriptions, user_id);
                     let response = json!({ "event": "leave", "user_id": user_id, "room_id": room_id });
-                    notify(user_id, response).unwrap_or_else(|e| {
+                    send_notification(user_id, response).unwrap_or_else(|e| {
                         janus::log(LogLevel::Err, &format!("Error notifying publishers on leave: {}", e));
                     });
                 }
@@ -249,8 +249,9 @@ extern "C" fn hangup_media(_handle: *mut PluginSession) {
     janus::log(LogLevel::Verb, "Hanging up WebRTC media.");
 }
 
-fn process_join(from: &Arc<Session>, room_id: RoomId, user_id: Option<UserId>, subscription_specs: Option<Vec<SubscriptionSpec>>) -> MessageProcessingResult {
+fn process_join(from: &Arc<Session>, room_id: RoomId, user_id: Option<UserId>, notify: Option<bool>, subscription_specs: Option<Vec<SubscriptionSpec>>) -> MessageProcessingResult {
     from.room_id.store(room_id, Ordering::Relaxed);
+    from.notify.store(notify.unwrap_or(false), Ordering::Relaxed);
     let subscription_specs = subscription_specs.unwrap_or_else(Vec::new);
     let mut subscriptions = STATE.subscriptions.write()?;
     let new_user_id = match user_id {
@@ -265,7 +266,7 @@ fn process_join(from: &Arc<Session>, room_id: RoomId, user_id: Option<UserId>, s
             from.user_id.store(new_user_id, Ordering::Relaxed);
             subscriptions::subscribe_all(&mut subscriptions, from, &subscription_specs)?;
             let notification = json!({ "event": "join", "user_id": new_user_id, "room_id": room_id });
-            if let Err(e) = notify(new_user_id, notification) {
+            if let Err(e) = send_notification(new_user_id, notification) {
                 janus::log(LogLevel::Err, &format!("Error sending notification for user join: {:?}", e))
             }
             new_user_id
@@ -307,9 +308,10 @@ fn process_message(from: &Arc<Session>, msg: JanssonValue) -> MessageProcessingR
             match kind {
                 MessageKind::ListRooms => process_list_rooms(),
                 MessageKind::ListUsers { room_id } => process_list_users(room_id),
-                MessageKind::Join { room_id, user_id, subscription_specs } => process_join(from, room_id, user_id, subscription_specs),
                 MessageKind::Subscribe { specs } => process_subscribe(from, specs),
-                MessageKind::Unsubscribe { specs } => process_unsubscribe(from, specs)
+                MessageKind::Unsubscribe { specs } => process_unsubscribe(from, specs),
+                MessageKind::Join { room_id, user_id, notify, subscription_specs } =>
+                    process_join(from, room_id, user_id, notify, subscription_specs),
             }
         }
         Err(e) => Err(Box::new(e)),
@@ -459,11 +461,12 @@ mod tests {
 
         #[test]
         fn parse_join_no_user_id() {
-            let json = r#"{"kind": "join", "room_id": 5, "subscription_specs": []}"#;
+            let json = r#"{"kind": "join", "room_id": 5, "notify": true, "subscription_specs": []}"#;
             let result: MessageKind = serde_json::from_str(json).unwrap();
             assert_eq!(result, MessageKind::Join {
                 user_id: None,
                 room_id: RoomId::try_from(5).unwrap(),
+                notify: Some(true),
                 subscription_specs: Some(vec!()),
             });
         }
@@ -475,6 +478,7 @@ mod tests {
             assert_eq!(result, MessageKind::Join {
                 user_id: Some(UserId::try_from(10).unwrap()),
                 room_id: RoomId::try_from(5).unwrap(),
+                notify: None,
                 subscription_specs: None,
             });
         }

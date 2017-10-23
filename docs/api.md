@@ -38,13 +38,23 @@ join a room. You can only join one room with any connection.
 {
     "kind": "join",
     "room_id": unsigned integer ID
-    "user_id": [none|unsigned integer ID]
+    "user_id": [none|unsigned integer ID],
+    "notify": [none|boolean],
+    "subscription_specs": [none|array of spec objects]
 }
 ```
 
 The first time you join a room, you should allow Janus to assign you a user ID; if you don't, you might overlap with
 someone else's. For future connections, you should provide your user ID again. User IDs are used to identify the target
 for subscriptions, so changing your user ID will make it impossible for people to subscribe to your audio.
+
+If `notify: true` is passed, you will receive notifications from Janus for this handle when things relevant to your
+interest occur in the room; for example, if someone joins or leaves. If you create multiple connections, you probably
+don't want those notifications on every connection.
+
+If `subscription_specs: [...]` is passed, you will synchronously configure initial subscriptions to the audio and video
+for other users in the room as per the specs. The format of the objects in the `subscription_specs` array should be
+identical to those in the [subscribe](#subscribe) message, below.
 
 ### List rooms
 
@@ -87,11 +97,11 @@ where each spec describes a subscription:
 }
 ```
 
-`content_kind` is currently a bit vector where 1 is audio, 2 is video, and 4 is data.
+`content_kind` is currently a bit vector where 1 is audio and 2 is video.
 
 Until Janus supports Unified Plan, the expectation is that most clients will have a single "publisher" connection that
-subscribes to all data channel traffic, and many "subscriber" connections which subscribe to incoming audio and video
-streams from other clients.
+only sends audio and video and doesn't receive any, and many "subscriber" connections which subscribe to incoming audio
+and video streams from other clients.
 
 ### Unsubscribe
 

@@ -20,14 +20,18 @@ pub struct SessionState {
 
     /// Whether or not this session has negotiated a data connection.
     pub has_data: AtomicBool,
+
+    /// Whether or not this session should receive notifications.
+    pub notify: AtomicBool,
 }
 
 impl Default for SessionState {
     fn default() -> Self {
         Self {
-            has_data: AtomicBool::new(false),
             room_id: AtomicRoomId::empty(),
             user_id: AtomicUserId::empty(),
+            has_data: AtomicBool::new(false),
+            notify: AtomicBool::new(false),
         }
     }
 }

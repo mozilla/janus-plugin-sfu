@@ -26,12 +26,15 @@ pub enum MessageKind {
     /// The first session associated with a client should pass no user ID; the server will generate
     /// an ID and return it. Subsequent sessions associated with the same client should pass the same ID.
     ///
+    /// The "notify" option controls whether room notifications (e.g. join, leave) should be sent to this session.
+    ///
     /// If subscriptions are specified, some initial subscriptions for this session will be configured. This is
     /// useful to save a round trip and to make sure that subscriptions are established before other clients
     /// get a join event for this user.
     Join {
         room_id: RoomId,
         user_id: Option<UserId>,
+        notify: Option<bool>,
         subscription_specs: Option<Vec<SubscriptionSpec>>
     },
 
