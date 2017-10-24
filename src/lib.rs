@@ -287,7 +287,7 @@ fn process_list_users(room_id: RoomId) -> MessageProcessingResult {
 
 fn process_list_rooms() -> MessageProcessingResult {
     let sessions = STATE.sessions.read()?;
-    Ok(json!({ "user_ids": get_room_ids(&sessions) }))
+    Ok(json!({ "room_ids": get_room_ids(&sessions) }))
 }
 
 fn process_subscribe(from: &Arc<Session>, specs: Vec<SubscriptionSpec>) -> MessageProcessingResult {
