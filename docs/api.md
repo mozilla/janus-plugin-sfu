@@ -55,6 +55,15 @@ If `subscription_specs: [...]` is passed, you will synchronously configure initi
 for other users in the room as per the specs. The format of the objects in the `subscription_specs` array should be
 identical to those in the [subscribe](#subscribe) message, below.
 
+The response will return all users other than yourself who are in your current room.
+
+```
+{
+    "success": true,
+    "user_ids": [123, 789]
+}
+```
+
 ### List rooms
 
 Lists all rooms that anyone is connected to, including your own.
@@ -62,6 +71,13 @@ Lists all rooms that anyone is connected to, including your own.
 ```
 {
     "kind": "listrooms"
+}
+```
+
+```
+{
+    "success": true,
+    "room_ids": [1, 5, 42]
 }
 ```
 
@@ -73,6 +89,13 @@ Lists all users in the given room, including you, if you're in it.
 {
     "kind": "listusers"
     "room_id": unsigned integer room ID
+}
+```
+
+```
+{
+    "success": true,
+    "user_ids": [123, 456, 789]
 }
 ```
 
