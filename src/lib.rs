@@ -71,14 +71,14 @@ fn gateway_callbacks() -> &'static PluginCallbacks {
 struct State {
     pub sessions: RwLock<Vec<Box<Arc<Session>>>>,
     pub subscriptions: RwLock<SubscriptionMap>,
-    pub message_channel: Mutex<Option<mpsc::SyncSender<RawMessage>>>,
+    pub message_channel: AtomSetOnce<Box<mpsc::SyncSender<RawMessage>>>,
 }
 
 lazy_static! {
     static ref STATE: State = State {
         sessions: RwLock::new(Vec::new()),
         subscriptions: RwLock::new(SubscriptionMap::new()),
-        message_channel: Mutex::new(None),
+        message_channel: AtomSetOnce::empty(),
     };
 }
 
@@ -145,7 +145,7 @@ extern "C" fn init(callbacks: *mut PluginCallbacks, _config_path: *const c_char)
         Some(c) => {
             unsafe { CALLBACKS = Some(c) };
             let (messages_tx, messages_rx) = mpsc::sync_channel(0);
-            *(STATE.message_channel.lock().unwrap()) = Some(messages_tx);
+            STATE.message_channel.set_if_none(Box::new(messages_tx));
 
             thread::spawn(move || {
                 janus::log(LogLevel::Verb, "Message processing thread is alive.");
@@ -382,7 +382,7 @@ extern "C" fn handle_message(handle: *mut PluginSession, transaction: *mut c_cha
                     msg: unsafe { JanssonValue::new(message) },
                     jsep: unsafe { JanssonValue::new(jsep) }
                 };
-                STATE.message_channel.lock().unwrap().as_ref().unwrap().send(msg).ok();
+                STATE.message_channel.get().unwrap().send(msg).ok();
                 janus::create_result(PluginResultType::JANUS_PLUGIN_OK_WAIT, cstr!("Processing."), None)
             },
             Err(_) => janus::create_result(PluginResultType::JANUS_PLUGIN_ERROR, cstr!("No handle associated with message!"), None)
