@@ -34,9 +34,7 @@ function handleMessage(session, ev) {
             var contents = data.plugindata.data;
             switch (contents.event) {
             case "join":
-                if (USER_ID !== contents.user_id) {
-                    addUser(session, contents.user_id);
-                }
+                addUser(session, contents.user_id);
                 break;
             case "leave":
                 removeUser(session, contents.user_id);
@@ -105,9 +103,7 @@ function attachPublisher(session) {
             .then(reply => {
                 var response = reply.plugindata.data.response;
                 response.user_ids.forEach(otherId => {
-                    if (USER_ID !== otherId) {
-                        addUser(session, otherId);
-                    }
+                    addUser(session, otherId);
                 });
                 return { handle: handle, conn: conn, channel: channel };
             });
