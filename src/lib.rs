@@ -275,7 +275,9 @@ fn process_join(from: &Arc<Session>, room_id: RoomId, user_id: UserId, notify: O
     }
 
     let sessions = STATE.sessions.read()?;
-    Ok(json!({ "user_ids": get_user_ids(&sessions, room_id) }))
+    let mut user_ids = get_user_ids(&sessions, room_id);
+    user_ids.remove(&user_id);
+    Ok(json!({ "user_ids": user_ids }))
 }
 
 fn process_list_users(room_id: RoomId) -> MessageProcessingResult {
