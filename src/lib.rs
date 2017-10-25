@@ -19,8 +19,8 @@ mod subscriptions;
 
 use atom::AtomSetOnce;
 use messages::{RoomId, UserId};
-use janus::{JanssonDecodingFlags, JanssonEncodingFlags, JanssonValue, LogLevel, Plugin, PluginCallbacks, PluginMetadata, PluginResultInfo,
-            PluginResultType, PluginSession, RawJanssonValue};
+use janus::{JanssonDecodingFlags, JanssonEncodingFlags, JanssonValue, LogLevel, Plugin, PluginCallbacks, PluginMetadata, PluginResult,
+            PluginResultType, PluginSession, RawPluginResult, RawJanssonValue};
 use janus::sdp::Sdp;
 use messages::{JsepKind, MessageKind, OptionalField, RawMessage, SubscriptionSpec};
 use serde_json::Result as JsonResult;
@@ -31,7 +31,7 @@ use std::error::Error;
 use std::ffi::CString;
 use std::os::raw::{c_char, c_int};
 use std::ptr;
-use std::sync::{mpsc, Arc, Mutex, RwLock};
+use std::sync::{mpsc, Arc, RwLock};
 use std::thread;
 use subscriptions::{ContentKind, SubscriptionMap};
 
@@ -371,23 +371,22 @@ fn handle_message_async(RawMessage { jsep, msg, txn, from }: RawMessage) -> Resu
 }
 
 extern "C" fn handle_message(handle: *mut PluginSession, transaction: *mut c_char,
-                             message: *mut RawJanssonValue, jsep: *mut RawJanssonValue) -> *mut PluginResultInfo {
+                             message: *mut RawJanssonValue, jsep: *mut RawJanssonValue) -> *mut RawPluginResult {
     janus::log(LogLevel::Verb, "Queueing signalling message.");
-    Box::into_raw(
-        match Session::from_ptr(handle) {
-            Ok(sess) => {
-                let msg = RawMessage {
-                    from: Arc::downgrade(&sess),
-                    txn: transaction,
-                    msg: unsafe { JanssonValue::new(message) },
-                    jsep: unsafe { JanssonValue::new(jsep) }
-                };
-                STATE.message_channel.get().unwrap().send(msg).ok();
-                janus::create_result(PluginResultType::JANUS_PLUGIN_OK_WAIT, cstr!("Processing."), None)
-            },
-            Err(_) => janus::create_result(PluginResultType::JANUS_PLUGIN_ERROR, cstr!("No handle associated with message!"), None)
-        }
-    )
+    let result = match Session::from_ptr(handle) {
+        Ok(sess) => {
+            let msg = RawMessage {
+                from: Arc::downgrade(&sess),
+                txn: transaction,
+                msg: unsafe { JanssonValue::new(message) },
+                jsep: unsafe { JanssonValue::new(jsep) }
+            };
+            STATE.message_channel.get().unwrap().send(msg).ok();
+            PluginResult::new(PluginResultType::JANUS_PLUGIN_OK_WAIT, cstr!("Processing."), Some(from_serde_json(json!({}))))
+        },
+        Err(_) => PluginResult::new(PluginResultType::JANUS_PLUGIN_ERROR, cstr!("No handle associated with message!"), None)
+    };
+    result.into_raw()
 }
 
 const PLUGIN: Plugin = build_plugin!(
