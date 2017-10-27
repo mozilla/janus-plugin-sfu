@@ -1,6 +1,8 @@
 var USER_ID = Math.floor(Math.random() * (1000000001));
 var ROOM_ID = 42;
 
+//Minijanus.verbose = true;
+
 const PEER_CONNECTION_CONFIG = {
     iceServers: [
         { urls: "stun:stun.l.google.com:19302" },
