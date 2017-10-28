@@ -1,0 +1,53 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta charset="utf-8">
+    <title>Squawkers</title>
+    <style>
+     /* via https://github.com/lukehaas/css-loaders */
+     .loader, .loader:after {
+       border-radius: 50%;
+       width: 10em;
+       height: 10em;
+     }
+     .loader {
+       margin: 60px auto;
+       font-size: 10px;
+       position: relative;
+       text-indent: -9999em;
+       border-top: 1.1em solid rgba(0,0,0, 0.2);
+       border-right: 1.1em solid rgba(0,0,0, 0.2);
+       border-bottom: 1.1em solid rgba(0,0,0, 0.2);
+       border-left: 1.1em solid #000000;
+       transform: translateZ(0);
+       animation: load 1.1s infinite linear;
+     }
+     @keyframes load {
+       0% {
+         -webkit-transform: rotate(0deg);
+         transform: rotate(0deg);
+       }
+       100% {
+         -webkit-transform: rotate(360deg);
+         transform: rotate(360deg);
+       }
+     }
+    </style>
+  </head>
+  <body>
+    <header>
+      <p>Page for managing squawkers -- small broadcast-only Janus entities used to simulate load or automate behavior.</p>
+      <p>Note that right now this only works in Firefox. You may enjoy setting the security.fileuri.strict_origin_policy
+      setting in about:config to false if you want to load media from file:// URLs.</p>
+      <p>Start adding squawkers below.</p>
+    </header>
+    <div id="root">
+      <!-- owned by React -->
+    </div>
+    <script crossorigin src="https://unpkg.com/react@16/umd/react.development.js"></script>
+    <script crossorigin src="https://unpkg.com/react-dom@16/umd/react-dom.development.js"></script>
+    <script crossorigin src="https://cdnjs.cloudflare.com/ajax/libs/webrtc-adapter/3.4.3/adapter.min.js"></script>
+    <script crossorigin src="https://rawgit.com/mquander/minijanus.js/master/bundle.js"></script>
+    <script src="squawkers.js"></script>
+  </body>
+</html>
