@@ -17,8 +17,10 @@ banner () {
 }
 
 banner 'installing script dependencies'
-sudo apt update
-sudo apt -y install python || true
+if [[ ! -e $(which python) || ! -e $(which curl) ]]; then
+    sudo apt update
+    sudo apt -y install python curl || true
+fi
 
 if [[ ! -e $(which docopts) ]]; then
     curl https://bootstrap.pypa.io/get-pip.py -sSf > get-pip.py
@@ -31,14 +33,15 @@ eval "$(
 docopts -h - : "$@" <<EOF
 Usage: ./setup-and-run-social-mr-janus-server.sh [--force-rebuild] [--working-directory <dir>]
 
-    -f --force-rebuild               forcefully rebuild dependencies
-    -d --working-directory <dir>     directory to work under [default: ./]
+    -f --force-rebuild               Forcefully rebuild dependencies
+    -d --working-directory <dir>     Directory to work under [default: ./build]
 EOF
 )"
 
-working_directory=$(realpath "$working_directory")
 force_rebuild=$([[ $force_rebuild == "true" ]] && echo "true") || true
 
+working_directory=$(realpath "$working_directory")
+mkdir -p "$working_directory"
 cd "$working_directory"
 
 git-get () {
@@ -47,53 +50,59 @@ git-get () {
     if [ ! -e $repo ]; then
         git clone https://github.com/$repo $repo
     fi
-    cd $repo
-    git checkout master
-    git pull
-    git checkout -f $version
-    git clean -fdx
+    pushd $repo
+    git reset --hard $version
+    git clean -ffdx
+    popd
 }
 
 if [[ $force_rebuild || ! -e /opt/janus/bin/janus ]]; then
     banner 'getting janus source'
     git-get meetecho/janus-gateway v0.2.4
-    cd "$working_directory"
+
+    sudo apt update
 
     banner 'installing janus compilation dependencies'
-    sudo apt -y install dh-autoreconf pkg-config libglib2.0-dev \
-        libjansson-dev libnice-dev libssl-dev gengetopt libmicrohttpd-dev cmake
+    sudo apt -y install dh-autoreconf pkg-config cmake
+
+    banner 'installing janus dependencies'
+    sudo apt -y install libglib2.0-dev libjansson-dev libnice-dev libssl-dev gengetopt libmicrohttpd-dev
 
     if [[ $force_rebuild || ! -e /usr/lib/libsrtp.so ]]; then
         git-get cisco/libsrtp v2.0.0
+        pushd cisco/libsrtp
         ./configure --prefix=/usr --enable-openssl
         make shared_library && sudo make install
-        cd "$working_directory"
+        popd
     fi
 
     if [[ $force_rebuild || ! -e /usr/lib/libusrsctp.so ]]; then
         git-get sctplab/usrsctp 2d26613
+        pushd sctplab/usrsctp
         ./bootstrap
         ./configure --prefix=/usr && make && sudo make install
-        cd "$working_directory"
+        popd
     fi
 
     if [[ $force_rebuild || ! -e /usr/lib/libwebsockets.so ]]; then
         git-get warmcat/libwebsockets v2.0.0
+        pushd warmcat/libwebsockets
         mkdir build
-        cd build
+        pushd build
         cmake -DCMAKE_INSTALL_PREFIX:PATH=/usr -DCMAKE_C_FLAGS="-fpic" ..
         make && sudo make install
-        cd "$working_directory"
+        popd
+        popd
     fi
 
     banner 'building and installing janus'
-    cd meetecho/janus-gateway
+    pushd meetecho/janus-gateway
     sh autogen.sh
     ./configure --prefix=/opt/janus
     make
     sudo make install
     sudo make configs
-    cd "$working_directory"
+    popd
 fi
 
 if [[ $force_rebuild || ! -e /opt/janus/lib/janus/plugins/libjanus_plugin_sfu.so ]]; then
@@ -105,9 +114,10 @@ if [[ $force_rebuild || ! -e /opt/janus/lib/janus/plugins/libjanus_plugin_sfu.so
 
     banner 'getting, building and installing janus-plugin-sfu'
     git-get mquander/janus-plugin-sfu master
+    pushd mquander/janus-plugin-sfu
     cargo build --release
     sudo cp target/release/libjanus_plugin_sfu.so /opt/janus/lib/janus/plugins/
-    cd "$working_directory"
+    popd
 fi
 
 if [ "$(awk '/\[plugins\]/,/^disable/' /opt/janus/etc/janus/janus.cfg | wc -l)" -gt "2" ]; then
@@ -118,7 +128,7 @@ fi
 
 banner 'starting janus and web servers'
 /opt/janus/bin/janus &
-cd mquander/janus-plugin-sfu/demo
+cd mquander/janus-plugin-sfu/client
 python -m SimpleHTTPServer &
 cd "$working_directory"
 
