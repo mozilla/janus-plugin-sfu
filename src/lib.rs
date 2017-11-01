@@ -31,9 +31,10 @@ use std::error::Error;
 use std::ffi::CString;
 use std::os::raw::{c_char, c_int};
 use std::ptr;
+use std::slice;
 use std::sync::{mpsc, Arc, RwLock};
 use std::thread;
-use subscriptions::{ContentKind, SubscriptionMap};
+use subscriptions::{ContentKind, Subscription, SubscriptionMap};
 
 /// Inefficiently converts a serde JSON value to a Jansson JSON value.
 fn from_serde_json(input: JsonValue) -> JanssonValue {
@@ -119,19 +120,26 @@ fn send_data<T>(from: *mut PluginSession, send: T) -> Result<(), Box<Error>> whe
     Ok(())
 }
 
-fn publish<T>(from: *mut PluginSession, kind: Option<ContentKind>, send: T) -> Result<(), Box<Error>> where T: Fn(&Session) {
+fn get_subscribers(from: *mut PluginSession, kind: Option<ContentKind>) -> Result<Vec<Arc<Session>>, Box<Error>> {
     let sess = Session::from_ptr(from)?;
     if let Some(state) = sess.get() {
-        janus::log(LogLevel::Dbg, &format!("Packet of kind {:?} received in room {:?} from {:?}.", kind, state.room_id, state.user_id));
+        janus::log(LogLevel::Dbg, &format!("Publication of kind {:?} in room {:?} from {:?}.", kind, state.room_id, state.user_id));
         let subscriptions = STATE.subscriptions.read()?;
-        for subscription in subscriptions::subscribers_to(&subscriptions, state.user_id, kind) {
+        Ok(subscriptions.subscribers_to(state.user_id, kind).iter().filter_map(|sub| sub.sess.upgrade()).collect())
+    } else {
+        Err(From::from("Session not yet configured; can't relay."))
+    }
+}
+
+fn feedback<T>(from: *mut PluginSession, kind: Option<ContentKind>, send: T) -> Result<(), Box<Error>> where T: Fn(&Session) {
+    let sess = Session::from_ptr(from)?;
+    if let Some(state) = sess.get() {
+        janus::log(LogLevel::Dbg, &format!("Feedback of kind {:?} in room {:?} from {:?}.", kind, state.room_id, state.user_id));
+        let subscriptions = STATE.subscriptions.read()?;
+        for subscription in subscriptions.subscribers_to(state.user_id, kind) {
             if let Some(subscriber) = subscription.sess.upgrade() {
-                if let Some(subscriber_state) = subscriber.get() {
-                    if state.user_id != subscriber_state.user_id {
-                        // if there's a cross-room subscription, relay it -- presume the client knows what it's doing.
-                        send(&subscriber);
-                    }
-                }
+                // if there's a cross-room subscription, relay it -- presume the client knows what it's doing.
+                send(&subscriber);
             }
         }
         Ok(())
@@ -199,7 +207,7 @@ extern "C" fn destroy_session(handle: *mut PluginSession, error: *mut c_int) {
                 });
                 if !user_exists {
                     let mut subscriptions = STATE.subscriptions.write().unwrap();
-                    subscriptions::unpublish(&mut subscriptions, state.user_id);
+                    subscriptions.remove_session(&sess);
                     let response = json!({ "event": "leave", "user_id": state.user_id, "room_id": state.room_id });
                     send_notification(state, response).unwrap_or_else(|e| {
                         janus::log(LogLevel::Err, &format!("Error notifying publishers on leave: {}", e));
@@ -224,17 +232,53 @@ extern "C" fn setup_media(_handle: *mut PluginSession) {
 
 extern "C" fn incoming_rtp(handle: *mut PluginSession, video: c_int, buf: *mut c_char, len: c_int) {
     let content_kind = if video == 1 { ContentKind::VIDEO } else { ContentKind::AUDIO };
-    let relay_rtp = gateway_callbacks().relay_rtp;
-    if let Err(e) = publish(handle, Some(content_kind), |other| { relay_rtp(other.handle, video, buf, len); }) {
-        janus::log(LogLevel::Huge, &format!("Discarding RTP packet: {}", e))
+    let subscribers = get_subscribers(handle, Some(content_kind));
+    match subscribers {
+        Err(e) => janus::log(LogLevel::Huge, &format!("Discarding RTP packet: {}", e)),
+        Ok(others) => {
+            let relay_rtp = gateway_callbacks().relay_rtp;
+            for other in others {
+                relay_rtp(other.handle, video, buf, len);
+            }
+        }
     }
 }
 
 extern "C" fn incoming_rtcp(handle: *mut PluginSession, video: c_int, buf: *mut c_char, len: c_int) {
+    let sess = Session::from_ptr(handle).expect("Session can't be null!");
     let content_kind = if video == 1 { ContentKind::VIDEO } else { ContentKind::AUDIO };
     let relay_rtcp = gateway_callbacks().relay_rtcp;
-    if let Err(e) = publish(handle, Some(content_kind), |other| { relay_rtcp(other.handle, video, buf, len); }) {
-        janus::log(LogLevel::Huge, &format!("Discarding RTCP packet: {}", e))
+    if let Some(state) = sess.get() {
+        if content_kind == ContentKind::AUDIO {
+            let subscriptions = STATE.subscriptions.read().expect("Subscriptions lock poisoned; can't continue.");
+            let subscribers = subscriptions.subscribers_to(state.user_id, Some(content_kind));
+            for subscriber in subscribers {
+                if let Some(other) = subscriber.sess.upgrade() {
+                    relay_rtcp(other.as_ptr(), video, buf, len);
+                }
+            }
+        } else if content_kind == ContentKind::VIDEO {
+            let subscriptions = STATE.subscriptions.read().expect("Subscriptions lock poisoned; can't continue.");
+            let publishers = subscriptions.publishers_to(&sess, Some(content_kind));
+            let packet = unsafe { slice::from_raw_parts(buf, len as usize) };
+            if janus::rtcp::has_pli(packet) {
+                let pli = janus::rtcp::gen_pli();
+                for publisher in publishers {
+                    if let Some(other) = publisher.sess.upgrade() {
+                        relay_rtcp(other.as_ptr(), video, buf, len);
+                    }
+                }
+                if let Err(e) = feedback(handle, Some(content_kind), |other| {
+                    //                relay_rtcp(other.handle, video, pli.as_ptr() as *mut _, pli.len() as i32)
+                }) {
+                    janus::log(LogLevel::Huge, &format!("Discarding RTCP packet: {}", e))
+
+                }
+            }
+        }
+
+    } else {
+        janus::log(LogLevel::Warn, &format!("Session {:?} not configured; can't relay.", sess)),
     }
 }
 
@@ -257,7 +301,7 @@ fn process_join(from: &Arc<Session>, room_id: RoomId, user_id: UserId, notify: O
     let state = Box::new(SessionState {
         user_id,
         room_id,
-        notify: notify.unwrap_or(false)
+        notify: notify.unwrap_or(false),
     });
 
     if from.set_if_none(state).is_some() {
@@ -265,8 +309,8 @@ fn process_join(from: &Arc<Session>, room_id: RoomId, user_id: UserId, notify: O
     }
 
     let subscription_specs = subscription_specs.unwrap_or_else(Vec::new);
-    let mut subscriptions = STATE.subscriptions.write()?;
-    subscriptions::subscribe_all(&mut subscriptions, from, &subscription_specs)?;
+    let subscriptions = subscription_specs.iter().filter_map(|x| Subscription::try_from(x).ok());
+    STATE.subscriptions.write()?.subscribe_all(from, subscriptions);
     if notify == Some(true) {
         let notification = json!({ "event": "join", "user_id": user_id, "room_id": room_id });
         if let Err(e) = send_notification(from.get().unwrap(), notification) {
@@ -291,13 +335,15 @@ fn process_list_rooms() -> MessageProcessingResult {
 }
 
 fn process_subscribe(from: &Arc<Session>, specs: Vec<SubscriptionSpec>) -> MessageProcessingResult {
-    let mut subscriptions = STATE.subscriptions.write()?;
-    subscriptions::subscribe_all(&mut subscriptions, from, &specs).map(|_| json!({}))
+    let subscriptions = specs.iter().filter_map(|x| Subscription::try_from(x).ok());
+    STATE.subscriptions.write()?.subscribe_all(from, subscriptions);
+    Ok(json!({}))
 }
 
 fn process_unsubscribe(from: &Arc<Session>, specs: Vec<SubscriptionSpec>) -> MessageProcessingResult {
-    let mut subscriptions = STATE.subscriptions.write()?;
-    subscriptions::unsubscribe_all(&mut subscriptions, from, &specs).map(|_| json!({}))
+    let subscriptions = specs.iter().filter_map(|x| Subscription::try_from(x).ok());
+    STATE.subscriptions.write()?.unsubscribe_all(from, subscriptions);
+    Ok(json!({}))
 }
 
 fn process_message(from: &Arc<Session>, msg: JanssonValue) -> MessageProcessingResult {
@@ -320,7 +366,7 @@ fn process_message(from: &Arc<Session>, msg: JanssonValue) -> MessageProcessingR
 
 fn process_offer(sdp: String) -> JsepResult {
     let offer = Sdp::parse(CString::new(sdp)?)?;
-    let answer = answer_sdp!(offer, janus::sdp::OfferAnswerParameters::Video, 0);
+    let answer = answer_sdp!(offer);
     let answer_str = Sdp::to_string(&answer);
     Ok(serde_json::to_value(JsepKind::Answer { sdp: answer_str.to_str()?.to_owned() })?)
 }

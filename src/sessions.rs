@@ -4,7 +4,7 @@ use messages::{RoomId, UserId};
 use janus::session::SessionWrapper;
 
 /// The state associated with a single session.
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct SessionState {
     /// An opaque ID uniquely identifying this user.
     pub user_id: UserId,
