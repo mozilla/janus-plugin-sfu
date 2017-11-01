@@ -2,4 +2,4 @@
 **/*.rs.bk
 
 # dependencies and build output created by setup-and-run-janus.sh
-stuff/build
+scripts/build

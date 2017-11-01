@@ -12,7 +12,7 @@ In the future, this is likely to grow into a reverse proxy for [Reticulum](https
 
 This is a plugin for Janus, so you'll need to install and run Janus first. The [installation instructions on GitHub](https://github.com/meetecho/janus-gateway#dependencies) are canonical.
 
-If you're on Ubuntu, don't install the version from your package manager -- that one has no WebRTC data channel support, so it won't work. If that stresses you out, you can try running `stuff/setup-and-run-janus.sh`, which will compile and install Janus and its dependencies for you.
+If you're on Ubuntu, don't install the version from your package manager -- that one has no WebRTC data channel support, so it won't work. If that stresses you out, you can try running `scripts/setup-and-run-janus.sh`, which will compile and install Janus and its dependencies for you.
 
 ### Why shouldn't I just use janus_videoroom?
 
