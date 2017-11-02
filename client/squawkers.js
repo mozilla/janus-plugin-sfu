@@ -60,6 +60,7 @@ class SquawkerItem extends React.Component {
       this.setState({ handle: handle });
       var iceReady = Squawker.negotiateIce(conn, handle);
       conn.addStream(this.getAudioStream());
+      conn.addStream(this.getVideoStream());
       var offerReady = conn.createOffer({ offerToReceiveAudio: 0, offerToReceiveVideo: 0 });
       var localReady = offerReady.then(conn.setLocalDescription.bind(conn));
       var remoteReady = offerReady

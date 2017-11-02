@@ -141,6 +141,29 @@ fn send_notification(myself: &SessionState, json: JsonValue) -> Result<(), Box<E
     Ok(())
 }
 
+fn send_pli<'a, T>(publishers: T) where T: Iterator<Item=&'a Arc<Session>> {
+    let relay_rtcp = gateway_callbacks().relay_rtcp;
+    for publisher in publishers {
+        janus::log(LogLevel::Info, &format!("Relaying PLI."));
+        let mut pli = janus::rtcp::gen_pli();
+        relay_rtcp(publisher.as_ptr(), 1, pli.as_mut_ptr(), pli.len() as i32);
+    }
+}
+
+fn send_fir<'a, T>(publishers: T) where T: Iterator<Item=&'a Arc<Session>> {
+    let relay_rtcp = gateway_callbacks().relay_rtcp;
+    for publisher in publishers {
+        if let Some(publisher_state) = publisher.get() {
+            janus::log(LogLevel::Info, &format!("Relaying FIR."));
+            let mut seq = publisher_state.fir_seq.fetch_add(1, Ordering::Relaxed) as i32;
+            let mut fir = janus::rtcp::gen_fir(&mut seq);
+            relay_rtcp(publisher.as_ptr(), 1, fir.as_mut_ptr(), fir.len() as i32);
+        } else {
+            janus::log(LogLevel::Err, &format!("Non-joined user incorrectly marked as publisher!"));
+        }
+    }
+}
+
 extern "C" fn init(callbacks: *mut PluginCallbacks, _config_path: *const c_char) -> c_int {
     match unsafe { callbacks.as_ref() } {
         Some(c) => {
@@ -245,30 +268,20 @@ extern "C" fn incoming_rtcp(handle: *mut PluginSession, video: c_int, buf: *mut 
     let relay_rtcp = gateway_callbacks().relay_rtcp;
     if let Some(state) = sess.get() {
         janus::log(LogLevel::Dbg, &format!("RTCP packet received in {:?} from {:?} over {:?}.", state.room_id, state.user_id, sess));
-        if content_kind == ContentKind::AUDIO {
-            let subscribers = switchboard.subscribers_to(&sess, Some(content_kind));
-            for subscriber in subscribers {
-                relay_rtcp(subscriber.as_ptr(), video, buf, len);
+        let packet = unsafe { slice::from_raw_parts(buf, len as usize) };
+        match content_kind {
+            ContentKind::VIDEO if janus::rtcp::has_pli(packet) => {
+                let publishers = switchboard.publishers_to(&sess, Some(content_kind));
+                send_pli(publishers.iter());
             }
-        } else if content_kind == ContentKind::VIDEO {
-            let publishers = switchboard.publishers_to(&sess, Some(content_kind));
-            let packet = unsafe { slice::from_raw_parts(buf, len as usize) };
-            if janus::rtcp::has_pli(packet) {
-                for publisher in publishers {
-                    janus::log(LogLevel::Info, &format!("Relaying PLI."));
-                    let mut pli = janus::rtcp::gen_pli();
-                    relay_rtcp(publisher.as_ptr(), video, pli.as_mut_ptr(), pli.len() as i32);
-                }
-            } else if janus::rtcp::has_fir(packet) {
-                for publisher in publishers {
-                    if let Some(publisher_state) = publisher.get() {
-                        janus::log(LogLevel::Info, &format!("Relaying FIR."));
-                        let mut seq = publisher_state.fir_seq.fetch_add(1, Ordering::Relaxed) as i32;
-                        let mut fir = janus::rtcp::gen_fir(&mut seq);
-                        relay_rtcp(publisher.as_ptr(), video, fir.as_mut_ptr(), fir.len() as i32);
-                    } else {
-                        janus::log(LogLevel::Err, &format!("Non-joined user incorrectly marked as publisher!"));
-                    }
+            ContentKind::VIDEO if janus::rtcp::has_fir(packet) => {
+                let publishers = switchboard.publishers_to(&sess, Some(content_kind));
+                send_fir(publishers.iter());
+            }
+            _ => {
+                let subscribers = switchboard.subscribers_to(&sess, Some(content_kind));
+                for subscriber in subscribers {
+                    relay_rtcp(subscriber.as_ptr(), video, buf, len);
                 }
             }
         }
@@ -313,6 +326,7 @@ fn process_join(from: &Arc<Session>, room_id: RoomId, user_id: UserId, notify: O
         let mut switchboard = STATE.switchboard.write()?;
         for subscription in specs {
             let publishers = get_sessions(subscription.publisher_id);
+            send_fir(publishers.iter());
             switchboard.subscribe(from, &publishers, subscription.content_kind);
         }
     }
@@ -344,6 +358,7 @@ fn process_subscribe(from: &Arc<Session>, specs: Vec<SubscriptionSpec>) -> Messa
     let mut switchboard = STATE.switchboard.write()?;
     for subscription in specs {
         let publishers = get_sessions(subscription.publisher_id);
+        send_fir(publishers.iter());
         switchboard.subscribe(from, &publishers, subscription.content_kind);
     }
     Ok(json!({}))
