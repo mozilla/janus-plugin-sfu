@@ -3,7 +3,7 @@ TARGET = target/release/libjanus_plugin_sfu.so
 
 install:
 	cargo build --release
-	cargo test
+	cargo test --release
 	mkdir -p $(DESTDIR)$(PREFIX)
 	cp $(TARGET) $(DESTDIR)$(PREFIX)
 
