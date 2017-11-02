@@ -58,7 +58,7 @@ git-get () {
 
 if [[ $force_rebuild || ! -e /opt/janus/bin/janus ]]; then
     banner 'getting janus source'
-    git-get meetecho/janus-gateway v0.2.4
+    git-get meetecho/janus-gateway v0.2.5
 
     sudo apt update
 
