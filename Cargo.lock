@@ -5,7 +5,7 @@ dependencies = [
  "atom 0.3.4 (registry+https://github.com/rust-lang/crates.io-index)",
  "bitflags 1.0.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "cstr-macro 0.1.0 (registry+https://github.com/rust-lang/crates.io-index)",
- "janus-plugin 0.2.1",
+ "janus-plugin 0.3.0",
  "lazy_static 0.2.9 (registry+https://github.com/rust-lang/crates.io-index)",
  "serde 1.0.17 (registry+https://github.com/rust-lang/crates.io-index)",
  "serde_derive 1.0.17 (registry+https://github.com/rust-lang/crates.io-index)",
@@ -75,7 +75,7 @@ version = "0.1.0"
 
 [[package]]
 name = "janus-plugin"
-version = "0.2.1"
+version = "0.3.0"
 dependencies = [
  "bitflags 1.0.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "chrono 0.4.0 (registry+https://github.com/rust-lang/crates.io-index)",
@@ -83,13 +83,13 @@ dependencies = [
  "cstr-macro 0.1.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "glib-sys 0.4.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "jansson-sys 0.1.0",
- "janus-plugin-sys 0.1.0",
+ "janus-plugin-sys 0.2.0",
  "libc 0.2.33 (registry+https://github.com/rust-lang/crates.io-index)",
 ]
 
 [[package]]
 name = "janus-plugin-sys"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "glib-sys 0.4.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "jansson-sys 0.1.0",

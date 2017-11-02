@@ -1,15 +1,54 @@
 /// Types and code related to handling signalling messages.
-use super::JanssonValue;
-use sessions::Session;
-use std::os::raw::c_char;
-use std::sync::Weak;
+use super::serde::de::{self, Deserialize, Deserializer, Unexpected, Visitor};
+use super::serde::ser::{self, Serialize, Serializer};
+use std::fmt;
 
-/// Useful to represent a JSON message field which may or may not be present.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(untagged)]
-pub enum OptionalField<T> {
-    Some(T),
-    None {}
+bitflags! {
+    /// A particular kind of traffic transported over a connection.
+    pub struct ContentKind: u8 {
+        /// Audio traffic.
+        const AUDIO = 0b00000001;
+        /// Video traffic.
+        const VIDEO = 0b00000010;
+        /// All traffic.
+        const ALL = 0b11111111;
+    }
+}
+
+impl Serialize for ContentKind {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error> where S: Serializer {
+        let name = match *self {
+            ContentKind::AUDIO => Ok("audio"),
+            ContentKind::VIDEO => Ok("video"),
+            ContentKind::ALL => Ok("all"),
+            _ => Err(ser::Error::custom("Unexpected content kind."))
+        }?;
+        serializer.serialize_str(name)
+    }
+}
+
+impl<'de> Deserialize<'de> for ContentKind {
+    /// Deserializes a ContentKind value from the lowercase string naming the value (as if ContentKind were a C-style enum.)
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error> where D: Deserializer<'de> {
+        struct ContentKindVisitor;
+        impl<'de> Visitor<'de> for ContentKindVisitor {
+            type Value = ContentKind;
+
+            fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+                formatter.write_str("`audio`, `video`, or `all`")
+            }
+
+            fn visit_str<E>(self, value: &str) -> Result<ContentKind, E> where E: de::Error {
+                match value {
+                    "audio" => Ok(ContentKind::AUDIO),
+                    "video" => Ok(ContentKind::VIDEO),
+                    "all" => Ok(ContentKind::ALL),
+                    _ => Err(de::Error::invalid_value(Unexpected::Str(value), &self))
+                }
+            }
+        }
+        deserializer.deserialize_identifier(ContentKindVisitor)
+    }
 }
 
 /// A room ID representing a Janus multicast room.
@@ -20,6 +59,14 @@ pub struct RoomId(u64);
 /// conceptual user for managing subscriptions.
 #[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub struct UserId(u64);
+
+/// Useful to represent a JSON message field which may or may not be present.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum OptionalField<T> {
+    Some(T),
+    None {}
+}
 
 /// A signalling message carrying a JSEP SDP offer or answer.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -71,30 +118,8 @@ pub struct SubscriptionSpec {
     pub publisher_id: UserId,
 
     /// The kind or kinds of content to subscribe to.
-    pub content_kind: u8, // todo: parse ContentKind directly
+    pub content_kind: ContentKind,
 }
-
-/// A single signalling message that came in off the wire, associated with one session.
-///
-/// These will be queued up asynchronously and processed in order later.
-#[derive(Debug)]
-pub struct RawMessage {
-    /// A reference to the sender's session. Possibly null if the session has been destroyed
-    /// in between receiving and processing this message.
-    pub from: Weak<Session>,
-
-    /// The transaction ID used to mark any responses to this message.
-    pub txn: *mut c_char,
-
-    /// An arbitrary message from the client. Will be deserialized as a MessageKind.
-    pub msg: Option<JanssonValue>,
-
-    /// A JSEP message (SDP offer or answer) from the client. Will be deserialized as a JsepKind.
-    pub jsep: Option<JanssonValue>,
-}
-
-// covers the txn pointer -- careful that the other fields are really threadsafe!
-unsafe impl Send for RawMessage {}
 
 #[cfg(test)]
 mod tests {
@@ -173,24 +198,24 @@ mod tests {
 
         #[test]
         fn parse_subscribe() {
-            let json = r#"{"kind": "subscribe", "specs": [{"publisher_id": 100, "content_kind": 1}]}"#;
+            let json = r#"{"kind": "subscribe", "specs": [{"publisher_id": 100, "content_kind": "audio"}]}"#;
             let result: MessageKind = serde_json::from_str(json).unwrap();
             assert_eq!(result, MessageKind::Subscribe {
                 specs: vec!(SubscriptionSpec {
                     publisher_id: UserId(100),
-                    content_kind: 1
+                    content_kind: ContentKind::AUDIO,
                 })
             });
         }
 
         #[test]
         fn parse_unsubscribe() {
-            let json = r#"{"kind": "unsubscribe", "specs": [{"publisher_id": 100, "content_kind": 2}]}"#;
+            let json = r#"{"kind": "unsubscribe", "specs": [{"publisher_id": 100, "content_kind": "video"}]}"#;
             let result: MessageKind = serde_json::from_str(json).unwrap();
             assert_eq!(result, MessageKind::Unsubscribe {
                 specs: vec!(SubscriptionSpec {
                     publisher_id: UserId(100),
-                    content_kind: 2
+                    content_kind: ContentKind::VIDEO,
                 })
             });
         }

@@ -15,14 +15,14 @@ extern crate serde_json;
 
 mod messages;
 mod sessions;
-mod subscriptions;
+mod switchboard;
 
 use atom::AtomSetOnce;
 use messages::{RoomId, UserId};
 use janus::{JanssonDecodingFlags, JanssonEncodingFlags, JanssonValue, LogLevel, Plugin, PluginCallbacks, PluginMetadata, PluginResult,
             PluginResultType, PluginSession, RawPluginResult, RawJanssonValue};
 use janus::sdp::Sdp;
-use messages::{JsepKind, MessageKind, OptionalField, RawMessage, SubscriptionSpec};
+use messages::{ContentKind, JsepKind, MessageKind, OptionalField, SubscriptionSpec};
 use serde_json::Result as JsonResult;
 use serde_json::Value as JsonValue;
 use sessions::{Session, SessionState};
@@ -32,9 +32,31 @@ use std::ffi::CString;
 use std::os::raw::{c_char, c_int};
 use std::ptr;
 use std::slice;
-use std::sync::{mpsc, Arc, RwLock};
+use std::sync::{mpsc, Arc, RwLock, Weak};
 use std::thread;
-use subscriptions::{ContentKind, Subscription, SubscriptionMap};
+use switchboard::Switchboard;
+
+/// A single signalling message that came in off the wire, associated with one session.
+///
+/// These will be queued up asynchronously and processed in order later.
+#[derive(Debug)]
+pub struct RawMessage {
+    /// A reference to the sender's session. Possibly null if the session has been destroyed
+    /// in between receiving and processing this message.
+    pub from: Weak<Session>,
+
+    /// The transaction ID used to mark any responses to this message.
+    pub txn: *mut c_char,
+
+    /// An arbitrary message from the client. Will be deserialized as a MessageKind.
+    pub msg: Option<JanssonValue>,
+
+    /// A JSEP message (SDP offer or answer) from the client. Will be deserialized as a JsepKind.
+    pub jsep: Option<JanssonValue>,
+}
+
+// covers the txn pointer -- careful that the other fields are really threadsafe!
+unsafe impl Send for RawMessage {}
 
 /// Inefficiently converts a serde JSON value to a Jansson JSON value.
 fn from_serde_json(input: JsonValue) -> JanssonValue {
@@ -71,16 +93,29 @@ fn gateway_callbacks() -> &'static PluginCallbacks {
 #[derive(Debug)]
 struct State {
     pub sessions: RwLock<Vec<Box<Arc<Session>>>>,
-    pub subscriptions: RwLock<SubscriptionMap>,
+    pub switchboard: RwLock<Switchboard>,
     pub message_channel: AtomSetOnce<Box<mpsc::SyncSender<RawMessage>>>,
 }
 
 lazy_static! {
     static ref STATE: State = State {
         sessions: RwLock::new(Vec::new()),
-        subscriptions: RwLock::new(SubscriptionMap::new()),
+        switchboard: RwLock::new(Switchboard::new()),
         message_channel: AtomSetOnce::empty(),
     };
+}
+
+fn get_sessions(user_id: UserId) -> HashSet<Arc<Session>> {
+    STATE.sessions.read().expect("Sessions table is poisoned :(")
+        .iter()
+        .filter(|s| {
+            match s.get() {
+                Some(state) => state.user_id == user_id,
+                None => false
+            }
+        })
+        .map(|s| Arc::clone(s))
+        .collect()
 }
 
 fn get_room_ids(sessions: &Vec<Box<Arc<Session>>>) -> HashSet<RoomId> {
@@ -98,7 +133,7 @@ fn send_notification(myself: &SessionState, json: JsonValue) -> Result<(), Box<E
     for other in STATE.sessions.read()?.iter() {
         if let Some(other_state) = other.get() {
             if other_state.user_id != myself.user_id && other_state.notify {
-                janus::get_result(push_event(other.handle, &mut PLUGIN, ptr::null(), msg.as_mut_ref(), ptr::null_mut()))?
+                janus::get_result(push_event(other.as_ptr(), &mut PLUGIN, ptr::null(), msg.as_mut_ref(), ptr::null_mut()))?
             }
         }
     }
@@ -122,30 +157,17 @@ fn send_data<T>(from: *mut PluginSession, send: T) -> Result<(), Box<Error>> whe
 
 fn get_subscribers(from: *mut PluginSession, kind: Option<ContentKind>) -> Result<Vec<Arc<Session>>, Box<Error>> {
     let sess = Session::from_ptr(from)?;
-    if let Some(state) = sess.get() {
-        janus::log(LogLevel::Dbg, &format!("Publication of kind {:?} in room {:?} from {:?}.", kind, state.room_id, state.user_id));
-        let subscriptions = STATE.subscriptions.read()?;
-        Ok(subscriptions.subscribers_to(state.user_id, kind).iter().filter_map(|sub| sub.sess.upgrade()).collect())
-    } else {
-        Err(From::from("Session not yet configured; can't relay."))
-    }
+    let switchboard = STATE.switchboard.read()?;
+    Ok(switchboard.subscribers_to(&sess, kind))
 }
 
 fn feedback<T>(from: *mut PluginSession, kind: Option<ContentKind>, send: T) -> Result<(), Box<Error>> where T: Fn(&Session) {
     let sess = Session::from_ptr(from)?;
-    if let Some(state) = sess.get() {
-        janus::log(LogLevel::Dbg, &format!("Feedback of kind {:?} in room {:?} from {:?}.", kind, state.room_id, state.user_id));
-        let subscriptions = STATE.subscriptions.read()?;
-        for subscription in subscriptions.subscribers_to(state.user_id, kind) {
-            if let Some(subscriber) = subscription.sess.upgrade() {
-                // if there's a cross-room subscription, relay it -- presume the client knows what it's doing.
-                send(&subscriber);
-            }
-        }
-        Ok(())
-    } else {
-        Err(From::from("Session not yet configured; can't relay."))
+    let switchboard = STATE.switchboard.read()?;
+    for subscription in switchboard.subscribers_to(&sess, kind) {
+        send(&subscription);
     }
+    Ok(())
 }
 
 extern "C" fn init(callbacks: *mut PluginCallbacks, _config_path: *const c_char) -> c_int {
@@ -196,7 +218,7 @@ extern "C" fn destroy_session(handle: *mut PluginSession, error: *mut c_int) {
     match Session::from_ptr(handle) {
         Ok(sess) => {
             janus::log(LogLevel::Info, &format!("Destroying SFU session {:?}...", sess));
-            STATE.sessions.write().unwrap().retain(|ref s| s.handle != handle);
+            STATE.sessions.write().unwrap().retain(|ref s| s.as_ptr() != handle);
 
             if let Some(state) = sess.get() {
                 let user_exists = STATE.sessions.read().unwrap().iter().any(|ref s| {
@@ -206,8 +228,8 @@ extern "C" fn destroy_session(handle: *mut PluginSession, error: *mut c_int) {
                     }
                 });
                 if !user_exists {
-                    let mut subscriptions = STATE.subscriptions.write().unwrap();
-                    subscriptions.remove_session(&sess);
+                    let mut switchboard = STATE.switchboard.write().unwrap();
+                    switchboard.remove_session(&sess);
                     let response = json!({ "event": "leave", "user_id": state.user_id, "room_id": state.room_id });
                     send_notification(state, response).unwrap_or_else(|e| {
                         janus::log(LogLevel::Err, &format!("Error notifying publishers on leave: {}", e));
@@ -223,7 +245,10 @@ extern "C" fn destroy_session(handle: *mut PluginSession, error: *mut c_int) {
 }
 
 extern "C" fn query_session(_handle: *mut PluginSession) -> *mut RawJanssonValue {
-    ptr::null_mut()
+    let output = json!({
+        "switchboard": *STATE.switchboard.read().expect("Switchboard is poisoned :(")
+    });
+    from_serde_json(output).into_raw()
 }
 
 extern "C" fn setup_media(_handle: *mut PluginSession) {
@@ -236,9 +261,10 @@ extern "C" fn incoming_rtp(handle: *mut PluginSession, video: c_int, buf: *mut c
     match subscribers {
         Err(e) => janus::log(LogLevel::Huge, &format!("Discarding RTP packet: {}", e)),
         Ok(others) => {
+            janus::log(LogLevel::Huge, &format!("Broadcasting RTP packet to subscribers: {:?}", others));
             let relay_rtp = gateway_callbacks().relay_rtp;
             for other in others {
-                relay_rtp(other.handle, video, buf, len);
+                relay_rtp(other.as_ptr(), video, buf, len);
             }
         }
     }
@@ -248,43 +274,35 @@ extern "C" fn incoming_rtcp(handle: *mut PluginSession, video: c_int, buf: *mut 
     let sess = Session::from_ptr(handle).expect("Session can't be null!");
     let content_kind = if video == 1 { ContentKind::VIDEO } else { ContentKind::AUDIO };
     let relay_rtcp = gateway_callbacks().relay_rtcp;
-    if let Some(state) = sess.get() {
-        if content_kind == ContentKind::AUDIO {
-            let subscriptions = STATE.subscriptions.read().expect("Subscriptions lock poisoned; can't continue.");
-            let subscribers = subscriptions.subscribers_to(state.user_id, Some(content_kind));
-            for subscriber in subscribers {
-                if let Some(other) = subscriber.sess.upgrade() {
-                    relay_rtcp(other.as_ptr(), video, buf, len);
-                }
+    if content_kind == ContentKind::AUDIO {
+        let subscriptions = STATE.switchboard.read().expect("Subscriptions lock poisoned; can't continue.");
+        let subscribers = subscriptions.subscribers_to(&sess, Some(content_kind));
+        for subscriber in subscribers {
+            relay_rtcp(subscriber.as_ptr(), video, buf, len);
+        }
+    } else if content_kind == ContentKind::VIDEO {
+        let subscriptions = STATE.switchboard.read().expect("Subscriptions lock poisoned; can't continue.");
+        let publishers = subscriptions.publishers_to(&sess, Some(content_kind));
+        let packet = unsafe { slice::from_raw_parts(buf, len as usize) };
+        if janus::rtcp::has_pli(packet) {
+            let mut pli = janus::rtcp::gen_pli();
+            for publisher in publishers {
+                janus::log(LogLevel::Info, &format!("Relaying. "));
+                relay_rtcp(publisher.as_ptr(), video, pli.as_mut_ptr(), pli.len() as i32);
             }
-        } else if content_kind == ContentKind::VIDEO {
-            let subscriptions = STATE.subscriptions.read().expect("Subscriptions lock poisoned; can't continue.");
-            let publishers = subscriptions.publishers_to(&sess, Some(content_kind));
-            let packet = unsafe { slice::from_raw_parts(buf, len as usize) };
-            if janus::rtcp::has_pli(packet) {
-                let pli = janus::rtcp::gen_pli();
-                for publisher in publishers {
-                    if let Some(other) = publisher.sess.upgrade() {
-                        relay_rtcp(other.as_ptr(), video, buf, len);
-                    }
-                }
-                if let Err(e) = feedback(handle, Some(content_kind), |other| {
-                    //                relay_rtcp(other.handle, video, pli.as_ptr() as *mut _, pli.len() as i32)
-                }) {
-                    janus::log(LogLevel::Huge, &format!("Discarding RTCP packet: {}", e))
+            if let Err(e) = feedback(handle, Some(content_kind), |other| {
+                //                relay_rtcp(other.handle, video, pli.as_ptr() as *mut _, pli.len() as i32)
+            }) {
+                janus::log(LogLevel::Huge, &format!("Discarding RTCP packet: {}", e))
 
-                }
             }
         }
-
-    } else {
-        janus::log(LogLevel::Warn, &format!("Session {:?} not configured; can't relay.", sess)),
     }
 }
 
 extern "C" fn incoming_data(handle: *mut PluginSession, buf: *mut c_char, len: c_int) {
     let relay_data = gateway_callbacks().relay_data;
-    if let Err(e) = send_data(handle, |other| { relay_data(other.handle, buf, len); }) {
+    if let Err(e) = send_data(handle, |other| { relay_data(other.as_ptr(), buf, len); }) {
         janus::log(LogLevel::Huge, &format!("Discarding data packet: {}", e))
     }
 }
@@ -298,7 +316,7 @@ extern "C" fn hangup_media(_handle: *mut PluginSession) {
 }
 
 fn process_join(from: &Arc<Session>, room_id: RoomId, user_id: UserId, notify: Option<bool>, subscription_specs: Option<Vec<SubscriptionSpec>>) -> MessageProcessingResult {
-    let state = Box::new(SessionState {
+    let state = Arc::new(SessionState {
         user_id,
         room_id,
         notify: notify.unwrap_or(false),
@@ -308,9 +326,14 @@ fn process_join(from: &Arc<Session>, room_id: RoomId, user_id: UserId, notify: O
         return Err(From::from("Users may only join once!"))
     }
 
-    let subscription_specs = subscription_specs.unwrap_or_else(Vec::new);
-    let subscriptions = subscription_specs.iter().filter_map(|x| Subscription::try_from(x).ok());
-    STATE.subscriptions.write()?.subscribe_all(from, subscriptions);
+    if let Some(specs) = subscription_specs {
+        let mut switchboard = STATE.switchboard.write()?;
+        for subscription in specs {
+            let publishers = get_sessions(subscription.publisher_id);
+            switchboard.subscribe(from, &publishers, subscription.content_kind);
+        }
+    }
+
     if notify == Some(true) {
         let notification = json!({ "event": "join", "user_id": user_id, "room_id": room_id });
         if let Err(e) = send_notification(from.get().unwrap(), notification) {
@@ -335,14 +358,20 @@ fn process_list_rooms() -> MessageProcessingResult {
 }
 
 fn process_subscribe(from: &Arc<Session>, specs: Vec<SubscriptionSpec>) -> MessageProcessingResult {
-    let subscriptions = specs.iter().filter_map(|x| Subscription::try_from(x).ok());
-    STATE.subscriptions.write()?.subscribe_all(from, subscriptions);
+    let mut switchboard = STATE.switchboard.write()?;
+    for subscription in specs {
+        let publishers = get_sessions(subscription.publisher_id);
+        switchboard.subscribe(from, &publishers, subscription.content_kind);
+    }
     Ok(json!({}))
 }
 
 fn process_unsubscribe(from: &Arc<Session>, specs: Vec<SubscriptionSpec>) -> MessageProcessingResult {
-    let subscriptions = specs.iter().filter_map(|x| Subscription::try_from(x).ok());
-    STATE.subscriptions.write()?.unsubscribe_all(from, subscriptions);
+    let mut switchboard = STATE.switchboard.write()?;
+    for subscription in specs {
+        let publishers = get_sessions(subscription.publisher_id);
+        switchboard.unsubscribe(from, &publishers, subscription.content_kind);
+    }
     Ok(json!({}))
 }
 
@@ -388,8 +417,8 @@ fn process_jsep(from: &Arc<Session>, jsep: JanssonValue) -> JsepResult {
 fn push_response(from: &Session, txn: *mut c_char, msg: JsonValue, jsep: Option<JsonValue>) -> Result<(), Box<Error>> {
     let push_event = gateway_callbacks().push_event;
     let jsep = jsep.unwrap_or_else(|| json!({}));
-    janus::log(LogLevel::Info, &format!("{:?} sending response to {:?}: msg = {}.", from.handle, txn, msg));
-    janus::get_result(push_event(from.handle, &mut PLUGIN, txn, from_serde_json(msg).as_mut_ref(), from_serde_json(jsep).as_mut_ref()))
+    janus::log(LogLevel::Info, &format!("{:?} sending response to {:?}: msg = {}.", from.as_ptr(), txn, msg));
+    janus::get_result(push_event(from.as_ptr(), &mut PLUGIN, txn, from_serde_json(msg).as_mut_ref(), from_serde_json(jsep).as_mut_ref()))
 }
 
 fn handle_message_async(RawMessage { jsep, msg, txn, from }: RawMessage) -> Result<(), Box<Error>> {

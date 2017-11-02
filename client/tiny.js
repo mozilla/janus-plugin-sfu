@@ -1,7 +1,7 @@
 var USER_ID = Math.floor(Math.random() * (1000000001));
 var ROOM_ID = 42;
 
-//Minijanus.verbose = true;
+Minijanus.verbose = true;
 
 const PEER_CONNECTION_CONFIG = {
     iceServers: [
@@ -134,7 +134,7 @@ function attachSubscriber(session, otherId) {
             var connectionReady = Promise.all([iceReady, localReady, remoteReady]);
             return connectionReady.then(() => {
                 return handle.sendMessage({ kind: "join", room_id: ROOM_ID, user_id: USER_ID, subscription_specs: [
-                    { content_kind: 255, publisher_id: otherId }
+                    { content_kind: "all", publisher_id: otherId }
                 ]});
 
             }).then(reply => {

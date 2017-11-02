@@ -2,9 +2,10 @@
 use atom::AtomSetOnce;
 use messages::{RoomId, UserId};
 use janus::session::SessionWrapper;
+use std::sync::Arc;
 
 /// The state associated with a single session.
-#[derive(Debug)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SessionState {
     /// An opaque ID uniquely identifying this user.
     pub user_id: UserId,
@@ -17,4 +18,4 @@ pub struct SessionState {
 }
 
 /// Rust representation of a single Janus session, i.e. a single RTCPeerConnection.
-pub type Session = SessionWrapper<AtomSetOnce<Box<SessionState>>>;
+pub type Session = SessionWrapper<AtomSetOnce<Arc<SessionState>>>;
