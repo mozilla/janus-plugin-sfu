@@ -254,17 +254,21 @@ extern "C" fn incoming_rtcp(handle: *mut PluginSession, video: c_int, buf: *mut 
             let publishers = switchboard.publishers_to(&sess, Some(content_kind));
             let packet = unsafe { slice::from_raw_parts(buf, len as usize) };
             if janus::rtcp::has_pli(packet) {
-                let mut pli = janus::rtcp::gen_pli();
                 for publisher in publishers {
                     janus::log(LogLevel::Info, &format!("Relaying PLI."));
+                    let mut pli = janus::rtcp::gen_pli();
                     relay_rtcp(publisher.as_ptr(), video, pli.as_mut_ptr(), pli.len() as i32);
                 }
             } else if janus::rtcp::has_fir(packet) {
-                let mut seq = state.fir_seq.fetch_add(1, Ordering::Relaxed) as i32;
-                let mut fir = janus::rtcp::gen_fir(&mut seq);
                 for publisher in publishers {
-                    janus::log(LogLevel::Info, &format!("Relaying FIR."));
-                    relay_rtcp(publisher.as_ptr(), video, fir.as_mut_ptr(), fir.len() as i32);
+                    if let Some(publisher_state) = publisher.get() {
+                        janus::log(LogLevel::Info, &format!("Relaying FIR."));
+                        let mut seq = publisher_state.fir_seq.fetch_add(1, Ordering::Relaxed) as i32;
+                        let mut fir = janus::rtcp::gen_fir(&mut seq);
+                        relay_rtcp(publisher.as_ptr(), video, fir.as_mut_ptr(), fir.len() as i32);
+                    } else {
+                        janus::log(LogLevel::Err, &format!("Non-joined user incorrectly marked as publisher!"));
+                    }
                 }
             }
         }
