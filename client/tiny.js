@@ -36,10 +36,14 @@ function handleMessage(session, ev) {
       var contents = data.plugindata.data;
       switch (contents.event) {
       case "join":
-        addUser(session, contents.user_id);
+        if (contents.room_id === ROOM_ID) {
+          addUser(session, contents.user_id);
+        }
         break;
       case "leave":
-        removeUser(session, contents.user_id);
+        if (contents.room_id === ROOM_ID) {
+          removeUser(session, contents.user_id);
+        }
         break;
       case undefined:
         // a non-plugin event
