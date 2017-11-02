@@ -255,7 +255,6 @@ extern "C" fn incoming_rtp(handle: *mut PluginSession, video: c_int, buf: *mut c
     let content_kind = if video == 1 { ContentKind::VIDEO } else { ContentKind::AUDIO };
     let subscribers = switchboard.subscribers_to(&sess, Some(content_kind));
     let relay_rtp = gateway_callbacks().relay_rtp;
-    janus::log(LogLevel::Huge, &format!("RTP packet received over {:?}.", sess));
     for other in subscribers {
         relay_rtp(other.as_ptr(), video, buf, len);
     }
@@ -266,27 +265,22 @@ extern "C" fn incoming_rtcp(handle: *mut PluginSession, video: c_int, buf: *mut 
     let switchboard = STATE.switchboard.read().expect("Subscriptions lock poisoned; can't continue.");
     let content_kind = if video == 1 { ContentKind::VIDEO } else { ContentKind::AUDIO };
     let relay_rtcp = gateway_callbacks().relay_rtcp;
-    if let Some(state) = sess.get() {
-        janus::log(LogLevel::Dbg, &format!("RTCP packet received in {:?} from {:?} over {:?}.", state.room_id, state.user_id, sess));
-        let packet = unsafe { slice::from_raw_parts(buf, len as usize) };
-        match content_kind {
-            ContentKind::VIDEO if janus::rtcp::has_pli(packet) => {
-                let publishers = switchboard.publishers_to(&sess, Some(content_kind));
-                send_pli(publishers.iter());
-            }
-            ContentKind::VIDEO if janus::rtcp::has_fir(packet) => {
-                let publishers = switchboard.publishers_to(&sess, Some(content_kind));
-                send_fir(publishers.iter());
-            }
-            _ => {
-                let subscribers = switchboard.subscribers_to(&sess, Some(content_kind));
-                for subscriber in subscribers {
-                    relay_rtcp(subscriber.as_ptr(), video, buf, len);
-                }
+    let packet = unsafe { slice::from_raw_parts(buf, len as usize) };
+    match content_kind {
+        ContentKind::VIDEO if janus::rtcp::has_pli(packet) => {
+            let publishers = switchboard.publishers_to(&sess, Some(content_kind));
+            send_pli(publishers.iter());
+        }
+        ContentKind::VIDEO if janus::rtcp::has_fir(packet) => {
+            let publishers = switchboard.publishers_to(&sess, Some(content_kind));
+            send_fir(publishers.iter());
+        }
+        _ => {
+            let subscribers = switchboard.subscribers_to(&sess, Some(content_kind));
+            for subscriber in subscribers {
+                relay_rtcp(subscriber.as_ptr(), video, buf, len);
             }
         }
-    } else {
-        janus::log(LogLevel::Huge, &format!("Discarding RTCP packet from not-yet-joined peer."));
     }
 }
 
@@ -294,7 +288,6 @@ extern "C" fn incoming_data(handle: *mut PluginSession, buf: *mut c_char, len: c
     let sess = Session::from_ptr(handle).expect("Session can't be null!");
     let sessions = STATE.sessions.read().expect("Sessions lock poisoned; can't continue.");
     if let Some(state) = sess.get() {
-        janus::log(LogLevel::Dbg, &format!("Data packet received in {:?} from {:?} over {:?}.", state.room_id, state.user_id, sess));
         let relay_data = gateway_callbacks().relay_data;
         for other in sessions.iter() {
             if let Some(other_state) = other.get() {
