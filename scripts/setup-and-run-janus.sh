@@ -22,11 +22,19 @@ if [[ ! -e $(which python) || ! -e $(which curl) ]]; then
     sudo apt -y install python curl || true
 fi
 
-if [[ ! -e $(which docopts) ]]; then
+if [[ ! -e $(which pip) ]]; then
     curl https://bootstrap.pypa.io/get-pip.py -sSf > get-pip.py
     sudo python get-pip.py
     rm get-pip.py
+fi 
+
+if [[ ! -e $(which docopts) ]]; then
     sudo pip install docopts
+fi
+
+if [[ ! -e $(which twistd) ]]; then
+    sudo apt install python-dev
+    sudo pip install pyopenssl twisted
 fi
 
 eval "$(
@@ -40,6 +48,8 @@ EOF
 
 force_rebuild=$([[ $force_rebuild == "true" ]] && echo "true") || true
 
+script_directory=$(dirname "$0")
+script_directory=$(realpath "$script_directory")
 working_directory=$(realpath "$working_directory")
 mkdir -p "$working_directory"
 cd "$working_directory"
@@ -126,11 +136,18 @@ if [ "$(awk '/\[plugins\]/,/^disable/' /opt/janus/etc/janus/janus.cfg | wc -l)" 
 'libjanus_textroom.so,libjanus_videocall.so,libjanus_videoroom.so/' -i /opt/janus/etc/janus/janus.cfg
 fi
 
+sudo sed 's/wss = no/wss = yes/' -i /opt/janus/etc/janus/janus.transport.websockets.cfg
+sudo sed 's/;wss_port/wss_port/' -i /opt/janus/etc/janus/janus.transport.websockets.cfg
+
 banner 'starting janus and web servers'
 /opt/janus/bin/janus &
-cd mquander/janus-plugin-sfu/client
-python -m SimpleHTTPServer &
-cd "$working_directory"
+pushd "$script_directory/../client"
+if [[ ! -e server.pem ]]; then
+    openssl req -nodes -x509 -newkey rsa:2048 -keyout server.key -out server.pem -days 365 \
+        -subj "/C=US/ST=CA/L=MTV/O=foo/OU=foo/CN=foo"
+fi
+twistd -no web --path . -c server.pem -k server.key --https=4433 &
+popd
 
 trap "kill %1; kill %2; wait" SIGINT
 sleep 1
