@@ -18,7 +18,7 @@ var c = {
 };
 
 function init() {
-  var ws = new WebSocket("ws://localhost:8188", "janus-protocol");
+  var ws = new WebSocket(`wss://${location.hostname}:8989`, "janus-protocol");
   ws.addEventListener("open", () => {
     var session = c.session = new Minijanus.JanusSession(ws.send.bind(ws));
     ws.addEventListener("message", ev => handleMessage(session, ev));

@@ -184,7 +184,7 @@ class SquawkerApp extends React.Component {
 }
 
 const params = new URLSearchParams(location.search.slice(1));
-const serverUrl = params.get("janus") || "ws://localhost:8188";
+const serverUrl = params.get("janus") || `wss://${location.hostname}:8989`;
 const roomId = params.get("room") || 0;
 const ws = new WebSocket(serverUrl, "janus-protocol");
 const session = new Minijanus.JanusSession(ws.send.bind(ws));
