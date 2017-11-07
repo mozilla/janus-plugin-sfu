@@ -5,6 +5,7 @@ use messages::ContentKind;
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Weak};
 
+/// A (session, content-kind) pair.
 #[derive(Debug)]
 struct SessionContent {
     /// The session.
@@ -99,19 +100,13 @@ impl Switchboard {
         }
     }
 
-    pub fn subscribers_to(&self, publisher: &Session, kind: Option<ContentKind>) -> Vec<Arc<Session>> {
-        let all_subscribers = self.publisher_to_subscribers.get(publisher).map(Vec::as_slice).unwrap_or(&[]).iter();
-        match kind {
-            None => all_subscribers.filter_map(|record| record.sess.upgrade()).collect(),
-            Some(k) => all_subscribers.filter(|s| { s.kind.contains(k) }).filter_map(|record| record.sess.upgrade()).collect()
-        }
+    pub fn subscribers_to(&self, publisher: &Session, kind: ContentKind) -> Vec<Arc<Session>> {
+        let all_subscriptions = self.publisher_to_subscribers.get(publisher).map(Vec::as_slice).unwrap_or(&[]).iter();
+        all_subscriptions.filter(|s| { s.kind.contains(kind) }).filter_map(|record| record.sess.upgrade()).collect()
     }
 
-    pub fn publishers_to(&self, subscriber: &Session, kind: Option<ContentKind>) -> Vec<Arc<Session>> {
+    pub fn publishers_to(&self, subscriber: &Session, kind: ContentKind) -> Vec<Arc<Session>> {
         let all_subscriptions = self.subscriber_to_publishers.get(subscriber).map(Vec::as_slice).unwrap_or(&[]).iter();
-        match kind {
-            None => all_subscriptions.filter_map(|record| record.sess.upgrade()).collect(),
-            Some(k) => all_subscriptions.filter(|s| { k.contains(s.kind) }).filter_map(|record| record.sess.upgrade()).collect()
-        }
+        all_subscriptions.filter(|s| { kind.contains(s.kind) }).filter_map(|record| record.sess.upgrade()).collect()
     }
 }

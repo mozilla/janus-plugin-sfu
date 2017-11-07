@@ -1,6 +1,7 @@
 /// Types and code related to handling signalling messages.
 use super::serde::de::{self, Deserialize, Deserializer, Unexpected, Visitor};
 use super::serde::ser::{self, Serialize, Serializer};
+use std::borrow::Cow;
 use std::fmt;
 
 bitflags! {
@@ -71,12 +72,12 @@ pub enum OptionalField<T> {
 /// A signalling message carrying a JSEP SDP offer or answer.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase", tag = "type")]
-pub enum JsepKind {
+pub enum JsepKind<'a> {
     /// A client offer to establish a connection.
-    Offer { sdp: String },
+    Offer { #[serde(borrow)] sdp: Cow<'a, str> },
 
     /// A client answer responding to one of our offers.
-    Answer { sdp: String },
+    Answer { #[serde(borrow)] sdp: Cow<'a, str> },
 }
 
 /// The enumeration of all (non-JSEP) signalling messages which can be received from a client.
@@ -135,14 +136,14 @@ mod tests {
         fn parse_offer() {
             let jsep = r#"{"type": "offer", "sdp": "..."}"#;
             let result: JsepKind = serde_json::from_str(jsep).unwrap();
-            assert_eq!(result, JsepKind::Offer { sdp: "...".to_owned() });
+            assert_eq!(result, JsepKind::Offer { sdp: "...".into() });
         }
 
         #[test]
         fn parse_answer() {
             let jsep = r#"{"type": "answer", "sdp": "..."}"#;
             let result: JsepKind = serde_json::from_str(jsep).unwrap();
-            assert_eq!(result, JsepKind::Answer { sdp: "...".to_owned() });
+            assert_eq!(result, JsepKind::Answer { sdp: "...".into() });
         }
     }
 

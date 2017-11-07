@@ -21,9 +21,8 @@ use atom::AtomSetOnce;
 use messages::{RoomId, UserId};
 use janus::{JanssonDecodingFlags, JanssonEncodingFlags, JanssonValue, LogLevel, Plugin, PluginCallbacks, PluginMetadata, PluginResult,
             PluginResultType, PluginSession, RawPluginResult, RawJanssonValue};
-use janus::sdp::Sdp;
+use janus::sdp::{AudioCodec, OfferAnswerParameters, Sdp, VideoCodec};
 use messages::{ContentKind, JsepKind, MessageKind, OptionalField, SubscriptionSpec};
-use serde_json::Result as JsonResult;
 use serde_json::Value as JsonValue;
 use sessions::{Session, SessionState};
 use std::collections::HashSet;
@@ -64,16 +63,24 @@ fn from_serde_json(input: JsonValue) -> JanssonValue {
     JanssonValue::from_str(&input.to_string(), JanssonDecodingFlags::empty()).unwrap()
 }
 
-/// Inefficiently converts a Jansson JSON value to a serde JSON value.
-fn to_serde_json<T>(input: JanssonValue) -> JsonResult<T> where T: serde::de::DeserializeOwned {
-    serde_json::from_str(input.to_libcstring(JanssonEncodingFlags::empty()).to_str().unwrap())
-}
-
 /// A result which carries a signalling message to send to a client.
-type MessageProcessingResult = Result<JsonValue, Box<Error>>;
+type MessageResult = Result<JsonValue, Box<Error>>;
 
 /// A result which carries a JSEP offer or answer to send to a client.
 type JsepResult = Result<JsonValue, Box<Error>>;
+
+/// The audio codec Janus will negotiate with all participants. Opus is cross-compatible with everything we care about.
+static AUDIO_CODEC: AudioCodec = AudioCodec::Opus;
+
+/// The video codec Janus will negotiate with all participants. H.264 is cross-compatible with modern Firefox, Chrome,
+/// Safari, and Edge; VP8/9 unfortunately isn't compatible with Safari.
+static VIDEO_CODEC: VideoCodec = VideoCodec::H264;
+
+/// The payload type identifier we use for audio. Basically arbitrary, but 111 is common for Opus in Chrome.
+static AUDIO_PAYLOAD_TYPE: i32 = 111;
+
+/// The payload type identifier we use for video. Basically arbitrary, but 107 is common for H.264 in Chrome.
+static VIDEO_PAYLOAD_TYPE: i32 = 107;
 
 const METADATA: PluginMetadata = PluginMetadata {
     version: 1,
@@ -141,18 +148,18 @@ fn send_notification(myself: &SessionState, json: JsonValue) -> Result<(), Box<E
     Ok(())
 }
 
-fn send_pli<'a, T>(publishers: T) where T: Iterator<Item=&'a Arc<Session>> {
+fn send_pli<'a, T>(publishers: T) where T: IntoIterator<Item=&'a Arc<Session>> {
     let relay_rtcp = gateway_callbacks().relay_rtcp;
-    for publisher in publishers {
+    for publisher in publishers.into_iter() {
         janus::log(LogLevel::Info, &format!("Relaying PLI."));
         let mut pli = janus::rtcp::gen_pli();
         relay_rtcp(publisher.as_ptr(), 1, pli.as_mut_ptr(), pli.len() as i32);
     }
 }
 
-fn send_fir<'a, T>(publishers: T) where T: Iterator<Item=&'a Arc<Session>> {
+fn send_fir<'a, T>(publishers: T) where T: IntoIterator<Item=&'a Arc<Session>> {
     let relay_rtcp = gateway_callbacks().relay_rtcp;
-    for publisher in publishers {
+    for publisher in publishers.into_iter() {
         if let Some(publisher_state) = publisher.get() {
             janus::log(LogLevel::Info, &format!("Relaying FIR."));
             let mut seq = publisher_state.fir_seq.fetch_add(1, Ordering::Relaxed) as i32;
@@ -253,7 +260,7 @@ extern "C" fn incoming_rtp(handle: *mut PluginSession, video: c_int, buf: *mut c
     let sess = Session::from_ptr(handle).expect("Session can't be null!");
     let switchboard = STATE.switchboard.read().expect("Switchboard lock poisoned; can't continue.");
     let content_kind = if video == 1 { ContentKind::VIDEO } else { ContentKind::AUDIO };
-    let subscribers = switchboard.subscribers_to(&sess, Some(content_kind));
+    let subscribers = switchboard.subscribers_to(&sess, content_kind);
     let relay_rtp = gateway_callbacks().relay_rtp;
     for other in subscribers {
         relay_rtp(other.as_ptr(), video, buf, len);
@@ -268,15 +275,13 @@ extern "C" fn incoming_rtcp(handle: *mut PluginSession, video: c_int, buf: *mut 
     let packet = unsafe { slice::from_raw_parts(buf, len as usize) };
     match content_kind {
         ContentKind::VIDEO if janus::rtcp::has_pli(packet) => {
-            let publishers = switchboard.publishers_to(&sess, Some(content_kind));
-            send_pli(publishers.iter());
+            send_pli(&switchboard.publishers_to(&sess, content_kind));
         }
         ContentKind::VIDEO if janus::rtcp::has_fir(packet) => {
-            let publishers = switchboard.publishers_to(&sess, Some(content_kind));
-            send_fir(publishers.iter());
+            send_fir(&switchboard.publishers_to(&sess, content_kind));
         }
         _ => {
-            let subscribers = switchboard.subscribers_to(&sess, Some(content_kind));
+            let subscribers = switchboard.subscribers_to(&sess, content_kind);
             for subscriber in subscribers {
                 relay_rtcp(subscriber.as_ptr(), video, buf, len);
             }
@@ -309,8 +314,8 @@ extern "C" fn hangup_media(_handle: *mut PluginSession) {
     janus::log(LogLevel::Verb, "Hanging up WebRTC media.");
 }
 
-fn process_join(from: &Arc<Session>, room_id: RoomId, user_id: UserId, notify: Option<bool>, subscription_specs: Option<Vec<SubscriptionSpec>>) -> MessageProcessingResult {
-    let state = Arc::new(SessionState::new(user_id, room_id, notify.unwrap_or(false)));
+fn process_join(from: &Arc<Session>, room_id: RoomId, user_id: UserId, notify: bool, subscription_specs: Option<Vec<SubscriptionSpec>>) -> MessageResult {
+    let state = Arc::new(SessionState::new(room_id, user_id, notify));
     if from.set_if_none(state).is_some() {
         return Err(From::from("Users may only join once!"))
     }
@@ -319,12 +324,12 @@ fn process_join(from: &Arc<Session>, room_id: RoomId, user_id: UserId, notify: O
         let mut switchboard = STATE.switchboard.write()?;
         for subscription in specs {
             let publishers = get_sessions(subscription.publisher_id);
-            send_fir(publishers.iter());
             switchboard.subscribe(from, &publishers, subscription.content_kind);
+            send_fir(&publishers);
         }
     }
 
-    if notify == Some(true) {
+    if notify {
         let notification = json!({ "event": "join", "user_id": user_id, "room_id": room_id });
         if let Err(e) = send_notification(from.get().unwrap(), notification) {
             janus::log(LogLevel::Err, &format!("Error sending notification for user join: {:?}", e))
@@ -337,27 +342,27 @@ fn process_join(from: &Arc<Session>, room_id: RoomId, user_id: UserId, notify: O
     Ok(json!({ "user_ids": user_ids }))
 }
 
-fn process_list_users(room_id: RoomId) -> MessageProcessingResult {
+fn process_list_users(room_id: RoomId) -> MessageResult {
     let sessions = STATE.sessions.read()?;
     Ok(json!({ "user_ids": get_user_ids(&sessions, room_id) }))
 }
 
-fn process_list_rooms() -> MessageProcessingResult {
+fn process_list_rooms() -> MessageResult {
     let sessions = STATE.sessions.read()?;
     Ok(json!({ "room_ids": get_room_ids(&sessions) }))
 }
 
-fn process_subscribe(from: &Arc<Session>, specs: Vec<SubscriptionSpec>) -> MessageProcessingResult {
+fn process_subscribe(from: &Arc<Session>, specs: Vec<SubscriptionSpec>) -> MessageResult {
     let mut switchboard = STATE.switchboard.write()?;
     for subscription in specs {
         let publishers = get_sessions(subscription.publisher_id);
-        send_fir(publishers.iter());
         switchboard.subscribe(from, &publishers, subscription.content_kind);
+        send_fir(&publishers);
     }
     Ok(json!({}))
 }
 
-fn process_unsubscribe(from: &Arc<Session>, specs: Vec<SubscriptionSpec>) -> MessageProcessingResult {
+fn process_unsubscribe(from: &Arc<Session>, specs: Vec<SubscriptionSpec>) -> MessageResult {
     let mut switchboard = STATE.switchboard.write()?;
     for subscription in specs {
         let publishers = get_sessions(subscription.publisher_id);
@@ -366,10 +371,12 @@ fn process_unsubscribe(from: &Arc<Session>, specs: Vec<SubscriptionSpec>) -> Mes
     Ok(json!({}))
 }
 
-fn process_message(from: &Arc<Session>, msg: JanssonValue) -> MessageProcessingResult {
-    match to_serde_json::<OptionalField<MessageKind>>(msg) {
-        Ok(OptionalField::None {}) => Ok(json!({})),
-        Ok(OptionalField::Some(kind)) => {
+fn process_message(from: &Arc<Session>, msg: JanssonValue) -> MessageResult {
+    let msg_str = msg.to_libcstring(JanssonEncodingFlags::empty());
+    let msg_contents: OptionalField<MessageKind> = serde_json::from_str(msg_str.to_str()?)?;
+    match msg_contents {
+        OptionalField::None {} => Ok(json!({})),
+        OptionalField::Some(kind) => {
             janus::log(LogLevel::Info, &format!("Processing {:?} on connection {:?}.", kind, from));
             match kind {
                 MessageKind::ListRooms => process_list_rooms(),
@@ -377,31 +384,47 @@ fn process_message(from: &Arc<Session>, msg: JanssonValue) -> MessageProcessingR
                 MessageKind::Subscribe { specs } => process_subscribe(from, specs),
                 MessageKind::Unsubscribe { specs } => process_unsubscribe(from, specs),
                 MessageKind::Join { room_id, user_id, notify, subscription_specs } =>
-                    process_join(from, room_id, user_id, notify, subscription_specs),
+                    process_join(from, room_id, user_id, notify.unwrap_or(false), subscription_specs),
             }
         }
-        Err(e) => Err(Box::new(e)),
     }
 }
 
-fn process_offer(sdp: String) -> JsepResult {
+fn process_offer(sdp: &str) -> JsepResult {
+    janus::log(LogLevel::Warn, "Before processing.");
     let offer = Sdp::parse(CString::new(sdp)?)?;
-    let answer = answer_sdp!(offer);
+    janus::log(LogLevel::Warn, "Before answering.");
+    let mut answer = answer_sdp!(
+        offer,
+        OfferAnswerParameters::AudioCodec, AUDIO_CODEC.to_cstr().as_ptr(),
+        OfferAnswerParameters::VideoCodec, VIDEO_CODEC.to_cstr().as_ptr(),
+    );
+    janus::log(LogLevel::Warn, "Before rewriting.");
+    if let Some(offer_audio_pt) = answer.get_payload_type(AUDIO_CODEC.to_cstr()) {
+        answer.rewrite_payload_type(offer_audio_pt, AUDIO_PAYLOAD_TYPE);
+    }
+    if let Some(offer_video_pt) = answer.get_payload_type(VIDEO_CODEC.to_cstr()) {
+        answer.rewrite_payload_type(offer_video_pt, VIDEO_PAYLOAD_TYPE);
+    }
+    janus::log(LogLevel::Warn, "Done rewriting.");
     let answer_str = Sdp::to_string(&answer);
-    Ok(serde_json::to_value(JsepKind::Answer { sdp: answer_str.to_str()?.to_owned() })?)
+    Ok(serde_json::to_value(JsepKind::Answer { sdp: answer_str.to_str()?.into() })?)
 }
 
 fn process_jsep(from: &Arc<Session>, jsep: JanssonValue) -> JsepResult {
-    match to_serde_json::<OptionalField<JsepKind>>(jsep) {
-        Ok(OptionalField::None {}) => Ok(json!({})),
-        Ok(OptionalField::Some(kind)) => {
+    let jsep_str = jsep.to_libcstring(JanssonEncodingFlags::empty());
+    janus::log(LogLevel::Warn, &format!("JSEP string: {:?}", jsep_str.to_str()));
+    let jsep_contents: OptionalField<JsepKind> = serde_json::from_str(jsep_str.to_str()?)?;
+    janus::log(LogLevel::Warn, &format!("JSEP contents: {:?}", jsep_contents));
+    match jsep_contents {
+        OptionalField::None {} => Ok(json!({})),
+        OptionalField::Some(kind) => {
             janus::log(LogLevel::Info, &format!("Processing {:?} from {:?}.", kind, from));
             match kind {
-                JsepKind::Offer { sdp } => process_offer(sdp),
+                JsepKind::Offer { sdp } => process_offer(&sdp),
                 JsepKind::Answer { .. } => Err(From::from("JSEP answers not yet supported.")),
             }
         }
-        Err(e) => Err(Box::new(e)),
     }
 }
 
