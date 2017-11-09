@@ -121,12 +121,12 @@ function attachPublisher(session) {
     var uchannel = conn.createDataChannel("unreliable", { ordered: false, maxRetransmits: 0 });
     uchannel.addEventListener("message", storeMessage);
 
-    var mediaReady = mic ? navigator.mediaDevices.getUserMedia({ audio: true }) : Promise.resolve();
+    var mediaReady = mic ? navigator.mediaDevices.getUserMedia({ audio: true }) : Promise.reject();
     var offerReady = mediaReady
-        .then(media => {
-          if (mic) { conn.addStream(media); }
-          return conn.createOffer({ audio: mic });
-        }, () => conn.createOffer());
+      .then(
+        media => conn.createOffer({ audio: true }),
+        () => conn.createOffer()
+      );
     var localReady = offerReady.then(conn.setLocalDescription.bind(conn));
     var remoteReady = offerReady
         .then(handle.sendJsep.bind(handle))
