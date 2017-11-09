@@ -44,10 +44,12 @@ class SquawkerItem extends React.Component {
   }
 
   getAudioStream() {
+    if (!this.props.squawker.audioFile) { return null; }
     return this.captureStream(this.audioEl);
   }
 
   getVideoStream() {
+    if (!this.props.squawker.videoFile) { return null; }
     return this.captureStream(this.videoEl);
   }
 
@@ -59,8 +61,15 @@ class SquawkerItem extends React.Component {
     return handle.attach("janus.plugin.sfu").then(() => {
       this.setState({ handle: handle });
       var iceReady = Squawker.negotiateIce(conn, handle);
-      conn.addStream(this.getAudioStream());
-      conn.addStream(this.getVideoStream());
+
+      const audioStream = this.getAudioStream();
+      if (audioStream) { conn.addStream(audioStream); }
+
+      const videoStream = this.getVideoStream();
+      if (videoStream) { conn.addStream(videoStream); }
+
+      const channel = conn.createDataChannel("reliable", { ordered: true });
+
       var offerReady = conn.createOffer({ offerToReceiveAudio: 0, offerToReceiveVideo: 0 });
       var localReady = offerReady.then(conn.setLocalDescription.bind(conn));
       var remoteReady = offerReady
@@ -75,9 +84,52 @@ class SquawkerItem extends React.Component {
       })).then(() => {
         this.audioEl.play();
         this.videoEl.play();
+        this.sendFileData(channel);
       });
     });
   }
+
+  sendFileData(channel) {
+    const dataFile = this.props.squawker.dataFile;
+    if (!dataFile) { return; }
+
+    const reader = new FileReader();
+    reader.onload = () => {
+      const messages = JSON.parse(reader.result);
+      const start = performance.now();
+      let index = 0;
+      const userId = this.props.squawker.userId;
+      const messageIntervalId = setInterval(() => {
+        const time = performance.now() - start;
+        let message = messages[index];
+        while (time >= message.time) {
+          if (message.message.data.owner) {
+            message.message.data.owner = userId;
+          }
+          message.message.clientId = userId;
+
+          try {
+            channel.send(JSON.stringify(message.message));
+          }
+          catch(e) {
+            console.error('Failed to send file data', e);
+            clearInterval(messageIntervalId);
+            break;
+          }
+
+          index++;
+          message = messages[index];
+          if (index === messages.length) {
+            clearInterval(messageIntervalId);
+            break;
+          }
+        }
+      }, 10);
+    }
+    reader.readAsText(dataFile);
+  }
+
+
 
   render() {
     const squawker = this.props.squawker;
@@ -89,7 +141,7 @@ class SquawkerItem extends React.Component {
           e("span", { className: "user-id" }, squawker.userId.toString()),
           " Handle ID: ",
           e("span", { className: "handle-id" }, handleId)),
-        e("audio", { controls: true, src: squawker.audioUrl, ref: (audio) => this.audioEl = audio }),
+        e("audio", { crossOrigin: 'anonymous', controls: true, src: squawker.audioUrl, ref: (audio) => this.audioEl = audio }),
         e("video", { controls: true, src: squawker.videoUrl, ref: (video) => this.videoEl = video })));
   }
 }
