@@ -1,6 +1,6 @@
 const params = new URLSearchParams(location.search.slice(1));
 var USER_ID = Math.floor(Math.random() * (1000000001));
-const roomId = params.get("room");
+const roomId = params.get("room") || 42;
 const mic = !/0|false|off/i.test(params.get("mic"));
 
 Minijanus.verbose = true;
