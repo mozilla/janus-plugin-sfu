@@ -1,5 +1,7 @@
+const params = new URLSearchParams(location.search.slice(1));
 var USER_ID = Math.floor(Math.random() * (1000000001));
-var ROOM_ID = 42;
+const roomId = params.get("room");
+const mic = !/0|false|off/i.test(params.get("mic"));
 
 Minijanus.verbose = true;
 
@@ -36,12 +38,12 @@ function handleMessage(session, ev) {
       var contents = data.plugindata.data;
       switch (contents.event) {
       case "join":
-        if (contents.room_id === ROOM_ID) {
+        if (contents.room_id === roomId) {
           addUser(session, contents.user_id);
         }
         break;
       case "leave":
-        if (contents.room_id === ROOM_ID) {
+        if (contents.room_id === roomId) {
           removeUser(session, contents.user_id);
         }
         break;
@@ -85,19 +87,45 @@ function removeUser(session, userId) {
   }
 }
 
+let messages = [];
+let firstMessageTime;
+function storeMessage(ev) {
+  if (!firstMessageTime) {
+    firstMessageTime = performance.now();
+  }
+  messages.push({
+    time: performance.now() - firstMessageTime,
+    message: JSON.parse(ev.data)
+  });
+}
+
+document.getElementById("saveButton").addEventListener("click", function saveToMessagesFile() {
+  const file = new File([JSON.stringify(messages)], "messages.json", {type: "text/json"});
+  saveAs(file);
+});
+
+document.getElementById("clearButton").addEventListener("click", function clearMessages() {
+  messages = [];
+});
+
 function attachPublisher(session) {
   console.info("Attaching publisher for session: ", session);
   var conn = new RTCPeerConnection(PEER_CONNECTION_CONFIG);
   var handle = new Minijanus.JanusPluginHandle(session);
   return handle.attach("janus.plugin.sfu").then(() => {
     var iceReady = negotiateIce(conn, handle);
+
     var channel = conn.createDataChannel("reliable", { ordered: true });
-    channel.addEventListener("message", ev => console.info("Message received on channel: ", ev));
-    var mediaReady = navigator.mediaDevices.getUserMedia({ audio: true });
+    channel.addEventListener("message", storeMessage);
+
+    var uchannel = conn.createDataChannel("unreliable", { ordered: false, maxRetransmits: 0 });
+    uchannel.addEventListener("message", storeMessage);
+
+    var mediaReady = mic ? navigator.mediaDevices.getUserMedia({ audio: true }) : Promise.resolve();
     var offerReady = mediaReady
         .then(media => {
-          conn.addStream(media);
-          return conn.createOffer({ audio: true });
+          if (mic) { conn.addStream(media); }
+          return conn.createOffer({ audio: mic });
         }, () => conn.createOffer());
     var localReady = offerReady.then(conn.setLocalDescription.bind(conn));
     var remoteReady = offerReady
@@ -105,7 +133,7 @@ function attachPublisher(session) {
         .then(answer => conn.setRemoteDescription(answer.jsep));
     var connectionReady = Promise.all([iceReady, localReady, remoteReady]);
     return connectionReady
-      .then(() => handle.sendMessage({ kind: "join", room_id: ROOM_ID, user_id: USER_ID, notify: true }))
+      .then(() => handle.sendMessage({ kind: "join", room_id: roomId, user_id: USER_ID, notify: true }))
       .then(reply => {
         var response = reply.plugindata.data.response;
         response.user_ids.forEach(otherId => {
@@ -146,7 +174,7 @@ function attachSubscriber(session, otherId) {
           .then(answer => conn.setRemoteDescription(answer.jsep));
       var connectionReady = Promise.all([iceReady, localReady, remoteReady]);
       return connectionReady.then(() => {
-        return handle.sendMessage({ kind: "join", room_id: ROOM_ID, user_id: USER_ID, subscription_specs: [
+        return handle.sendMessage({ kind: "join", room_id: roomId, user_id: USER_ID, subscription_specs: [
           { content_kind: "all", publisher_id: otherId }
         ]});
 
