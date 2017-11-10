@@ -90,51 +90,65 @@ class SquawkerItem extends React.Component {
     });
   }
 
-  sendFileData(reliableChannel, unreliableChannel) {
+  async readAsText(file) {
+    return new Promise(function (resolve, reject) {
+      const reader = new FileReader();
+      reader.onload = () => resolve(reader.result);
+      reader.readAsText(file);
+    });
+  }
+
+  async channelOpen(dataChannel) {
+    return new Promise(function (resolve, reject) {
+      if (dataChannel.readyState === "open") { resolve(); }
+      else { dataChannel.onopen = resolve; }
+    });
+  }
+
+  async sendFileData(reliableChannel, unreliableChannel) {
     const dataFile = this.props.squawker.dataFile;
     if (!dataFile) { return; }
 
-    const reader = new FileReader();
-    reader.onload = () => {
-      const messages = JSON.parse(reader.result);
-      const start = performance.now();
-      let index = 0;
-      const userId = this.props.squawker.userId;
-      const messageIntervalId = setInterval(() => {
-        const time = performance.now() - start;
-        let message = messages[index];
-        while (time >= message.time) {
-          if (message.message.data.owner) {
-            message.message.data.owner = userId;
-          }
-          if (message.message.data.networkId) {
-            message.message.data.networkId += userId;
-          }
-          if (message.message.data.parent) {
-            message.message.data.parent += userId;
-          }
-          message.message.clientId = userId;
+    const messages = JSON.parse(await this.readAsText(dataFile));
+    await this.channelOpen(reliableChannel);
+    await this.channelOpen(unreliableChannel);
 
-          try {
-            const channel = message.reliable ? reliableChannel : unreliableChannel;
-            channel.send(JSON.stringify(message.message));
-          }
-          catch(e) {
-            console.error('Failed to send file data', e);
-            clearInterval(messageIntervalId);
-            break;
-          }
-
-          index++;
-          message = messages[index];
-          if (index === messages.length) {
-            clearInterval(messageIntervalId);
-            break;
-          }
+    const start = performance.now();
+    let index = 0;
+    const userId = this.props.squawker.userId;
+    const messageIntervalId = setInterval(() => {
+      const time = performance.now() - start;
+      let message = messages[index];
+      while (time >= message.time) {
+        if (message.message.data.owner) {
+          message.message.data.owner = userId;
         }
-      }, 10);
-    }
-    reader.readAsText(dataFile);
+        if (message.message.data.networkId) {
+          message.message.data.networkId += userId;
+        }
+        if (message.message.data.parent) {
+          message.message.data.parent += userId;
+        }
+        message.message.clientId = userId;
+
+        try {
+          const channel = message.reliable ? reliableChannel : unreliableChannel;
+          channel.send(JSON.stringify(message.message));
+        }
+        catch(e) {
+          console.error('Failed to send file data', e);
+          clearInterval(messageIntervalId);
+          break;
+        }
+
+        index++;
+        message = messages[index];
+        if (index === messages.length) {
+          clearInterval(messageIntervalId);
+          break;
+        }
+      }
+    }, 10);
   }
 
 
