@@ -107,6 +107,12 @@ class SquawkerItem extends React.Component {
           if (message.message.data.owner) {
             message.message.data.owner = userId;
           }
+          if (message.message.data.networkId) {
+            message.message.data.networkId += userId;
+          }
+          if (message.message.data.parent) {
+            message.message.data.parent += userId;
+          }
           message.message.clientId = userId;
 
           try {
