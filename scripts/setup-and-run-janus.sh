@@ -102,7 +102,8 @@ if [[ $force_rebuild || ! -e /opt/janus/bin/janus ]]; then
         pushd warmcat/libwebsockets
         mkdir build
         pushd build
-        cmake -DCMAKE_INSTALL_PREFIX:PATH=/usr -DCMAKE_C_FLAGS="-fpic" ..
+        # see https://github.com/meetecho/janus-gateway/issues/732 re: LWS_MAX_SMP
+        cmake -DLWS_MAX_SMP=1 -DLWS_WITHOUT_TESTAPPS=ON -DCMAKE_INSTALL_PREFIX:PATH=/usr -DCMAKE_C_FLAGS="-fpic" ..
         make && sudo make install
         popd
         popd
@@ -111,7 +112,7 @@ if [[ $force_rebuild || ! -e /opt/janus/bin/janus ]]; then
     banner 'building and installing janus'
     pushd meetecho/janus-gateway
     sh autogen.sh
-    ./configure --prefix=/opt/janus
+    ./configure --prefix=/opt/janus --disable-all-plugins
     make
     sudo make install
     sudo make configs
@@ -129,6 +130,7 @@ if [[ $force_rebuild || ! -e /opt/janus/lib/janus/plugins/libjanus_plugin_sfu.so
     git-get mquander/janus-plugin-sfu master
     pushd mquander/janus-plugin-sfu
     cargo build --release
+    sudo mkdir -p /opt/janus/lib/janus/plugins
     sudo cp target/release/libjanus_plugin_sfu.so /opt/janus/lib/janus/plugins/
     popd
 fi
