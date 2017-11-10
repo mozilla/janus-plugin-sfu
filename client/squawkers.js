@@ -176,11 +176,11 @@ class AddSquawkerForm extends React.Component {
   render() {
     return (
       e("form", { onSubmit: this.create },
-        e("label", {}, "Audio file",
+        e("label", {}, "Audio file: ",
           e("input", { type: "file", ref: (input) => this.audioFile = input })),
-        e("label", {}, "Video file",
+        e("label", {}, "Video file: ",
           e("input", { type: "file", ref: (input) => this.videoFile = input })),
-        e("label", {}, "Data file",
+        e("label", {}, "Data file: ",
           e("input", { type: "file", ref: (input) => this.dataFile = input })),
         e("input", { type: "submit", value: "Create" })));
   }

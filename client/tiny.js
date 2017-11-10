@@ -88,6 +88,12 @@ function removeUser(session, userId) {
 }
 
 let messages = [];
+
+const messageCount = document.getElementById("messageCount");
+function updateMessageCount() {
+  messageCount.textContent = messages.length;
+}
+
 let firstMessageTime;
 function storeMessage(ev) {
   if (!firstMessageTime) {
@@ -97,6 +103,7 @@ function storeMessage(ev) {
     time: performance.now() - firstMessageTime,
     message: JSON.parse(ev.data)
   });
+  updateMessageCount();
 }
 
 document.getElementById("saveButton").addEventListener("click", function saveToMessagesFile() {
@@ -106,6 +113,7 @@ document.getElementById("saveButton").addEventListener("click", function saveToM
 
 document.getElementById("clearButton").addEventListener("click", function clearMessages() {
   messages = [];
+  updateMessageCount();
 });
 
 function attachPublisher(session) {

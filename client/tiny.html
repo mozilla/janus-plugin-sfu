@@ -5,9 +5,17 @@
     <title>Tiny test page</title>
   </head>
   <body>
-    <p>This page creates a publisher connection and subscriber connections to other users to test basic functionality.</p>
-    <button id="saveButton">save</button>
-    <button id="clearButton">clear</button>
+    <p>
+      This page creates a publisher connection and subscriber connections to other users to test basic functionality. <br/>
+      It also allows you to save data channel messages to a json file.
+    </p>
+
+    <fieldset>
+      <legend>Data messages</legend>
+      <div><label>Message count:</label><span id="messageCount"></span></div>
+      <button id="saveButton">Save</button>
+      <button id="clearButton">Clear</button>
+    </fieldset>
 
     <script src="https://cdnjs.cloudflare.com/ajax/libs/webrtc-adapter/3.4.3/adapter.min.js"></script>
     <script src="https://rawgit.com/mquander/minijanus.js/master/bundle.js"></script>
