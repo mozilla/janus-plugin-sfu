@@ -124,7 +124,10 @@ function attachPublisher(session) {
     var mediaReady = mic ? navigator.mediaDevices.getUserMedia({ audio: true }) : Promise.reject();
     var offerReady = mediaReady
       .then(
-        media => conn.createOffer({ audio: true }),
+        media => {
+          conn.addStream(media);
+          return conn.createOffer({ audio: true })
+        },
         () => conn.createOffer()
       );
     var localReady = offerReady.then(conn.setLocalDescription.bind(conn));
