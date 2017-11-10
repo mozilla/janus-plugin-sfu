@@ -102,7 +102,8 @@ if [[ $force_rebuild || ! -e /opt/janus/bin/janus ]]; then
         pushd warmcat/libwebsockets
         mkdir build
         pushd build
-        cmake -DCMAKE_INSTALL_PREFIX:PATH=/usr -DCMAKE_C_FLAGS="-fpic" ..
+        # see https://github.com/meetecho/janus-gateway/issues/732 re: LWS_MAX_SMP
+        cmake -DLWS_MAX_SMP=1 -DLWS_WITHOUT_TESTAPPS=ON -DCMAKE_INSTALL_PREFIX:PATH=/usr -DCMAKE_C_FLAGS="-fpic" ..
         make && sudo make install
         popd
         popd
