@@ -95,15 +95,24 @@ function updateMessageCount() {
 }
 
 let firstMessageTime;
-function storeMessage(ev) {
+function storeMessage(data, reliable) {
   if (!firstMessageTime) {
     firstMessageTime = performance.now();
   }
   messages.push({
     time: performance.now() - firstMessageTime,
-    message: JSON.parse(ev.data)
+    reliable,
+    message: JSON.parse(data)
   });
   updateMessageCount();
+}
+
+function storeReliableMessage(ev) {
+  storeMessage(ev.data, true);
+}
+
+function storeUnreliableMessage(ev) {
+  storeMessage(ev.data, false);
 }
 
 document.getElementById("saveButton").addEventListener("click", function saveToMessagesFile() {
@@ -124,10 +133,10 @@ function attachPublisher(session) {
     var iceReady = negotiateIce(conn, handle);
 
     var channel = conn.createDataChannel("reliable", { ordered: true });
-    channel.addEventListener("message", storeMessage);
+    channel.addEventListener("message", storeReliableMessage);
 
-    var uchannel = conn.createDataChannel("unreliable", { ordered: false, maxRetransmits: 0 });
-    uchannel.addEventListener("message", storeMessage);
+    const unreliableChannel = conn.createDataChannel("unreliable", { ordered: false, maxRetransmits: 0 });
+    unreliableChannel.addEventListener("message", storeUnreliableMessage);
 
     var mediaReady = mic ? navigator.mediaDevices.getUserMedia({ audio: true }) : Promise.reject();
     var offerReady = mediaReady
@@ -150,7 +159,7 @@ function attachPublisher(session) {
         response.user_ids.forEach(otherId => {
           addUser(session, otherId);
         });
-        return { handle: handle, conn: conn, channel: channel };
+        return { handle, conn, channel, unreliableChannel };
       });
   });
 }

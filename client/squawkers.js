@@ -68,7 +68,8 @@ class SquawkerItem extends React.Component {
       const videoStream = this.getVideoStream();
       if (videoStream) { conn.addStream(videoStream); }
 
-      const channel = conn.createDataChannel("reliable", { ordered: true });
+      const reliableChannel = conn.createDataChannel("reliable", { ordered: true });
+      const unreliableChannel = conn.createDataChannel("unreliable", { ordered: false, maxRetransmits: 0 });
 
       var offerReady = conn.createOffer({ offerToReceiveAudio: 0, offerToReceiveVideo: 0 });
       var localReady = offerReady.then(conn.setLocalDescription.bind(conn));
@@ -84,12 +85,12 @@ class SquawkerItem extends React.Component {
       })).then(() => {
         this.audioEl.play();
         this.videoEl.play();
-        this.sendFileData(channel);
+        this.sendFileData(reliableChannel, unreliableChannel);
       });
     });
   }
 
-  sendFileData(channel) {
+  sendFileData(reliableChannel, unreliableChannel) {
     const dataFile = this.props.squawker.dataFile;
     if (!dataFile) { return; }
 
@@ -109,6 +110,7 @@ class SquawkerItem extends React.Component {
           message.message.clientId = userId;
 
           try {
+            const channel = message.reliable ? reliableChannel : unreliableChannel;
             channel.send(JSON.stringify(message.message));
           }
           catch(e) {
