@@ -15,7 +15,7 @@ expect consumers of this plugin to use WebSockets, but you can probably use what
 2. Create an RTC connection and perform session negotation.
 
 3. Determine your user ID. This should be a unique ID that nobody else is likely to share. In the future, we will actually
-   have authentication; as it stands just pick a big random ID and pray for no collisions. I'm serious.
+   have authentication; as it stands just pick a big random ID and pray for no collisions.
 
 4. Join a room. Establish an initial set of subscriptions; subscriptions tell the server which data from other clients
    to send down your connection.
@@ -115,11 +115,11 @@ where each spec describes a subscription:
 ```
 {
     "publisher_id": unsigned integer user ID,
-    "content_kind": unsigned integer content kind
+    "content_kind": string content kind ID
 }
 ```
 
-`content_kind` is currently a bit vector where 1 is audio and 2 is video.
+`content_kind` can be "audio", "video", or "all".
 
 Until Janus supports Unified Plan, the expectation is that most clients will have a single "publisher" connection that
 only sends audio and video and doesn't receive any, and many "subscriber" connections which subscribe to incoming audio
@@ -128,7 +128,7 @@ and video streams from other clients.
 ### Unsubscribe
 
 Removes some existing subscription specs. Note that the spec for the subscription must currently be identical to when you
-subscribed to it! For example, if you subscribe to ($UID, 255) and then you unsubscribe from ($UID, 1), you
+subscribed to it! For example, if you subscribe to ($UID, "all") and then you unsubscribe from ($UID, "audio"), you
 won't get all content except audio from $UID.
 
 ```
@@ -143,7 +143,7 @@ where each spec describes a subscription:
 ```
 {
     "publisher_id": unsigned integer user ID,
-    "content_kind": unsigned integer content kind
+    "content_kind": string content kind ID
 }
 ```
 
