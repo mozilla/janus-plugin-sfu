@@ -3,3 +3,5 @@
 
 # dependencies and build output created by setup-and-run-janus.sh
 scripts/build
+client/server.key
+client/server.pem

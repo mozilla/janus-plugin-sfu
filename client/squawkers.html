@@ -4,6 +4,11 @@
     <meta charset="utf-8">
     <title>Squawkers</title>
     <style>
+      label {
+        border-right: 1px solid grey;
+        margin: 0 0.2em 0 0.2em;
+      }
+
      /* via https://github.com/lukehaas/css-loaders */
      .loader, .loader:after {
        border-radius: 50%;
@@ -39,7 +44,7 @@
       <p>Page for managing squawkers -- small broadcast-only Janus entities used to simulate load or automate behavior.</p>
       <p>Note that right now this only works in Firefox. You may enjoy setting the security.fileuri.strict_origin_policy
       setting in about:config to false if you want to load media from file:// URLs.</p>
-      <p>Start adding squawkers below.</p>
+      <p>Start adding squawkers below. Data files can be recorded with tiny.html</p>
     </header>
     <div id="root">
       <!-- owned by React -->

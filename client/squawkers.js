@@ -44,10 +44,12 @@ class SquawkerItem extends React.Component {
   }
 
   getAudioStream() {
+    if (!this.props.squawker.audioFile) { return null; }
     return this.captureStream(this.audioEl);
   }
 
   getVideoStream() {
+    if (!this.props.squawker.videoFile) { return null; }
     return this.captureStream(this.videoEl);
   }
 
@@ -59,8 +61,16 @@ class SquawkerItem extends React.Component {
     return handle.attach("janus.plugin.sfu").then(() => {
       this.setState({ handle: handle });
       var iceReady = Squawker.negotiateIce(conn, handle);
-      conn.addStream(this.getAudioStream());
-      conn.addStream(this.getVideoStream());
+
+      const audioStream = this.getAudioStream();
+      if (audioStream) { conn.addStream(audioStream); }
+
+      const videoStream = this.getVideoStream();
+      if (videoStream) { conn.addStream(videoStream); }
+
+      const reliableChannel = conn.createDataChannel("reliable", { ordered: true });
+      const unreliableChannel = conn.createDataChannel("unreliable", { ordered: false, maxRetransmits: 0 });
+
       var offerReady = conn.createOffer({ offerToReceiveAudio: 0, offerToReceiveVideo: 0 });
       var localReady = offerReady.then(conn.setLocalDescription.bind(conn));
       var remoteReady = offerReady
@@ -75,9 +85,73 @@ class SquawkerItem extends React.Component {
       })).then(() => {
         this.audioEl.play();
         this.videoEl.play();
+        this.sendFileData(reliableChannel, unreliableChannel);
       });
     });
   }
+
+  async readAsText(file) {
+    return new Promise(function (resolve, reject) {
+      const reader = new FileReader();
+      reader.onload = () => resolve(reader.result);
+      reader.readAsText(file);
+    });
+  }
+
+  async channelOpen(dataChannel) {
+    return new Promise(function (resolve, reject) {
+      if (dataChannel.readyState === "open") { resolve(); }
+      else { dataChannel.onopen = resolve; }
+    });
+  }
+
+  async sendFileData(reliableChannel, unreliableChannel) {
+    const dataFile = this.props.squawker.dataFile;
+    if (!dataFile) { return; }
+
+    const messages = JSON.parse(await this.readAsText(dataFile));
+    await this.channelOpen(reliableChannel);
+    await this.channelOpen(unreliableChannel);
+
+    const start = performance.now();
+    let index = 0;
+    const userId = this.props.squawker.userId;
+    const messageIntervalId = setInterval(() => {
+      const time = performance.now() - start;
+      let message = messages[index];
+      while (time >= message.time) {
+        if (message.message.data.owner) {
+          message.message.data.owner = userId;
+        }
+        if (message.message.data.networkId) {
+          message.message.data.networkId += userId;
+        }
+        if (message.message.data.parent) {
+          message.message.data.parent += userId;
+        }
+        message.message.clientId = userId;
+
+        try {
+          const channel = message.reliable ? reliableChannel : unreliableChannel;
+          channel.send(JSON.stringify(message.message));
+        }
+        catch(e) {
+          console.error('Failed to send file data', e);
+          clearInterval(messageIntervalId);
+          break;
+        }
+
+        index++;
+        message = messages[index];
+        if (index === messages.length) {
+          clearInterval(messageIntervalId);
+          break;
+        }
+      }
+    }, 10);
+  }
+
+
 
   render() {
     const squawker = this.props.squawker;
@@ -89,7 +163,7 @@ class SquawkerItem extends React.Component {
           e("span", { className: "user-id" }, squawker.userId.toString()),
           " Handle ID: ",
           e("span", { className: "handle-id" }, handleId)),
-        e("audio", { controls: true, src: squawker.audioUrl, ref: (audio) => this.audioEl = audio }),
+        e("audio", { crossOrigin: 'anonymous', controls: true, src: squawker.audioUrl, ref: (audio) => this.audioEl = audio }),
         e("video", { controls: true, src: squawker.videoUrl, ref: (video) => this.videoEl = video })));
   }
 }
@@ -124,11 +198,11 @@ class AddSquawkerForm extends React.Component {
   render() {
     return (
       e("form", { onSubmit: this.create },
-        e("label", {}, "Audio file",
+        e("label", {}, "Audio file: ",
           e("input", { type: "file", ref: (input) => this.audioFile = input })),
-        e("label", {}, "Video file",
+        e("label", {}, "Video file: ",
           e("input", { type: "file", ref: (input) => this.videoFile = input })),
-        e("label", {}, "Data file",
+        e("label", {}, "Data file: ",
           e("input", { type: "file", ref: (input) => this.dataFile = input })),
         e("input", { type: "submit", value: "Create" })));
   }

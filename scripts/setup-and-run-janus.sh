@@ -26,7 +26,7 @@ if [[ ! -e $(which pip) ]]; then
     curl https://bootstrap.pypa.io/get-pip.py -sSf > get-pip.py
     sudo python get-pip.py
     rm get-pip.py
-fi 
+fi
 
 if [[ ! -e $(which docopts) ]]; then
     sudo pip install docopts
@@ -61,6 +61,8 @@ git-get () {
         git clone https://github.com/$repo $repo
     fi
     pushd $repo
+    git fetch
+    git checkout $version
     git reset --hard $version
     git clean -ffdx
     popd
@@ -68,7 +70,8 @@ git-get () {
 
 if [[ $force_rebuild || ! -e /opt/janus/bin/janus ]]; then
     banner 'getting janus source'
-    git-get meetecho/janus-gateway v0.2.5
+    # f72f223 from the refcount branch
+    git-get meetecho/janus-gateway f72f223b3852ff76bc77b33d5c27d951d506563d
 
     sudo apt update
 
@@ -99,7 +102,8 @@ if [[ $force_rebuild || ! -e /opt/janus/bin/janus ]]; then
         pushd warmcat/libwebsockets
         mkdir build
         pushd build
-        cmake -DCMAKE_INSTALL_PREFIX:PATH=/usr -DCMAKE_C_FLAGS="-fpic" ..
+        # see https://github.com/meetecho/janus-gateway/issues/732 re: LWS_MAX_SMP
+        cmake -DLWS_MAX_SMP=1 -DLWS_WITHOUT_TESTAPPS=ON -DCMAKE_INSTALL_PREFIX:PATH=/usr -DCMAKE_C_FLAGS="-fpic" ..
         make && sudo make install
         popd
         popd
@@ -108,7 +112,7 @@ if [[ $force_rebuild || ! -e /opt/janus/bin/janus ]]; then
     banner 'building and installing janus'
     pushd meetecho/janus-gateway
     sh autogen.sh
-    ./configure --prefix=/opt/janus
+    ./configure --prefix=/opt/janus --disable-all-plugins
     make
     sudo make install
     sudo make configs
@@ -126,6 +130,7 @@ if [[ $force_rebuild || ! -e /opt/janus/lib/janus/plugins/libjanus_plugin_sfu.so
     git-get mquander/janus-plugin-sfu master
     pushd mquander/janus-plugin-sfu
     cargo build --release
+    sudo mkdir -p /opt/janus/lib/janus/plugins
     sudo cp target/release/libjanus_plugin_sfu.so /opt/janus/lib/janus/plugins/
     popd
 fi
