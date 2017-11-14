@@ -1,6 +1,6 @@
 const params = new URLSearchParams(location.search.slice(1));
 var USER_ID = Math.floor(Math.random() * (1000000001));
-const roomId = params.get("room") || 42;
+const roomId = params.get("room") != null ? parseInt(params.get("room")) : 42;
 const mic = !/0|false|off/i.test(params.get("mic"));
 
 Minijanus.verbose = true;
@@ -19,14 +19,23 @@ var c = {
   subscribers: {}
 };
 
+function isError(signal) {
+  var isPluginError =
+      signal.plugindata &&
+      signal.plugindata.data &&
+      signal.plugindata.data.success === false;
+  return isPluginError || Minijanus.JanusSession.prototype.isError(signal);
+};
+
 function init() {
-  var ws = new WebSocket(`wss://${location.hostname}:8989`, "janus-protocol");
+  var ws = new WebSocket("ws://localhost:8188", "janus-protocol");
   ws.addEventListener("open", () => {
     var session = c.session = new Minijanus.JanusSession(ws.send.bind(ws));
+    session.isError = isError;
     ws.addEventListener("message", ev => handleMessage(session, ev));
     session.create().then(() => attachPublisher(session)).then(x => {
       c.publisher = x;
-    });
+    }, err => console.error("Error attaching publisher: ", err));
   });
 }
 
@@ -65,7 +74,7 @@ function negotiateIce(conn, handle) {
         if (!ev.candidate) { // this was the last candidate on our end and now they received it
           resolve();
         }
-      });
+      }, reject);
     });
   });
 };
@@ -74,7 +83,7 @@ function addUser(session, userId) {
   console.info("Adding user " + userId + ".");
   attachSubscriber(session, userId).then(x => {
     c.subscribers[userId] = x;
-  });
+  }, err => console.error("Error attaching subscriber: "));
 }
 
 function removeUser(session, userId) {
@@ -143,7 +152,7 @@ function attachPublisher(session) {
       .then(
         media => {
           conn.addStream(media);
-          return conn.createOffer({ audio: true })
+          return conn.createOffer({ audio: true });
         },
         () => conn.createOffer()
       );
