@@ -4,20 +4,22 @@ const e = React.createElement;
 const peerConfig = { iceServers: [{ urls: "stun:stun.l.google.com:19302" }] };
 
 class Squawker {
-  constructor(audioFile, videoFile, dataFile, userId) {
+  constructor(audioFile, videoFile, dataFile, userId, conn, handle) {
     this.audioFile = audioFile;
     this.videoFile = videoFile;
     this.dataFile = dataFile;
     this.userId = userId;
+    this.conn = conn;
+    this.handle = handle;
 
     this.audioUrl = audioFile != null ? URL.createObjectURL(audioFile) : null;
     this.videoUrl = videoFile != null ? URL.createObjectURL(videoFile) : null;
   }
 
-  static negotiateIce(conn, handle) {
+  negotiateIce() {
     return new Promise((resolve, reject) => {
-      conn.addEventListener("icecandidate", ev => {
-        handle.sendTrickle(ev.candidate || null).then(() => {
+      this.conn.addEventListener("icecandidate", ev => {
+        this.handle.sendTrickle(ev.candidate || null).then(() => {
           if (!ev.candidate) { // this was the last candidate on our end and now they received it
             resolve();
           }
@@ -29,8 +31,20 @@ class Squawker {
 
 class SquawkerItem extends React.Component {
 
-  componentWillMount() {
-    this.attachPublisher(this.props.session);
+  componentDidMount() {
+    var audioLoaded = this.props.squawker.audioFile ? false : true;
+    var videoLoaded = this.props.squawker.videoFile ? false : true;
+    var attachIfReady = () => {
+      if (audioLoaded && videoLoaded) {
+        this.attachPublisher(this.props.squawker);
+      }
+    };
+    if (!audioLoaded) {
+      this.audioEl.addEventListener("loadedmetadata", () => { audioLoaded = true; attachIfReady(); });
+    }
+    if (!videoLoaded) {
+      this.videoEl.addEventListener("loadedmetadata", () => { videoLoaded = true; attachIfReady(); });
+    }
   }
 
   captureStream(el) {
@@ -53,26 +67,29 @@ class SquawkerItem extends React.Component {
     return this.captureStream(this.videoEl);
   }
 
-  attachPublisher(session) {
+  attachPublisher(squawker) {
     console.info("Attaching publisher for squawker: ", this.props.squawker.userId);
-    const conn = new RTCPeerConnection(peerConfig);
-    const handle = new Minijanus.JanusPluginHandle(session);
-    this.setState({ conn: conn });
+    var handle = squawker.handle;
+    var conn = squawker.conn;
     return handle.attach("janus.plugin.sfu").then(() => {
       this.setState({ handle: handle });
-      var iceReady = Squawker.negotiateIce(conn, handle);
+      var iceReady = squawker.negotiateIce(conn, handle);
 
       const audioStream = this.getAudioStream();
-      if (audioStream) { conn.addStream(audioStream); }
+      if (audioStream) {
+        audioStream.getTracks().forEach(track => conn.addTrack(track, audioStream));
+      }
 
       const videoStream = this.getVideoStream();
-      if (videoStream) { conn.addStream(videoStream); }
+      if (videoStream) {
+        videoStream.getTracks().forEach(track => conn.addTrack(track, videoStream));
+      }
 
       const reliableChannel = conn.createDataChannel("reliable", { ordered: true });
       const unreliableChannel = conn.createDataChannel("unreliable", { ordered: false, maxRetransmits: 0 });
 
       var offerReady = conn.createOffer({ offerToReceiveAudio: 0, offerToReceiveVideo: 0 });
-      var localReady = offerReady.then(conn.setLocalDescription.bind(conn));
+      var localReady = offerReady.then(offer => { console.log(offer); return offer; }).then(conn.setLocalDescription.bind(conn));
       var remoteReady = offerReady
           .then(handle.sendJsep.bind(handle))
           .then(answer => conn.setRemoteDescription(answer.jsep));
@@ -151,20 +168,15 @@ class SquawkerItem extends React.Component {
     }, 10);
   }
 
-
-
   render() {
     const squawker = this.props.squawker;
-    const handleId = this.state.handle != null ? this.state.handle.id : null;
     return (
       e("article", { className: "squawker" },
         e("h1", {},
           "User ID: ",
-          e("span", { className: "user-id" }, squawker.userId.toString()),
-          " Handle ID: ",
-          e("span", { className: "handle-id" }, handleId)),
+          e("span", { className: "user-id" }, squawker.userId.toString())),
         e("audio", { crossOrigin: 'anonymous', controls: true, src: squawker.audioUrl, ref: (audio) => this.audioEl = audio }),
-        e("video", { controls: true, src: squawker.videoUrl, ref: (video) => this.videoEl = video })));
+        e("video", { crossOrigin: 'anonymous', controls: true, src: squawker.videoUrl, ref: (video) => this.videoEl = video })));
   }
 }
 
@@ -190,7 +202,9 @@ class AddSquawkerForm extends React.Component {
       this.audioFile.files.length == 0 ? null : this.audioFile.files[0],
       this.videoFile.files.length == 0 ? null : this.videoFile.files[0],
       this.dataFile.files.length == 0 ? null : this.dataFile.files[0],
-      this.generateUserId()
+      this.generateUserId(),
+      new RTCPeerConnection(peerConfig),
+      new Minijanus.JanusPluginHandle(this.props.session)
     ));
     e.preventDefault();
   }
@@ -245,9 +259,9 @@ class SquawkerApp extends React.Component {
             " with session ID: ",
             e("span", { className: "session-id" }, this.props.session.id)),
           e("h2", {}, "Add squawker"),
-          e(AddSquawkerForm, {onCreate: this.onCreate}),
+          e(AddSquawkerForm, {onCreate: this.onCreate, session: this.props.session}),
           e("h2", {}, "Existing squawkers"),
-          e(SquawkerList, {roomId: this.props.roomId, session: this.props.session, squawkers: this.state.squawkers})));
+          e(SquawkerList, {roomId: this.props.roomId, squawkers: this.state.squawkers})));
     } else {
       return (
         e("div", {id: "app"},

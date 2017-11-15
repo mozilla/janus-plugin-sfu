@@ -151,7 +151,7 @@ function attachPublisher(session) {
     var offerReady = mediaReady
       .then(
         media => {
-          conn.addStream(media);
+          media.getTracks().forEach(track => conn.addTrack(track, media));
           return conn.createOffer({ audio: true });
         },
         () => conn.createOffer()
