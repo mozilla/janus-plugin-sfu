@@ -48,7 +48,7 @@ function handleMessage(session, ev) {
       switch (contents.event) {
       case "join":
         if (contents.room_id === roomId) {
-          addUser(session, contents.user_id);
+          addUser(session, contents.user_id, data.jsep);
         }
         break;
       case "leave":
@@ -162,21 +162,21 @@ function attachPublisher(session) {
         .then(answer => conn.setRemoteDescription(answer.jsep));
     var connectionReady = Promise.all([iceReady, localReady, remoteReady]);
     return connectionReady
-      .then(() => handle.sendMessage({ kind: "join", room_id: roomId, user_id: USER_ID, notify: true }))
+      .then(() => handle.sendMessage({ kind: "join", room_id: roomId, user_id: USER_ID, subscribe: { "notifications": true, "data": true }}))
       .then(reply => {
-        var response = reply.plugindata.data.response;
-        response.user_ids.forEach(otherId => {
-          addUser(session, otherId);
-        });
-        return { handle, conn, channel, unreliableChannel };
-      });
+        for (var i = 0; i < reply.plugindata.data.response.user_ids.length; i++) {
+          var userId = reply.plugindata.data.response.user_ids[i];
+          addUser(session, userId);
+        }
+      })
+      .then(() => { return { handle, conn, channel, unreliableChannel }; });
   });
 }
 
 function attachSubscriber(session, otherId) {
   console.info("Attaching subscriber to " + otherId + " for session: ", session);
   var conn = new RTCPeerConnection(PEER_CONNECTION_CONFIG);
-  conn.addEventListener("track", function(ev) {
+  conn.ontrack = function(ev) {
     if (ev.track.kind === "audio") {
       var audioEl = document.createElement("audio");
       audioEl.controls = true;
@@ -190,27 +190,23 @@ function attachSubscriber(session, otherId) {
       videoEl.srcObject = ev.streams[0];
       videoEl.play();
     }
-  });
+  };
 
   var handle = new Minijanus.JanusPluginHandle(session);
   return handle.attach("janus.plugin.sfu")
     .then(() => {
       var iceReady = negotiateIce(conn, handle);
-      var offerReady = conn.createOffer({ offerToReceiveAudio: true, offerToReceiveVideo: true });
-      var localReady = offerReady.then(conn.setLocalDescription.bind(conn));
-      var remoteReady = offerReady
-          .then(handle.sendJsep.bind(handle))
-          .then(answer => conn.setRemoteDescription(answer.jsep));
-      var connectionReady = Promise.all([iceReady, localReady, remoteReady]);
-      return connectionReady.then(() => {
-        return handle.sendMessage({ kind: "join", room_id: roomId, user_id: USER_ID, subscription_specs: [
-          { content_kind: "all", publisher_id: otherId }
-        ]});
-
-      }).then(reply => {
-        return { handle: handle, conn: conn };
-      });
-
+      var localReady = handle.sendMessage({ kind: "join", room_id: roomId, user_id: USER_ID, subscribe: { "media": otherId }})
+          .then(resp => {
+            return conn.setRemoteDescription(resp.jsep)
+              .then(() => conn.createAnswer())
+              .then(conn.setLocalDescription.bind(conn));
+          });
+      return Promise.all([iceReady, localReady])
+        .then(() => handle.sendJsep(conn.localDescription))
+        .then(() => {
+          return { handle: handle, conn: conn };
+        });
     });
 }
 
