@@ -19,8 +19,15 @@ var c = {
   subscribers: {}
 };
 
+const status = document.getElementById("status");
+function showStatus(message) {
+  status.textContent = message;
+}
+
 function init() {
-  var ws = new WebSocket(`wss://${location.hostname}:8989`, "janus-protocol");
+  const server = `wss://${location.hostname}:8989`;
+  showStatus(`Connecting to ${server}...`);
+  var ws = new WebSocket(server, "janus-protocol");
   ws.addEventListener("open", () => {
     var session = c.session = new Minijanus.JanusSession(ws.send.bind(ws));
     ws.addEventListener("message", ev => handleMessage(session, ev));
@@ -151,11 +158,16 @@ function attachPublisher(session) {
     var remoteReady = offerReady
         .then(handle.sendJsep.bind(handle))
         .then(answer => conn.setRemoteDescription(answer.jsep));
+    showStatus(`Connecting WebRTC...`);
     var connectionReady = Promise.all([iceReady, localReady, remoteReady]);
     return connectionReady
-      .then(() => handle.sendMessage({ kind: "join", room_id: roomId, user_id: USER_ID, notify: true }))
+      .then(() => {
+        showStatus(`Joining room ${roomId}...`);
+        return handle.sendMessage({ kind: "join", room_id: roomId, user_id: USER_ID, notify: true });
+      })
       .then(reply => {
         var response = reply.plugindata.data.response;
+        showStatus(`Joined room ${roomId}`);
         response.user_ids.forEach(otherId => {
           addUser(session, otherId);
         });
