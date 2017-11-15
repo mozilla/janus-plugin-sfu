@@ -54,7 +54,7 @@ class SquawkerItem extends React.Component {
   }
 
   attachPublisher(session) {
-    console.info("Attaching publisher for squawker: ", this.props.squawker.url);
+    console.info("Attaching publisher for squawker: ", this.props.squawker.userId);
     const conn = new RTCPeerConnection(peerConfig);
     const handle = new Minijanus.JanusPluginHandle(session);
     this.setState({ conn: conn });
@@ -81,7 +81,7 @@ class SquawkerItem extends React.Component {
         kind: "join",
         room_id: this.props.roomId,
         user_id: this.props.squawker.userId,
-        notify: true
+        subscribe: { notify: true, data: true } // data = true necessary atm to send join notification
       })).then(() => {
         this.audioEl.play();
         this.videoEl.play();
