@@ -48,11 +48,8 @@ pub enum MessageKind {
     /// Indicates that a client wishes to subscribe to traffic described by the given subscription specification.
     Subscribe { what: Subscription },
 
-    /// Requests a list of connected user IDs in the given room.
-    ListUsers { room_id: RoomId },
-
-    /// Requests a list of room IDs that any user is in.
-    ListRooms,
+    /// Requests a list of connected users by room.
+    ListUsers,
 }
 
 /// Information about which traffic a client will get pushed to them.
@@ -121,17 +118,10 @@ mod tests {
         }
 
         #[test]
-        fn parse_list_rooms() {
-            let json = r#"{"kind": "listrooms"}"#;
-            let result: MessageKind = serde_json::from_str(json).unwrap();
-            assert_eq!(result, MessageKind::ListRooms);
-        }
-
-        #[test]
         fn parse_list_users() {
-            let json = r#"{"kind": "listusers", "room_id": 5}"#;
+            let json = r#"{"kind": "listusers"}"#;
             let result: MessageKind = serde_json::from_str(json).unwrap();
-            assert_eq!(result, MessageKind::ListUsers { room_id: RoomId(5) });
+            assert_eq!(result, MessageKind::ListUsers);
         }
 
         #[test]

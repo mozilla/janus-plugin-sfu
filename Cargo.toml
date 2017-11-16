@@ -11,7 +11,7 @@ crate_type = ["cdylib"]
 [dependencies]
 atom = "0.3.4"
 cstr-macro = "0.1.0"
-janus-plugin = { version = "0.4.0", features = ["refcount"] }
+janus-plugin = { version = "0.5.0", features = ["refcount"] }
 lazy_static = "0.2"
 serde = "1.0"
 serde_derive = "1.0"

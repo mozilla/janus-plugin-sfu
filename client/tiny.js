@@ -164,9 +164,11 @@ function attachPublisher(session) {
     return connectionReady
       .then(() => handle.sendMessage({ kind: "join", room_id: roomId, user_id: USER_ID, subscribe: { "notifications": true, "data": true }}))
       .then(reply => {
-        for (var i = 0; i < reply.plugindata.data.response.user_ids.length; i++) {
-          var userId = reply.plugindata.data.response.user_ids[i];
-          addUser(session, userId);
+        var occupants = reply.plugindata.data.response.users[roomId];
+        for (var i = 0; i < occupants.length; i++) {
+          if (occupants[i] !== USER_ID) {
+            addUser(session, occupants[i]);
+          }
         }
       })
       .then(() => { return { handle, conn, channel, unreliableChannel }; });
