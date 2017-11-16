@@ -1,5 +1,6 @@
 [package]
 name = "janus-plugin-sfu"
+description = "Janus SFU for game networking."
 version = "0.1.0"
 authors = ["Marshall Quander <marshall@quander.me>"]
 license = "MPL-2.0"

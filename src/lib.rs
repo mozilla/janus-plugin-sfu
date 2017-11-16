@@ -97,11 +97,11 @@ static VIDEO_PAYLOAD_TYPE: i32 = 107;
 
 const METADATA: PluginMetadata = PluginMetadata {
     version: 1,
-    version_str: cstr!("0.0.1"),
-    description: cstr!("Janus SFU for game networking."),
     name: cstr!("Janus SFU plugin"),
-    author: cstr!("Marshall Quander"),
     package: cstr!("janus.plugin.sfu"),
+    version_str: cstr!(env!("CARGO_PKG_VERSION")),
+    description: cstr!(env!("CARGO_PKG_DESCRIPTION")),
+    author: cstr!(env!("CARGO_PKG_AUTHORS")),
 };
 
 static mut CALLBACKS: Option<&PluginCallbacks> = None;
