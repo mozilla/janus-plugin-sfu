@@ -25,7 +25,6 @@ use serde_json::Value as JsonValue;
 use sessions::{JoinState, Session, SessionState};
 use std::collections::{HashMap, HashSet};
 use std::error::Error;
-use std::ffi::CString;
 use std::os::raw::{c_char, c_int};
 use std::ptr;
 use std::slice;
@@ -38,7 +37,7 @@ use switchboard::Switchboard;
 ///
 /// These will be queued up asynchronously and processed in order later.
 #[derive(Debug)]
-pub struct RawMessage {
+struct RawMessage {
     /// A reference to the sender's session. Possibly null if the session has been destroyed
     /// in between receiving and processing this message.
     pub from: Weak<Session>,
@@ -62,9 +61,9 @@ fn from_serde_json(input: &JsonValue) -> JanssonValue {
 }
 
 /// A response to a signalling message. May carry either a response body, a JSEP, or both.
-pub struct MessageResponse {
+struct MessageResponse {
     pub body: Option<JsonValue>,
-    pub jsep: Option<JsonValue>, // todo: make this an Option<JsepKind>
+    pub jsep: Option<JsonValue>, // todo: make this an Option<JsepKind>?
 }
 
 impl MessageResponse {
@@ -185,7 +184,6 @@ fn send_pli<'a, T>(publishers: T) where T: IntoIterator<Item=&'a Arc<Session>> {
 fn send_fir<'a, T>(publishers: T) where T: IntoIterator<Item=&'a Arc<Session>> {
     let relay_rtcp = gateway_callbacks().relay_rtcp;
     for publisher in publishers {
-        janus::log(LogLevel::Warn, &format!("Publishing FIR to {:?}", publisher));
         let mut seq = publisher.fir_seq.fetch_add(1, Ordering::Relaxed) as i32;
         let mut fir = janus::rtcp::gen_fir(&mut seq);
         relay_rtcp(publisher.as_ptr(), 1, fir.as_mut_ptr(), fir.len() as i32);
@@ -370,9 +368,7 @@ fn process_join(from: &Arc<Session>, room_id: RoomId, user_id: UserId, subscribe
             let publisher = get_publisher(publisher_id, &*sessions).ok_or("Can't subscribe to a nonexistent publisher.")?;
             let subscriber_offer = publisher.subscriber_offer.get().ok_or("Can't subscribe to a publisher with no media.")?;
             STATE.switchboard.write()?.subscribe_to_user(from, &publisher);
-            let jsep = JsepKind::Offer { sdp: subscriber_offer.to_string().to_str()?.to_owned().into() };
-            let json = serde_json::from_str(&serde_json::to_string(&jsep)?)?;
-            return Ok(MessageResponse::new(body, json));
+            return Ok(MessageResponse::new(body, json!({ "type": "offer", "sdp": subscriber_offer })));
         }
     }
     Ok(MessageResponse::msg(body))
@@ -391,9 +387,7 @@ fn process_subscribe(from: &Arc<Session>, what: Subscription) -> MessageResult {
         let publisher = get_publisher(publisher_id, &*sessions).ok_or("Can't subscribe to a nonexistent publisher.")?;
         let subscriber_offer = publisher.subscriber_offer.get().ok_or("Can't subscribe to a publisher with no media.")?;
         STATE.switchboard.write()?.subscribe_to_user(from, &publisher);
-        let jsep = JsepKind::Offer { sdp: subscriber_offer.to_string().to_str()?.to_owned().into() };
-        let json = serde_json::from_str(&serde_json::to_string(&jsep)?)?;
-        return Ok(MessageResponse::new(body, json))
+        return Ok(MessageResponse::new(body, json!({ "type": "offer", "sdp": subscriber_offer })));
     }
     Ok(MessageResponse::msg(body))
 }
@@ -420,8 +414,7 @@ fn process_message(from: &Arc<Session>, msg: &JanssonValue) -> MessageResult {
     }
 }
 
-fn process_offer(from: &Session, sdp: &str) -> JsepResult {
-    let offer = Sdp::parse(&CString::new(sdp)?)?;
+fn process_offer(from: &Session, offer: &Sdp) -> JsepResult {
     let mut answer = answer_sdp!(
         offer,
         OfferAnswerParameters::AudioCodec, AUDIO_CODEC.to_cstr().as_ptr(),
@@ -434,7 +427,6 @@ fn process_offer(from: &Session, sdp: &str) -> JsepResult {
     if let Some(offer_video_pt) = answer.get_payload_type(VIDEO_CODEC.to_cstr()) {
         answer.rewrite_payload_type(offer_video_pt, VIDEO_PAYLOAD_TYPE);
     }
-    let answer_str = answer.to_string();
     let subscriber_offer = Box::new(offer_sdp!(
         ptr::null(),
         answer.c_addr as *const _,
@@ -451,7 +443,7 @@ fn process_offer(from: &Session, sdp: &str) -> JsepResult {
     if from.subscriber_offer.set_if_none(subscriber_offer).is_some() {
         return Err(From::from("Renegotiations not yet supported."))
     }
-    Ok(serde_json::to_value(JsepKind::Answer { sdp: answer_str.to_str()?.into() })?)
+    Ok(json!({ "type": "answer", "sdp": answer }))
 }
 
 fn process_answer() -> JsepResult {
