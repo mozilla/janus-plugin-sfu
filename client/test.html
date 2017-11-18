@@ -1,0 +1,75 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta charset="utf-8">
+    <title>Janus stress testing tool</title>
+  </head>
+  <body>
+    <p>
+      <input id="test" type="button" value="Test" />
+      <input id="stop" type="button" value="Stop" />
+    </p>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/webrtc-adapter/3.4.3/adapter.min.js"></script>
+    <script src="https://rawgit.com/mquander/minijanus.js/master/bundle.js"></script>
+    <script>
+     Minijanus.verbose = true;
+
+     function negotiateIce(conn, handle) {
+       return new Promise((resolve, reject) => {
+         conn.addEventListener("icecandidate", ev => {
+           handle.sendTrickle(ev.candidate || null).then(() => {
+             if (!ev.candidate) { // this was the last candidate on our end and now they received it
+               resolve();
+             }
+           }, reject);
+         });
+       });
+     };
+
+     function test(i) {
+       console.log("Creating connection " + i);
+       var ws = new WebSocket("ws://localhost:8188", "janus-protocol");
+       var session = new Minijanus.JanusSession(ws.send.bind(ws));
+       ws.addEventListener("message", ev => { session.receive(JSON.parse(ev.data)); });
+       ws.addEventListener("open", () => {
+         var conn = new RTCPeerConnection({});
+         var handle = new Minijanus.JanusPluginHandle(session);
+         session
+           .create()
+           .then(() => handle.attach("janus.plugin.helloworld"))
+           .then(() => {
+             console.log("Negotiating connection " + i);
+             var iceReady = negotiateIce(conn, handle);
+             var offerReady = conn.createOffer({ offerToReceiveAudio: 1, offerToReceiveVideo: 1 });
+             var localReady = offerReady.then(conn.setLocalDescription.bind(conn));
+             // var remoteReady = offerReady.then(handle.sendJsep.bind(handle));
+             // plugin doesn't make an answer, so we don't really finish establishing the connection.
+             return Promise.all([iceReady, localReady]);
+           })
+           .then(() => {
+             console.log("Closing connection " + i);
+             return session.destroy().then(() => {
+               conn.close();
+               ws.close();
+             });
+           })
+           .catch(err => { console.error("Error connecting to Janus: ", err); });
+       });
+     }
+
+     var interval = null;
+     document.getElementById("test").onclick = () => {
+       if (interval == null) {
+         var i = 0;
+         interval = setInterval(() => test(++i), 1000);
+       }
+     }
+     document.getElementById("stop").onclick = () => {
+       if (interval != null) {
+         clearInterval(interval);
+         interval = null;
+       }
+     }
+    </script>
+  </body>
+</html>
