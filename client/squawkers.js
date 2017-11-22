@@ -45,6 +45,13 @@ class SquawkerItem extends React.Component {
     if (!videoLoaded) {
       this.videoEl.addEventListener("loadedmetadata", () => { videoLoaded = true; attachIfReady(); });
     }
+    // workaround for broken `loop` attribute in headless chrome
+    this.audioEl.addEventListener("timeupdate", () => {
+      if (this.audioEl.currentTime > this.audioEl.duration - 1) { this.audioEl.currentTime = 0; }
+    });
+    this.videoEl.addEventListener("timeupdate", () => {
+      if (this.videoEl.currentTime > this.videoEl.duration - 1) { this.videoEl.currentTime = 0; }
+    });
   }
 
   captureStream(el) {
@@ -173,17 +180,17 @@ class SquawkerItem extends React.Component {
         }
 
         index++;
-        message = messages[index];
         if (index === messages.length) {
           if (params.get("automate")) {
             index = 0;
-            start = performance.now() + messages[index].time;
+            start = performance.now();
           }
           else {
             clearInterval(messageIntervalId);
-            break;
           }
+          break;
         }
+        message = messages[index];
       }
     }, 10);
   }
@@ -232,7 +239,7 @@ class AddSquawkerForm extends React.Component {
       new Minijanus.JanusPluginHandle(this.props.session),
       data
     ));
-    if (e.preventDefault) { e.preventDefault(); }
+    if (e) { e.preventDefault(); }
   }
 
   render() {
