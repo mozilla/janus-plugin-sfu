@@ -138,27 +138,30 @@ class SquawkerItem extends React.Component {
     if (!dataJson) { return; }
 
     const messages = JSON.parse(dataJson);
+
+    const userId = this.props.squawker.userId;
+    messages.forEach(message => {
+      if (message.message.data.owner) {
+        message.message.data.owner = userId;
+      }
+      if (message.message.data.networkId) {
+        message.message.data.networkId += userId;
+      }
+      if (message.message.data.parent) {
+        message.message.data.parent += userId;
+      }
+      message.message.clientId = userId;
+    });
+
     await this.channelOpen(reliableChannel);
     await this.channelOpen(unreliableChannel);
 
-    const start = performance.now();
+    let start = performance.now();
     let index = 0;
-    const userId = this.props.squawker.userId;
     const messageIntervalId = setInterval(() => {
       const time = performance.now() - start;
       let message = messages[index];
       while (time >= message.time) {
-        if (message.message.data.owner) {
-          message.message.data.owner = userId;
-        }
-        if (message.message.data.networkId) {
-          message.message.data.networkId += userId;
-        }
-        if (message.message.data.parent) {
-          message.message.data.parent += userId;
-        }
-        message.message.clientId = userId;
-
         try {
           const channel = message.reliable ? reliableChannel : unreliableChannel;
           channel.send(JSON.stringify(message.message));
@@ -174,6 +177,7 @@ class SquawkerItem extends React.Component {
         if (index === messages.length) {
           if (params.get("automate")) {
             index = 0;
+            start = performance.now() + messages[index].time;
           }
           else {
             clearInterval(messageIntervalId);

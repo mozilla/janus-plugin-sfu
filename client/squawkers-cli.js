@@ -37,7 +37,6 @@ const querystring = require('querystring');
     console.log(params);
 
     const url = 'file:///' + __dirname + '/squawkers.html?' + querystring.stringify(params);
-    console.log(__dirname);
 
     console.log('spawning squawkers...');
     await page.goto(url);
