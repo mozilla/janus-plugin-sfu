@@ -113,6 +113,7 @@ fn gateway_callbacks() -> &'static PluginCallbacks {
 #[derive(Debug)]
 struct State {
     pub sessions: RwLock<Vec<Box<Arc<Session>>>>,
+    pub occupants: RwLock<HashMap<RoomId, HashSet<Arc<Session>>>>,
     pub switchboard: RwLock<Switchboard>,
     pub message_channel: AtomSetOnce<Box<mpsc::SyncSender<RawMessage>>>,
 }
@@ -120,6 +121,7 @@ struct State {
 lazy_static! {
     static ref STATE: State = State {
         sessions: RwLock::new(Vec::new()),
+        occupants: RwLock::new(HashMap::new()),
         switchboard: RwLock::new(Switchboard::new()),
         message_channel: AtomSetOnce::empty(),
     };
@@ -261,6 +263,10 @@ extern "C" fn destroy_session(handle: *mut PluginSession, error: *mut c_int) {
                         Err(e) => janus::log(LogLevel::Err, &format!("Error notifying publishers on leave: {}", e))
                     };
                 }
+                let mut occupants = STATE.occupants.write().expect("Occupants are poisoned :(");
+                if let Some(cohabitators) = occupants.get_mut(&joined.room_id) {
+                    cohabitators.remove(&sess);
+                }
             }
             STATE.switchboard.write().expect("Switchboard is poisoned :(").remove_session(&sess);
             sessions.retain(|s| s.as_ptr() != handle);
@@ -298,7 +304,7 @@ extern "C" fn incoming_rtp(handle: *mut PluginSession, video: c_int, buf: *mut c
 
 extern "C" fn incoming_rtcp(handle: *mut PluginSession, video: c_int, buf: *mut c_char, len: c_int) {
     let sess = unsafe { Session::from_ptr(handle).expect("Session can't be null!") };
-    let switchboard = STATE.switchboard.read().expect("Subscriptions lock poisoned; can't continue.");
+    let switchboard = STATE.switchboard.read().expect("Switchboard lock poisoned; can't continue.");
     let relay_rtcp = gateway_callbacks().relay_rtcp;
     let packet = unsafe { slice::from_raw_parts(buf, len as usize) };
     match video {
@@ -318,16 +324,13 @@ extern "C" fn incoming_rtcp(handle: *mut PluginSession, video: c_int, buf: *mut 
 
 extern "C" fn incoming_data(handle: *mut PluginSession, buf: *mut c_char, len: c_int) {
     let sess = unsafe { Session::from_ptr(handle).expect("Session can't be null!") };
-    let sessions = STATE.sessions.read().expect("Sessions lock poisoned; can't continue.");
-    // todo: we need a switchboard-like data structure to make this one not O(N)
+    let occupants = STATE.occupants.read().expect("Occupants lock poisoned; can't continue.");
     if let Some(joined) = sess.join_state.get() {
         let relay_data = gateway_callbacks().relay_data;
-        for other in sessions.iter() {
-            if let Some(subscription) = other.subscription.get() {
-                if let Some(other_state) = other.join_state.get() {
-                    if subscription.data && other_state.room_id == joined.room_id && other_state.user_id != joined.user_id {
-                        relay_data(other.as_ptr(), buf, len);
-                    }
+        if let Some(cohabitators) = occupants.get(&joined.room_id) {
+            for cohabitator in cohabitators {
+                if sess != *cohabitator {
+                    relay_data(cohabitator.as_ptr(), buf, len);
                 }
             }
         }
@@ -358,7 +361,11 @@ fn process_join(from: &Arc<Session>, room_id: RoomId, user_id: UserId, subscribe
         if from.subscription.set_if_none(subscription_state).is_some() {
             return Err(From::from("Users may only subscribe once!"))
         }
-        if subscription.data { // hack -- assume there is only one "master" data connection per user
+        if subscription.data {
+            let mut occupants = STATE.occupants.write()?;
+            occupants.entry(room_id).or_insert_with(HashSet::new).insert(Arc::clone(from));
+
+            // hack -- assume there is only one "master" data connection per user
             let notification = json!({ "event": "join", "user_id": user_id, "room_id": room_id });
             if let Err(e) = notify_except(&notification, user_id, &*sessions) {
                 janus::log(LogLevel::Err, &format!("Error sending notification for user join: {:?}", e))
