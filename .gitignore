@@ -1,6 +1,8 @@
 /target/
 **/*.rs.bk
 
+client/node_modules
+
 # dependencies and build output created by setup-and-run-janus.sh
 scripts/build
 client/server.key
