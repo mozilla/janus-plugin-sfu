@@ -12,15 +12,28 @@ expect consumers of this plugin to use WebSockets, but you can probably use what
 1. Signal your attachment to the Janus plugin. See the [Janus documentation][janus-transports] on how to attach to a
    plugin. This plugin's name is `janus.plugin.sfu`.
 
-2. Create an RTC connection and perform session negotation.
-
-3. Determine your user ID. This should be a unique ID that nobody else is likely to share. In the future, we will actually
+2. Determine your user ID. This should be a unique ID that nobody else is likely to share. In the future, we will actually
    have authentication; as it stands just pick a big random ID and pray for no collisions.
 
-4. Join a room. Establish an initial set of subscriptions; subscriptions tell the server which data from other clients
-   to send down your connection.
+3. Create an RTC connection.
 
-5. When done, close your connection, which will implicitly leave the room.
+4. Begin ICE negotiation.
+
+5. If subscribing to data, establish data channels.
+
+#### For connections that publish media
+
+6. Add streams for the audio and video sources you're publishing.
+
+7. Make an RTC offer and perform SDP negotiation.
+
+8. Join a room. Establish a subscription to notifications or data, if desired.
+
+#### For connections that subscribe to others' media
+
+6. Join a room. Establish a subscription to notifications or data, if desired, as well as media from the user you want to subscribe to.
+
+7. Take the JSEP offer which is returned and perform SDP negotiation by providing an answer.
 
 ## Application protocol
 
@@ -42,108 +55,64 @@ join a room. You can only join one room with any connection.
     "kind": "join",
     "room_id": unsigned integer ID
     "user_id": unsigned integer ID,
-    "notify": [none|boolean],
-    "subscription_specs": [none|array of spec objects]
+    "subscribe": [none|subscription object]
 }
 ```
 
-If `notify: true` is passed, you will receive notifications from Janus for this handle when things relevant to your
-interest occur in the room; for example, if someone joins or leaves. If you create multiple connections, you probably
-don't want those notifications on every connection.
+If `subscription: {...}` is passed, you will synchronously configure an initial subscription to the traffic that you
+want to get pushed through your connection. The format of the subscription should be identical to that in the
+[subscribe](#subscribe) message, below.
 
-If `subscription_specs: [...]` is passed, you will synchronously configure initial subscriptions to the audio and video
-for other users in the room as per the specs. The format of the objects in the `subscription_specs` array should be
-identical to those in the [subscribe](#subscribe) message, below.
-
-The response will return all users other than yourself who are in your current room.
+The response will return the current directory of users on the server by room, as below, including yourself. If you `subscribe`d to a user's media, you will also get a JSEP offer you can use to get that user's RTP traffic.
 
 ```
 {
     "success": true,
-    "user_ids": [123, 789]
-}
-```
-
-### List rooms
-
-Lists all rooms that anyone is connected to, including your own.
-
-```
-{
-    "kind": "listrooms"
-}
-```
-
-```
-{
-    "success": true,
-    "room_ids": [1, 5, 42]
+    "user_ids": {1: [123, 789], 2: [456]}
 }
 ```
 
 ### List users
 
-Lists all users in the given room, including you, if you're in it.
+Lists the current directory of users on the server by room, including you, if you've joined any room.
 
 ```
 {
     "kind": "listusers"
-    "room_id": unsigned integer room ID
 }
 ```
 
 ```
 {
     "success": true,
-    "user_ids": [123, 456, 789]
+    "user_ids": {1: [123, 789], 2: [456]}
 }
 ```
 
 ### Subscribe
 
-Subscribes to some kind of content, either from a specific user ID or from the whole room.
+Subscribes to some kind of traffic coming from the server.
 
 ```
 {
-    "kind": "subscribe",
-    "specs": [spec]
+    "notifications": [none|boolean],
+    "data": [none|boolean],
+    "media": [none|unsigned integer user ID]
 }
 ```
 
-where each spec describes a subscription:
+If `notifications` is `true`, you will get websocket events corresponding to every time someone joins or leaves the server.
+
+If `data` is `true`, you will get all data traffic from other users in your room, if you've joined a room.
+
+If `media` is a user ID, the server will respond with a JSEP offer which you can use to establish a connection suitable to receive audio and video RTP data coming from that user ID.
+
+The response will return the current directory of users on the server by room, as below, including yourself.
 
 ```
 {
-    "publisher_id": unsigned integer user ID,
-    "content_kind": string content kind ID
-}
-```
-
-`content_kind` can be "audio", "video", or "all".
-
-Until Janus supports Unified Plan, the expectation is that most clients will have a single "publisher" connection that
-only sends audio and video and doesn't receive any, and many "subscriber" connections which subscribe to incoming audio
-and video streams from other clients.
-
-### Unsubscribe
-
-Removes some existing subscription specs. Note that the spec for the subscription must currently be identical to when you
-subscribed to it! For example, if you subscribe to ($UID, "all") and then you unsubscribe from ($UID, "audio"), you
-won't get all content except audio from $UID.
-
-```
-{
-    "kind": "unsubscribe",
-    "specs": [spec]
-}
-```
-
-where each spec describes a subscription:
-
-```
-{
-    "publisher_id": unsigned integer user ID,
-    "content_kind": string content kind ID
+    "success": true,
+    "user_ids": {1: [123, 789], 2: [456]}
 }
 ```
 

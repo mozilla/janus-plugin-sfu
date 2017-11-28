@@ -71,7 +71,7 @@ git-get () {
 if [[ $force_rebuild || ! -e /opt/janus/bin/janus ]]; then
     banner 'getting janus source'
     # from the refcount branch
-    git-get meetecho/janus-gateway f4fd0084393c1c892b314bb728b7367504df7237
+    git-get meetecho/janus-gateway abe0d16b54517c4331002de9e0c7a1b270ef8f80
 
     sudo apt update
 

@@ -158,7 +158,7 @@ function attachPublisher(session) {
     var offerReady = mediaReady
       .then(
         media => {
-          conn.addStream(media);
+          media.getTracks().forEach(track => conn.addTrack(track, media));
           return conn.createOffer({ audio: true });
         },
         () => conn.createOffer()
@@ -176,9 +176,11 @@ function attachPublisher(session) {
       })
       .then(reply => {
         showStatus(`Joined room ${roomId}`);
-        for (var i = 0; i < reply.plugindata.data.response.user_ids.length; i++) {
-          var userId = reply.plugindata.data.response.user_ids[i];
-          addUser(session, userId);
+        var occupants = reply.plugindata.data.response.users[roomId];
+        for (var i = 0; i < occupants.length; i++) {
+          if (occupants[i] !== USER_ID) {
+            addUser(session, occupants[i]);
+          }
         }
       })
       .then(() => { handle, conn, channel, unreliableChannel });

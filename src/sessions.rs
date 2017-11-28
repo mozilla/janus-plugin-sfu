@@ -37,16 +37,5 @@ pub struct SessionState {
     pub fir_seq: AtomicIsize,
 }
 
-impl SessionState {
-    pub fn new() -> Self {
-        Self {
-            join_state: AtomSetOnce::empty(),
-            subscriber_offer: AtomSetOnce::empty(),
-            subscription: AtomSetOnce::empty(),
-            fir_seq: AtomicIsize::new(0),
-        }
-    }
-}
-
 /// Rust representation of a single Janus session, i.e. a single `RTCPeerConnection`.
 pub type Session = SessionWrapper<SessionState>;

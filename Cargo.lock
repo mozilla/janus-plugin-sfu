@@ -62,7 +62,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 
 [[package]]
 name = "janus-plugin"
-version = "0.4.0"
+version = "0.5.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 dependencies = [
  "bitflags 1.0.1 (registry+https://github.com/rust-lang/crates.io-index)",
@@ -71,8 +71,9 @@ dependencies = [
  "cstr-macro 0.1.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "glib-sys 0.4.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "jansson-sys 0.1.0 (registry+https://github.com/rust-lang/crates.io-index)",
- "janus-plugin-sys 0.3.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "janus-plugin-sys 0.4.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "libc 0.2.33 (registry+https://github.com/rust-lang/crates.io-index)",
+ "serde 1.0.21 (registry+https://github.com/rust-lang/crates.io-index)",
 ]
 
 [[package]]
@@ -81,16 +82,16 @@ version = "0.1.0"
 dependencies = [
  "atom 0.3.4 (registry+https://github.com/rust-lang/crates.io-index)",
  "cstr-macro 0.1.0 (registry+https://github.com/rust-lang/crates.io-index)",
- "janus-plugin 0.4.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "janus-plugin 0.5.1 (registry+https://github.com/rust-lang/crates.io-index)",
  "lazy_static 0.2.10 (registry+https://github.com/rust-lang/crates.io-index)",
- "serde 1.0.20 (registry+https://github.com/rust-lang/crates.io-index)",
- "serde_derive 1.0.20 (registry+https://github.com/rust-lang/crates.io-index)",
+ "serde 1.0.21 (registry+https://github.com/rust-lang/crates.io-index)",
+ "serde_derive 1.0.21 (registry+https://github.com/rust-lang/crates.io-index)",
  "serde_json 1.0.6 (registry+https://github.com/rust-lang/crates.io-index)",
 ]
 
 [[package]]
 name = "janus-plugin-sys"
-version = "0.3.0"
+version = "0.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 dependencies = [
  "glib-sys 0.4.0 (registry+https://github.com/rust-lang/crates.io-index)",
@@ -165,12 +166,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 
 [[package]]
 name = "serde"
-version = "1.0.20"
+version = "1.0.21"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 
 [[package]]
 name = "serde_derive"
-version = "1.0.20"
+version = "1.0.21"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 dependencies = [
  "quote 0.3.15 (registry+https://github.com/rust-lang/crates.io-index)",
@@ -195,7 +196,7 @@ dependencies = [
  "dtoa 0.4.2 (registry+https://github.com/rust-lang/crates.io-index)",
  "itoa 0.3.4 (registry+https://github.com/rust-lang/crates.io-index)",
  "num-traits 0.1.40 (registry+https://github.com/rust-lang/crates.io-index)",
- "serde 1.0.20 (registry+https://github.com/rust-lang/crates.io-index)",
+ "serde 1.0.21 (registry+https://github.com/rust-lang/crates.io-index)",
 ]
 
 [[package]]
@@ -253,8 +254,8 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 "checksum glib-sys 0.4.0 (registry+https://github.com/rust-lang/crates.io-index)" = "cdd7d911c5dc610aabe37caae7d3b9d2cfe6d8f4c85ff4c062f3d6f490e75067"
 "checksum itoa 0.3.4 (registry+https://github.com/rust-lang/crates.io-index)" = "8324a32baf01e2ae060e9de58ed0bc2320c9a2833491ee36cd3b4c414de4db8c"
 "checksum jansson-sys 0.1.0 (registry+https://github.com/rust-lang/crates.io-index)" = "8c71b62bcd47246aeb80d8559cfda53c85b494f5c31eb814113fef51afe67e2a"
-"checksum janus-plugin 0.4.0 (registry+https://github.com/rust-lang/crates.io-index)" = "bd495e45e3bf30139ad667be8f431d18f4ebcb8d6ce1c0e96a46650fe3c574a7"
-"checksum janus-plugin-sys 0.3.0 (registry+https://github.com/rust-lang/crates.io-index)" = "7c17a2ec6665e51e6e880e3de4afa98b0f3b1e93a855eb5d4fa3f3baab822ee9"
+"checksum janus-plugin 0.5.1 (registry+https://github.com/rust-lang/crates.io-index)" = "292d23c2aa48f9d266a16247a9a0f1cef3ac04d20f8c9d3e6ae7881fd03f7105"
+"checksum janus-plugin-sys 0.4.0 (registry+https://github.com/rust-lang/crates.io-index)" = "1f8289a8121b2eab346aefeab47de2ce02983bf9578688c1d125a5a182a14742"
 "checksum kernel32-sys 0.2.2 (registry+https://github.com/rust-lang/crates.io-index)" = "7507624b29483431c0ba2d82aece8ca6cdba9382bff4ddd0f7490560c056098d"
 "checksum lazy_static 0.2.10 (registry+https://github.com/rust-lang/crates.io-index)" = "236eb37a62591d4a41a89b7763d7de3e06ca02d5ab2815446a8bae5d2f8c2d57"
 "checksum libc 0.2.33 (registry+https://github.com/rust-lang/crates.io-index)" = "5ba3df4dcb460b9dfbd070d41c94c19209620c191b0340b929ce748a2bcd42d2"
@@ -265,8 +266,8 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 "checksum pkg-config 0.3.9 (registry+https://github.com/rust-lang/crates.io-index)" = "3a8b4c6b8165cd1a1cd4b9b120978131389f64bdaf456435caa41e630edba903"
 "checksum quote 0.3.15 (registry+https://github.com/rust-lang/crates.io-index)" = "7a6e920b65c65f10b2ae65c831a81a073a89edd28c7cce89475bff467ab4167a"
 "checksum redox_syscall 0.1.31 (registry+https://github.com/rust-lang/crates.io-index)" = "8dde11f18c108289bef24469638a04dce49da56084f2d50618b226e47eb04509"
-"checksum serde 1.0.20 (registry+https://github.com/rust-lang/crates.io-index)" = "5a2b181dd2b4a6353e828e44807269a761d3ecbc388a1f5ed3998ea69a516d9c"
-"checksum serde_derive 1.0.20 (registry+https://github.com/rust-lang/crates.io-index)" = "31ce3c16ec18abb97d977f75880986549213b0c18f2695eda8b31eadc96eda4a"
+"checksum serde 1.0.21 (registry+https://github.com/rust-lang/crates.io-index)" = "6eda663e865517ee783b0891a3f6eb3a253e0b0dabb46418969ee9635beadd9e"
+"checksum serde_derive 1.0.21 (registry+https://github.com/rust-lang/crates.io-index)" = "652bc323d694dc925829725ec6c890156d8e70ae5202919869cb00fe2eff3788"
 "checksum serde_derive_internals 0.17.0 (registry+https://github.com/rust-lang/crates.io-index)" = "32f1926285523b2db55df263d2aa4eb69ddcfa7a7eade6430323637866b513ab"
 "checksum serde_json 1.0.6 (registry+https://github.com/rust-lang/crates.io-index)" = "e4586746d1974a030c48919731ecffd0ed28d0c40749d0d18d43b3a7d6c9b20e"
 "checksum syn 0.11.11 (registry+https://github.com/rust-lang/crates.io-index)" = "d3b891b9015c88c576343b9b3e41c2c11a51c219ef067b264bd9c8aa9b441dad"

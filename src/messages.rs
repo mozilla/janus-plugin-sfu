@@ -1,5 +1,5 @@
 /// Types and code related to handling signalling messages.
-use std::borrow::Cow;
+use super::Sdp;
 
 /// A room ID representing a Janus multicast room.
 #[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
@@ -20,18 +20,18 @@ pub enum OptionalField<T> {
 }
 
 /// A signalling message carrying a JSEP SDP offer or answer.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Deserialize)]
 #[serde(rename_all = "lowercase", tag = "type")]
-pub enum JsepKind<'a> {
-    /// A client offer to establish a connection.
-    Offer { #[serde(borrow)] sdp: Cow<'a, str> },
+pub enum JsepKind {
+    /// An offer to establish a connection.
+    Offer { sdp: Sdp },
 
-    /// A client answer responding to one of our offers.
-    Answer { #[serde(borrow)] sdp: Cow<'a, str> },
+    /// An answer responding to an offer.
+    Answer { sdp: Sdp },
 }
 
 /// The enumeration of all (non-JSEP) signalling messages which can be received from a client.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "lowercase", tag = "kind")]
 pub enum MessageKind {
     /// Indicates that a client wishes to "join" a room on the server. Prior to this, no audio, video, or data
@@ -48,15 +48,12 @@ pub enum MessageKind {
     /// Indicates that a client wishes to subscribe to traffic described by the given subscription specification.
     Subscribe { what: Subscription },
 
-    /// Requests a list of connected user IDs in the given room.
-    ListUsers { room_id: RoomId },
-
-    /// Requests a list of room IDs that any user is in.
-    ListRooms,
+    /// Requests a list of connected users by room.
+    ListUsers,
 }
 
 /// Information about which traffic a client will get pushed to them.
-#[derive(Debug, Copy, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Copy, Clone, Default, PartialEq, Eq, Deserialize)]
 #[serde(default)]
 pub struct Subscription {
     /// Whether to subscribe to server-wide notifications (e.g. user joins and leaves, room creates and destroys).
@@ -74,26 +71,6 @@ mod tests {
 
     use super::*;
 
-    mod jsep_parsing {
-
-        use super::*;
-        use ::serde_json;
-
-        #[test]
-        fn parse_offer() {
-            let jsep = r#"{"type": "offer", "sdp": "..."}"#;
-            let result: JsepKind = serde_json::from_str(jsep).unwrap();
-            assert_eq!(result, JsepKind::Offer { sdp: "...".into() });
-        }
-
-        #[test]
-        fn parse_answer() {
-            let jsep = r#"{"type": "answer", "sdp": "..."}"#;
-            let result: JsepKind = serde_json::from_str(jsep).unwrap();
-            assert_eq!(result, JsepKind::Answer { sdp: "...".into() });
-        }
-    }
-
     mod message_parsing {
 
         use super::*;
@@ -109,29 +86,22 @@ mod tests {
         #[test]
         fn parse_inner_error() {
             let json = r#"{"kind": "join"}"#;
-            let result: Result<OptionalField<MessageKind>, serde_json::Error> = serde_json::from_str(json);
+            let result: serde_json::Result<OptionalField<MessageKind>> = serde_json::from_str(json);
             assert!(result.is_err());
         }
 
         #[test]
         fn parse_outer_error() {
             let json = r#"{"kind": "fiddle"}"#;
-            let result: Result<OptionalField<MessageKind>, serde_json::Error> = serde_json::from_str(json);
+            let result: serde_json::Result<OptionalField<MessageKind>> = serde_json::from_str(json);
             assert!(result.is_err());
         }
 
         #[test]
-        fn parse_list_rooms() {
-            let json = r#"{"kind": "listrooms"}"#;
-            let result: MessageKind = serde_json::from_str(json).unwrap();
-            assert_eq!(result, MessageKind::ListRooms);
-        }
-
-        #[test]
         fn parse_list_users() {
-            let json = r#"{"kind": "listusers", "room_id": 5}"#;
+            let json = r#"{"kind": "listusers"}"#;
             let result: MessageKind = serde_json::from_str(json).unwrap();
-            assert_eq!(result, MessageKind::ListUsers { room_id: RoomId(5) });
+            assert_eq!(result, MessageKind::ListUsers);
         }
 
         #[test]
