@@ -2,7 +2,7 @@
 
 [![Build Status](https://travis-ci.org/mquander/janus-plugin-sfu.svg?branch=master)](https://travis-ci.org/mquander/janus-plugin-sfu)
 
-[Janus](https://janus.conf.meetecho.com/) [plugin](https://janus.conf.meetecho.com/docs/plugin_8h.html) to serve as a WebRTC SFU for game networking data.
+[Janus](https://janus.conf.meetecho.com/) [plugin](https://janus.conf.meetecho.com/docs/plugin_8h.html) to serve as a WebRTC Selective Forwarding Unit (SFU) for game networking data.
 
 In the future, this is likely to grow into a reverse proxy for [Reticulum](https://github.com/mozilla/reticulum), a kind of WebVR networking backend. But right now it's mostly just for being a simple, plug-and-play, star-topology SFU that you can use instead of being peer-to-peer.
 
