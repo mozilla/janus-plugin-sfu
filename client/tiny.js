@@ -19,16 +19,24 @@ var c = {
   subscribers: {}
 };
 
+const status = document.getElementById("status");
+function showStatus(message) {
+  status.textContent = message;
+}
+
 function isError(signal) {
   var isPluginError =
       signal.plugindata &&
       signal.plugindata.data &&
       signal.plugindata.data.success === false;
   return isPluginError || Minijanus.JanusSession.prototype.isError(signal);
-};
+}
 
 function init() {
-  var ws = new WebSocket("ws://localhost:8188", "janus-protocol");
+  const server = params.get("janus") || `ws://localhost:8188`;
+  document.getElementById("janusServer").value = server;
+  showStatus(`Connecting to ${server}...`);
+  var ws = new WebSocket(server, "janus-protocol");
   ws.addEventListener("open", () => {
     var session = c.session = new Minijanus.JanusSession(ws.send.bind(ws));
     session.isError = isError;
@@ -160,10 +168,15 @@ function attachPublisher(session) {
     var remoteReady = offerReady
         .then(handle.sendJsep.bind(handle))
         .then(answer => conn.setRemoteDescription(answer.jsep));
+    showStatus(`Connecting WebRTC...`);
     var connectionReady = Promise.all([iceReady, localReady, remoteReady]);
     return connectionReady
-      .then(() => handle.sendMessage({ kind: "join", room_id: roomId, user_id: USER_ID, subscribe: { "notifications": true, "data": true }}))
+      .then(() => {
+        showStatus(`Joining room ${roomId}...`);
+        return handle.sendMessage({ kind: "join", room_id: roomId, user_id: USER_ID, subscribe: { "notifications": true, "data": true }});
+      })
       .then(reply => {
+        showStatus(`Joined room ${roomId}`);
         var occupants = reply.plugindata.data.response.users[roomId];
         for (var i = 0; i < occupants.length; i++) {
           if (occupants[i] !== USER_ID) {
@@ -171,7 +184,9 @@ function attachPublisher(session) {
           }
         }
       })
-      .then(() => { return { handle, conn, channel, unreliableChannel }; });
+      .then(() => {
+        return { handle, conn, channel, unreliableChannel };
+      });
   });
 }
 

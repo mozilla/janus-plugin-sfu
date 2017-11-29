@@ -3,6 +3,7 @@
   <head>
     <meta charset="utf-8">
     <title>Tiny test page</title>
+    <style>body { font-family: sans-serif; }</style>
   </head>
   <body>
     <p>
@@ -10,9 +11,12 @@
       It also allows you to save data channel messages to a json file.
     </p>
 
+    <form method="GET"><label>Server: <input id="janusServer" name="janus"/></label><input type="submit" value="Go" /></form>
+    <p><label>Status: </label><span id="status"></span></p>
+
     <fieldset>
       <legend>Data messages</legend>
-      <div><label>Message count:</label><span id="messageCount"></span></div>
+      <div><label>Message count: </label><span id="messageCount"></span></div>
       <button id="saveButton">Save</button>
       <button id="clearButton">Clear</button>
     </fieldset>
