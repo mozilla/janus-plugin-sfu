@@ -33,7 +33,8 @@ function isError(signal) {
 }
 
 function init() {
-  const server = `wss://${location.hostname}:8989`;
+  const server = params.get("janus") || `ws://localhost:8188`;
+  document.getElementById("janusServer").value = server;
   showStatus(`Connecting to ${server}...`);
   var ws = new WebSocket(server, "janus-protocol");
   ws.addEventListener("open", () => {
@@ -183,7 +184,9 @@ function attachPublisher(session) {
           }
         }
       })
-      .then(() => { handle, conn, channel, unreliableChannel });
+      .then(() => {
+        return { handle, conn, channel, unreliableChannel };
+      });
   });
 }
 
