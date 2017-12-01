@@ -24,6 +24,7 @@ use messages::{JsepKind, MessageKind, OptionalField, Subscription};
 use serde_json::Value as JsonValue;
 use sessions::{JoinState, Session, SessionState};
 use std::collections::{HashMap, HashSet};
+use std::collections::hash_map::Entry;
 use std::error::Error;
 use std::os::raw::{c_char, c_int};
 use std::ptr;
@@ -127,11 +128,14 @@ lazy_static! {
     };
 }
 
-fn get_users(sessions: &[Box<Arc<Session>>]) -> HashMap<RoomId, HashSet<UserId>> {
+// todo: this should probably be a serialize implementation on an `OccupancyMap` struct wrapping a hashmap, or something.
+fn get_users(occupants: &HashMap<RoomId, HashSet<Arc<Session>>>) -> HashMap<RoomId, HashSet<UserId>> {
     let mut result = HashMap::new();
-    for session in sessions {
-        if let Some(joined) = session.join_state.get() {
-            result.entry(joined.room_id).or_insert_with(HashSet::new).insert(joined.user_id);
+    for (room_id, sessions) in occupants {
+        for session in sessions {
+            if let Some(joined) = session.join_state.get() {
+                result.entry(*room_id).or_insert_with(HashSet::new).insert(joined.user_id);
+            }
         }
     }
     result
@@ -264,8 +268,11 @@ extern "C" fn destroy_session(handle: *mut PluginSession, error: *mut c_int) {
                     };
                 }
                 let mut occupants = STATE.occupants.write().expect("Occupants are poisoned :(");
-                if let Some(cohabitators) = occupants.get_mut(&joined.room_id) {
-                    cohabitators.remove(&sess);
+                if let Entry::Occupied(mut cohabitators) = occupants.entry(joined.room_id) {
+                    cohabitators.get_mut().remove(&sess);
+                    if cohabitators.get().len() == 0 {
+                        cohabitators.remove_entry();
+                    }
                 }
             }
             STATE.switchboard.write().expect("Switchboard is poisoned :(").remove_session(&sess);
@@ -305,7 +312,6 @@ extern "C" fn incoming_rtp(handle: *mut PluginSession, video: c_int, buf: *mut c
 extern "C" fn incoming_rtcp(handle: *mut PluginSession, video: c_int, buf: *mut c_char, len: c_int) {
     let sess = unsafe { Session::from_ptr(handle).expect("Session can't be null!") };
     let switchboard = STATE.switchboard.read().expect("Switchboard lock poisoned; can't continue.");
-    let relay_rtcp = gateway_callbacks().relay_rtcp;
     let packet = unsafe { slice::from_raw_parts(buf, len as usize) };
     match video {
         1 if janus::rtcp::has_pli(packet) => {
@@ -315,6 +321,7 @@ extern "C" fn incoming_rtcp(handle: *mut PluginSession, video: c_int, buf: *mut 
             send_fir(&switchboard.publishers_to_user(&sess));
         }
         _ => {
+            let relay_rtcp = gateway_callbacks().relay_rtcp;
             for subscriber in switchboard.subscribers_to_user(&sess) {
                 relay_rtcp(subscriber.as_ptr(), video, buf, len);
             }
@@ -354,7 +361,8 @@ fn process_join(from: &Arc<Session>, room_id: RoomId, user_id: UserId, subscribe
     }
 
     let sessions = STATE.sessions.read()?;
-    let body = json!({ "users": get_users(sessions.as_slice()) });
+    let mut occupants = STATE.occupants.write()?;
+    let body = json!({ "users": get_users(&occupants) });
 
     if let Some(subscription) = subscribe {
         let subscription_state = Box::new(subscription);
@@ -362,7 +370,6 @@ fn process_join(from: &Arc<Session>, room_id: RoomId, user_id: UserId, subscribe
             return Err(From::from("Users may only subscribe once!"))
         }
         if subscription.data {
-            let mut occupants = STATE.occupants.write()?;
             occupants.entry(room_id).or_insert_with(HashSet::new).insert(Arc::clone(from));
 
             // hack -- assume there is only one "master" data connection per user
@@ -387,10 +394,11 @@ fn process_subscribe(from: &Arc<Session>, what: Subscription) -> MessageResult {
         return Err(From::from("Users may only subscribe once!"))
     }
 
-    let sessions = STATE.sessions.read()?;
-    let body = json!({ "users": get_users(sessions.as_slice()) });
+    let occupants = STATE.occupants.read()?;
+    let body = json!({ "users": get_users(&occupants) });
 
     if let Some(publisher_id) = what.media {
+        let sessions = STATE.sessions.read()?;
         let publisher = get_publisher(publisher_id, &*sessions).ok_or("Can't subscribe to a nonexistent publisher.")?;
         let subscriber_offer = publisher.subscriber_offer.get().ok_or("Can't subscribe to a publisher with no media.")?;
         STATE.switchboard.write()?.subscribe_to_user(from, &publisher);
@@ -400,8 +408,8 @@ fn process_subscribe(from: &Arc<Session>, what: Subscription) -> MessageResult {
 }
 
 fn process_list_users() -> MessageResult {
-    let sessions = &STATE.sessions.read()?;
-    let body = json!({ "users": get_users(sessions.as_slice()) });
+    let occupants = STATE.occupants.read()?;
+    let body = json!({ "users": get_users(&occupants) });
     Ok(MessageResponse::msg(body))
 }
 

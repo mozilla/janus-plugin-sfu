@@ -9,8 +9,8 @@ use std::sync::{Arc, Weak};
 ///
 /// Note that internally, strong references are kept as keys for each subscriber and publisher in the switchboard, but
 /// only weak references are kept as values. This turns the cost of removing a session from O(N) up front, where N is
-/// the number of map entries, into O(1) up front and O(M) amortized over time as we encounter the dead entries, where M
-/// is the number of actual subscriptions including that session (which should be much smaller.)
+/// the number of map entries, into O(1), at the cost of suffering a little bit occasionally as we encounter the dead
+/// entries.
 #[derive(Debug)]
 pub struct Switchboard {
     /// For a given connection, which connections are subscribing to traffic from them.
