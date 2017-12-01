@@ -34,6 +34,12 @@ use std::sync::atomic::{Ordering, AtomicIsize};
 use std::thread;
 use switchboard::Switchboard;
 
+/// A Janus transaction ID. Used to correlate signalling requests and responses.
+#[derive(Debug)]
+struct TransactionId(pub *mut c_char);
+
+unsafe impl Send for TransactionId {}
+
 /// A single signalling message that came in off the wire, associated with one session.
 ///
 /// These will be queued up asynchronously and processed in order later.
@@ -44,7 +50,7 @@ struct RawMessage {
     pub from: Weak<Session>,
 
     /// The transaction ID used to mark any responses to this message.
-    pub txn: *mut c_char,
+    pub txn: TransactionId,
 
     /// An arbitrary message from the client. Will be deserialized as a MessageKind.
     pub msg: Option<JanssonValue>,
@@ -52,9 +58,6 @@ struct RawMessage {
     /// A JSEP message (SDP offer or answer) from the client. Will be deserialized as a JsepKind.
     pub jsep: Option<JanssonValue>,
 }
-
-// covers the txn pointer -- careful that the other fields are really threadsafe!
-unsafe impl Send for RawMessage {}
 
 /// Inefficiently converts a serde JSON value to a Jansson JSON value.
 fn from_serde_json(input: &JsonValue) -> JanssonValue {
@@ -480,11 +483,11 @@ fn process_jsep(from: &Arc<Session>, jsep: &JanssonValue) -> JsepResult {
     }
 }
 
-fn push_response(from: &Session, txn: *mut c_char, body: &JsonValue, jsep: Option<JsonValue>) -> Result<(), Box<Error>> {
+fn push_response(from: &Session, txn: TransactionId, body: &JsonValue, jsep: Option<JsonValue>) -> Result<(), Box<Error>> {
     let push_event = gateway_callbacks().push_event;
     let jsep = jsep.unwrap_or_else(|| json!({}));
     janus::log(LogLevel::Info, &format!("{:?} sending response to {:?}: body = {}.", from.as_ptr(), txn, body));
-    Ok(janus::get_result(push_event(from.as_ptr(), &mut PLUGIN, txn, from_serde_json(body).as_mut_ref(), from_serde_json(&jsep).as_mut_ref()))?)
+    Ok(janus::get_result(push_event(from.as_ptr(), &mut PLUGIN, txn.0, from_serde_json(body).as_mut_ref(), from_serde_json(&jsep).as_mut_ref()))?)
 }
 
 fn handle_message_async(RawMessage { jsep, msg, txn, from }: RawMessage) -> Result<(), Box<Error>> {
@@ -535,7 +538,7 @@ extern "C" fn handle_message(handle: *mut PluginSession, transaction: *mut c_cha
         Ok(sess) => {
             let msg = RawMessage {
                 from: Arc::downgrade(&sess),
-                txn: transaction,
+                txn: TransactionId(transaction),
                 msg: unsafe { JanssonValue::new(message) },
                 jsep: unsafe { JanssonValue::new(jsep) }
             };
