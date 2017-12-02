@@ -177,7 +177,7 @@ function attachPublisher(session) {
       })
       .then(reply => {
         showStatus(`Joined room ${roomId}`);
-        var occupants = reply.plugindata.data.response.users[roomId];
+        var occupants = reply.plugindata.data.response.users[roomId] || [];
         for (var i = 0; i < occupants.length; i++) {
           if (occupants[i] !== USER_ID) {
             addUser(session, occupants[i]);
