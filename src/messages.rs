@@ -1,14 +1,15 @@
 /// Types and code related to handling signalling messages.
 use super::Sdp;
+use super::auth::UserToken;
 
 /// A room ID representing a Janus multicast room.
 #[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
-pub struct RoomId(u64);
+pub struct RoomId(pub u64);
 
 /// A user ID representing a single Janus client. Used to correlate multiple Janus connections back to the same
 /// conceptual user for managing subscriptions.
 #[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
-pub struct UserId(u64);
+pub struct UserId(pub u64);
 
 /// Useful to represent a JSON message field which may or may not be present.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -43,6 +44,7 @@ pub enum MessageKind {
         room_id: RoomId,
         user_id: UserId,
         subscribe: Option<Subscription>,
+        token: Option<UserToken>,
     },
 
     /// Indicates that a client wishes to subscribe to traffic described by the given subscription specification.
@@ -112,6 +114,7 @@ mod tests {
                 user_id: UserId(10),
                 room_id: RoomId(5),
                 subscribe: None,
+                token: None,
             });
         }
 
@@ -127,6 +130,7 @@ mod tests {
                     data: false,
                     media: None
                 }),
+                token: None,
             });
         }
 

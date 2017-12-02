@@ -3,6 +3,7 @@ extern crate atom;
 extern crate cstr_macro;
 #[macro_use]
 extern crate janus_plugin as janus;
+extern crate jsonwebtoken as jwt;
 #[macro_use]
 extern crate lazy_static;
 extern crate serde;
@@ -14,9 +15,11 @@ extern crate serde_json;
 mod messages;
 mod sessions;
 mod switchboard;
+mod auth;
 
 use atom::AtomSetOnce;
 use messages::{RoomId, UserId};
+use auth::UserToken;
 use janus::{JanusError, JanssonDecodingFlags, JanssonEncodingFlags, JanssonValue, LogLevel, Plugin, PluginCallbacks, PluginMetadata,
             PluginResult, PluginResultType, PluginSession, RawPluginResult, RawJanssonValue};
 use janus::sdp::{AudioCodec, MediaDirection, OfferAnswerParameters, Sdp, VideoCodec};
@@ -357,7 +360,7 @@ extern "C" fn hangup_media(_handle: *mut PluginSession) {
     janus::log(LogLevel::Verb, "Hanging up WebRTC media.");
 }
 
-fn process_join(from: &Arc<Session>, room_id: RoomId, user_id: UserId, subscribe: Option<Subscription>) -> MessageResult {
+fn process_join(from: &Arc<Session>, room_id: RoomId, user_id: UserId, subscribe: Option<Subscription>, token: Option<UserToken>) -> MessageResult {
     let state = Box::new(JoinState::new(room_id, user_id));
     if from.join_state.set_if_none(state).is_some() {
         return Err(From::from("Users may only join once!"))
@@ -426,7 +429,7 @@ fn process_message(from: &Arc<Session>, msg: &JanssonValue) -> MessageResult {
             match kind {
                 MessageKind::ListUsers => process_list_users(),
                 MessageKind::Subscribe { what } => process_subscribe(from, what),
-                MessageKind::Join { room_id, user_id, subscribe } => process_join(from, room_id, user_id, subscribe),
+                MessageKind::Join { room_id, user_id, subscribe, token } => process_join(from, room_id, user_id, subscribe, token),
             }
         }
     }
