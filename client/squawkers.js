@@ -2,18 +2,18 @@ Minijanus.verbose = true;
 
 const e = React.createElement;
 const peerConfig = { iceServers: [{ urls: "stun:stun.l.google.com:19302" }] };
+const params = new URLSearchParams(location.search.slice(1));
 
 class Squawker {
-  constructor(audioFile, videoFile, dataFile, userId, conn, handle) {
-    this.audioFile = audioFile;
-    this.videoFile = videoFile;
-    this.dataFile = dataFile;
+  constructor(userId, conn, handle, data) {
     this.userId = userId;
     this.conn = conn;
     this.handle = handle;
 
-    this.audioUrl = audioFile != null ? URL.createObjectURL(audioFile) : null;
-    this.videoUrl = videoFile != null ? URL.createObjectURL(videoFile) : null;
+    this.audioUrl = data.audioUrl || (data.audioFile && URL.createObjectURL(audioFile)) || null;
+    this.videoUrl = data.videoUrl || (data.videoFile && URL.createObjectURL(videoFile)) || null;
+    this.dataFile = data.dataFile;
+    this.dataUrl = data.dataUrl;
   }
 
   negotiateIce() {
@@ -32,7 +32,7 @@ class Squawker {
 class SquawkerItem extends React.Component {
 
   componentDidMount() {
-    var audioLoaded = this.props.squawker.audioFile ? false : true;
+    var audioLoaded = this.props.squawker.audioUrl ? false : true;
     var videoLoaded = this.props.squawker.videoFile ? false : true;
     var attachIfReady = () => {
       if (audioLoaded && videoLoaded) {
@@ -45,6 +45,13 @@ class SquawkerItem extends React.Component {
     if (!videoLoaded) {
       this.videoEl.addEventListener("loadedmetadata", () => { videoLoaded = true; attachIfReady(); });
     }
+    // workaround for broken `loop` attribute in headless chrome
+    this.audioEl.addEventListener("timeupdate", () => {
+      if (this.audioEl.currentTime > this.audioEl.duration - 1) { this.audioEl.currentTime = 0; }
+    });
+    this.videoEl.addEventListener("timeupdate", () => {
+      if (this.videoEl.currentTime > this.videoEl.duration - 1) { this.videoEl.currentTime = 0; }
+    });
   }
 
   captureStream(el) {
@@ -58,7 +65,7 @@ class SquawkerItem extends React.Component {
   }
 
   getAudioStream() {
-    if (!this.props.squawker.audioFile) { return null; }
+    if (!this.props.squawker.audioUrl) { return null; }
     return this.captureStream(this.audioEl);
   }
 
@@ -73,7 +80,7 @@ class SquawkerItem extends React.Component {
     var conn = squawker.conn;
     return handle.attach("janus.plugin.sfu").then(() => {
       this.setState({ handle: handle });
-      var iceReady = squawker.negotiateIce(conn, handle);
+      var iceReady = squawker.negotiateIce();
 
       const audioStream = this.getAudioStream();
       if (audioStream) {
@@ -122,32 +129,46 @@ class SquawkerItem extends React.Component {
     });
   }
 
-  async sendFileData(reliableChannel, unreliableChannel) {
-    const dataFile = this.props.squawker.dataFile;
-    if (!dataFile) { return; }
+  async getDataJson() {
+    const dataUrl = this.props.squawker.dataUrl;
+    if (dataUrl) {
+      const response = await fetch(dataUrl);
+      return response.text();
+    }
+    else {
+      return await this.readAsText(this.props.squawker.dataFile)
+    }
+  }
 
-    const messages = JSON.parse(await this.readAsText(dataFile));
+  async sendFileData(reliableChannel, unreliableChannel) {
+    const dataJson = await this.getDataJson();
+    if (!dataJson) { return; }
+
+    const messages = JSON.parse(dataJson);
+
+    const userId = this.props.squawker.userId;
+    messages.forEach(message => {
+      if (message.message.data.owner) {
+        message.message.data.owner = userId;
+      }
+      if (message.message.data.networkId) {
+        message.message.data.networkId += userId;
+      }
+      if (message.message.data.parent) {
+        message.message.data.parent += userId;
+      }
+      message.message.clientId = userId;
+    });
+
     await this.channelOpen(reliableChannel);
     await this.channelOpen(unreliableChannel);
 
-    const start = performance.now();
+    let start = performance.now();
     let index = 0;
-    const userId = this.props.squawker.userId;
     const messageIntervalId = setInterval(() => {
       const time = performance.now() - start;
       let message = messages[index];
       while (time >= message.time) {
-        if (message.message.data.owner) {
-          message.message.data.owner = userId;
-        }
-        if (message.message.data.networkId) {
-          message.message.data.networkId += userId;
-        }
-        if (message.message.data.parent) {
-          message.message.data.parent += userId;
-        }
-        message.message.clientId = userId;
-
         try {
           const channel = message.reliable ? reliableChannel : unreliableChannel;
           channel.send(JSON.stringify(message.message));
@@ -159,11 +180,17 @@ class SquawkerItem extends React.Component {
         }
 
         index++;
-        message = messages[index];
         if (index === messages.length) {
-          clearInterval(messageIntervalId);
+          if (params.get("automate")) {
+            index = 0;
+            start = performance.now();
+          }
+          else {
+            clearInterval(messageIntervalId);
+          }
           break;
         }
+        message = messages[index];
       }
     }, 10);
   }
@@ -198,15 +225,21 @@ class AddSquawkerForm extends React.Component {
   }
 
   create(e) {
+    var data = {
+      audioUrl: params.get("audioUrl"),
+      videoUrl: params.get("videoUrl"),
+      dataUrl: params.get("dataUrl"),
+      audioFile: this.audioFile.files.length == 0 ? null : this.audioFile.files[0],
+      videoFile: this.videoFile.files.length == 0 ? null : this.videoFile.files[0],
+      dataFile: this.dataFile.files.length == 0 ? null : this.dataFile.files[0]
+    };
     this.props.onCreate(new Squawker(
-      this.audioFile.files.length == 0 ? null : this.audioFile.files[0],
-      this.videoFile.files.length == 0 ? null : this.videoFile.files[0],
-      this.dataFile.files.length == 0 ? null : this.dataFile.files[0],
       this.generateUserId(),
       new RTCPeerConnection(peerConfig),
-      new Minijanus.JanusPluginHandle(this.props.session)
+      new Minijanus.JanusPluginHandle(this.props.session),
+      data
     ));
-    e.preventDefault();
+    if (e) { e.preventDefault(); }
   }
 
   render() {
@@ -231,6 +264,19 @@ class SquawkerApp extends React.Component {
 
   componentWillMount() {
     this.establishSession(this.props.ws, this.props.session);
+  }
+
+  haveForm(form) {
+    if (this.form) { return; }
+    this.form = form;
+    const num = parseInt(params.get("automate"), 10);
+    const delay = parseInt(params.get("delay"), 10);
+    if (!num) { return; }
+    for (let i = 0; i < num; i++) {
+      setTimeout(() => {
+        form.create();
+      }, delay * 1000 * i);
+    }
   }
 
   establishSession(ws, session) {
@@ -259,7 +305,7 @@ class SquawkerApp extends React.Component {
             " with session ID: ",
             e("span", { className: "session-id" }, this.props.session.id)),
           e("h2", {}, "Add squawker"),
-          e(AddSquawkerForm, {onCreate: this.onCreate, session: this.props.session}),
+          e(AddSquawkerForm, {onCreate: this.onCreate, session: this.props.session, ref: this.haveForm.bind(this)}),
           e("h2", {}, "Existing squawkers"),
           e(SquawkerList, {roomId: this.props.roomId, squawkers: this.state.squawkers})));
     } else {
@@ -271,7 +317,6 @@ class SquawkerApp extends React.Component {
   }
 }
 
-const params = new URLSearchParams(location.search.slice(1));
 const serverUrl = params.get("janus") || `wss://${location.hostname}:8989`;
 const roomId = params.get("room") || 0;
 const ws = new WebSocket(serverUrl, "janus-protocol");
