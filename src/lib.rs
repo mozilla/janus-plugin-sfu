@@ -119,9 +119,11 @@ fn gateway_callbacks() -> &'static PluginCallbacks {
 
 #[derive(Debug)]
 struct State {
+    // we always lock sessions, switchboard, occupants -- todo: consider making a state tuple with one RwLock containing all 3
+    // to eliminate the possibility of screwing this up
     pub sessions: RwLock<Vec<Box<Arc<Session>>>>,
-    pub occupants: RwLock<HashMap<RoomId, HashSet<Arc<Session>>>>,
     pub switchboard: RwLock<Switchboard>,
+    pub occupants: RwLock<HashMap<RoomId, HashSet<Arc<Session>>>>,
     pub message_channel: AtomSetOnce<Box<mpsc::SyncSender<RawMessage>>>,
 }
 
@@ -371,6 +373,7 @@ fn process_join(from: &Arc<Session>, room_id: RoomId, user_id: UserId, subscribe
     }
 
     let sessions = STATE.sessions.read()?;
+    let mut switchboard = STATE.switchboard.write()?;
     let mut occupants = STATE.occupants.write()?;
     let body = json!({ "users": get_users(&occupants) });
 
@@ -391,7 +394,7 @@ fn process_join(from: &Arc<Session>, room_id: RoomId, user_id: UserId, subscribe
         if let Some(publisher_id) = subscription.media {
             let publisher = get_publisher(publisher_id, &*sessions).ok_or("Can't subscribe to a nonexistent publisher.")?;
             let subscriber_offer = publisher.subscriber_offer.get().ok_or("Can't subscribe to a publisher with no media.")?;
-            STATE.switchboard.write()?.subscribe_to_user(from, &publisher);
+            switchboard.subscribe_to_user(from, &publisher);
             return Ok(MessageResponse::new(body, json!({ "type": "offer", "sdp": subscriber_offer })));
         }
     }
@@ -404,14 +407,15 @@ fn process_subscribe(from: &Arc<Session>, what: Subscription) -> MessageResult {
         return Err(From::from("Users may only subscribe once!"))
     }
 
+    let sessions = STATE.sessions.read()?;
+    let mut switchboard = STATE.switchboard.write()?;
     let occupants = STATE.occupants.read()?;
     let body = json!({ "users": get_users(&occupants) });
 
     if let Some(publisher_id) = what.media {
-        let sessions = STATE.sessions.read()?;
         let publisher = get_publisher(publisher_id, &*sessions).ok_or("Can't subscribe to a nonexistent publisher.")?;
         let subscriber_offer = publisher.subscriber_offer.get().ok_or("Can't subscribe to a publisher with no media.")?;
-        STATE.switchboard.write()?.subscribe_to_user(from, &publisher);
+        switchboard.subscribe_to_user(from, &publisher);
         return Ok(MessageResponse::new(body, json!({ "type": "offer", "sdp": subscriber_offer })));
     }
     Ok(MessageResponse::msg(body))
