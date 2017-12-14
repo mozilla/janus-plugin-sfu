@@ -1,7 +1,5 @@
 extern crate atom;
 #[macro_use]
-extern crate cstr_macro;
-#[macro_use]
 extern crate janus_plugin as janus;
 extern crate jsonwebtoken as jwt;
 #[macro_use]
@@ -20,8 +18,7 @@ mod auth;
 use atom::AtomSetOnce;
 use messages::{RoomId, UserId};
 use auth::UserToken;
-use janus::{JanusError, JanssonDecodingFlags, JanssonEncodingFlags, JanssonValue, LogLevel, Plugin, PluginCallbacks, PluginMetadata,
-            PluginResult, PluginResultType, PluginSession, RawPluginResult, RawJanssonValue};
+use janus::{JanusError, JanssonDecodingFlags, JanssonEncodingFlags, JanssonValue, Plugin, PluginCallbacks, PluginMetadata, PluginResult, PluginSession, RawPluginResult, RawJanssonValue};
 use janus::sdp::{AudioCodec, MediaDirection, OfferAnswerParameters, Sdp, VideoCodec};
 use messages::{JsepKind, MessageKind, OptionalField, Subscription};
 use serde_json::Value as JsonValue;
@@ -29,6 +26,7 @@ use sessions::{JoinState, Session, SessionState};
 use std::collections::{HashMap, HashSet};
 use std::collections::hash_map::Entry;
 use std::error::Error;
+use std::ffi::CStr;
 use std::os::raw::{c_char, c_int};
 use std::ptr;
 use std::slice;
@@ -36,6 +34,16 @@ use std::sync::{mpsc, Arc, Mutex, RwLock, Weak};
 use std::sync::atomic::{Ordering, AtomicIsize};
 use std::thread;
 use switchboard::Switchboard;
+
+// courtesy of c_string crate, which also has some other stuff we aren't interested in
+// taking in as a dependency here.
+macro_rules! c_str {
+    ($lit:expr) => {
+        unsafe {
+            CStr::from_ptr(concat!($lit, "\0").as_ptr() as *const $crate::c_char)
+        }
+    }
+}
 
 /// A Janus transaction ID. Used to correlate signalling requests and responses.
 #[derive(Debug)]
@@ -100,15 +108,6 @@ static AUDIO_PAYLOAD_TYPE: i32 = 111;
 
 /// The payload type identifier we use for video. Basically arbitrary, but 107 is common for H.264 in Chrome.
 static VIDEO_PAYLOAD_TYPE: i32 = 107;
-
-const METADATA: PluginMetadata = PluginMetadata {
-    version: 1,
-    name: cstr!("Janus SFU plugin"),
-    package: cstr!("janus.plugin.sfu"),
-    version_str: cstr!(env!("CARGO_PKG_VERSION")),
-    description: cstr!(env!("CARGO_PKG_DESCRIPTION")),
-    author: cstr!(env!("CARGO_PKG_AUTHORS")),
-};
 
 static mut CALLBACKS: Option<&PluginCallbacks> = None;
 
@@ -180,7 +179,7 @@ fn send_notification<'a, T>(json: &JsonValue, sessions: T) -> Result<(), JanusEr
     let mut msg = from_serde_json(json);
     let push_event = gateway_callbacks().push_event;
     for session in sessions {
-        janus::log(LogLevel::Info, &format!("Notification going to {:?}: {:?}.", session, json));
+        janus_info!("Notification going to {:?}: {:?}.", session, json);
         // probably a hack -- we shouldn't stop notifying if we fail one
         janus::get_result(push_event(session.as_ptr(), &mut PLUGIN, ptr::null(), msg.as_mut_ref(), ptr::null_mut()))?
     }
@@ -212,27 +211,27 @@ extern "C" fn init(callbacks: *mut PluginCallbacks, _config_path: *const c_char)
             STATE.message_channel.set_if_none(Box::new(messages_tx));
 
             thread::spawn(move || {
-                janus::log(LogLevel::Verb, "Message processing thread is alive.");
+                janus_verb!("Message processing thread is alive.");
                 for msg in messages_rx.iter() {
-                    janus::log(LogLevel::Verb, &format!("Processing message: {:?}", msg));
+                    janus_verb!("Processing message: {:?}", msg);
                     handle_message_async(msg).err().map(|e| {
-                        janus::log(LogLevel::Err, &format!("Error processing message: {}", e));
+                        janus_err!("Error processing message: {}", e);
                     });
                 }
             });
 
-            janus::log(LogLevel::Info, "Janus SFU plugin initialized!");
+            janus_info!("Janus SFU plugin initialized!");
             0
         }
         None => {
-            janus::log(LogLevel::Err, "Invalid parameters for SFU plugin initialization!");
+            janus_err!("Invalid parameters for SFU plugin initialization!");
             -1
         }
     }
 }
 
 extern "C" fn destroy() {
-    janus::log(LogLevel::Info, "Janus SFU plugin destroyed!");
+    janus_info!("Janus SFU plugin destroyed!");
 }
 
 extern "C" fn create_session(handle: *mut PluginSession, error: *mut c_int) {
@@ -246,11 +245,11 @@ extern "C" fn create_session(handle: *mut PluginSession, error: *mut c_int) {
 
     match unsafe { Session::associate(handle, initial_state) } {
         Ok(sess) => {
-            janus::log(LogLevel::Info, &format!("Initializing SFU session {:?}...", sess));
+            janus_info!("Initializing SFU session {:?}...", sess);
             STATE.sessions.write().expect("Sessions table is poisoned :(").push(sess);
         }
         Err(e) => {
-            janus::log(LogLevel::Err, &format!("{}", e));
+            janus_err!("{}", e);
             unsafe { *error = -1 };
         }
     }
@@ -259,7 +258,7 @@ extern "C" fn create_session(handle: *mut PluginSession, error: *mut c_int) {
 extern "C" fn destroy_session(handle: *mut PluginSession, error: *mut c_int) {
     match unsafe { Session::from_ptr(handle) } {
         Ok(sess) => {
-            janus::log(LogLevel::Info, &format!("Destroying SFU session {:?}...", sess));
+            janus_info!("Destroying SFU session {:?}...", sess);
             let mut destroyed = sess.destroyed.lock().expect("Session destruction mutex is poisoned :(");
             let mut sessions = STATE.sessions.write().expect("Sessions table is poisoned :(");
             let mut switchboard = STATE.switchboard.write().expect("Switchboard is poisoned :(");
@@ -276,7 +275,7 @@ extern "C" fn destroy_session(handle: *mut PluginSession, error: *mut c_int) {
                     let response = json!({ "event": "leave", "user_id": joined.user_id, "room_id": joined.room_id });
                     match notify_except(&response, joined.user_id, &*sessions) {
                         Ok(_) | Err(JanusError(458 /* session not found */)) => (),
-                        Err(e) => janus::log(LogLevel::Err, &format!("Error notifying publishers on leave: {}", e))
+                        Err(e) => janus_err!("Error notifying publishers on leave: {}", e)
                     };
                 }
                 if let Entry::Occupied(mut cohabitators) = occupants.entry(joined.room_id) {
@@ -291,7 +290,7 @@ extern "C" fn destroy_session(handle: *mut PluginSession, error: *mut c_int) {
             *destroyed = true;
         }
         Err(e) => {
-            janus::log(LogLevel::Err, &format!("{}", e));
+            janus_err!("{}", e);
             unsafe { *error = -1 };
         }
     }
@@ -308,7 +307,7 @@ extern "C" fn setup_media(handle: *mut PluginSession) {
     let sess = unsafe { Session::from_ptr(handle).expect("Session can't be null!") };
     let switchboard = STATE.switchboard.read().expect("Switchboard is poisoned :(");
     send_fir(&switchboard.publishers_to_user(&sess));
-    janus::log(LogLevel::Verb, &format!("WebRTC media is now available on {:?}.", sess));
+    janus_verb!("WebRTC media is now available on {:?}.", sess);
 }
 
 extern "C" fn incoming_rtp(handle: *mut PluginSession, video: c_int, buf: *mut c_char, len: c_int) {
@@ -354,16 +353,16 @@ extern "C" fn incoming_data(handle: *mut PluginSession, buf: *mut c_char, len: c
             }
         }
     } else {
-        janus::log(LogLevel::Huge, "Discarding data packet from not-yet-joined peer.");
+        janus_huge!("Discarding data packet from not-yet-joined peer.");
     }
 }
 
 extern "C" fn slow_link(_handle: *mut PluginSession, _uplink: c_int, _video: c_int) {
-    janus::log(LogLevel::Verb, "Slow link message received!");
+    janus_verb!("Slow link message received!");
 }
 
 extern "C" fn hangup_media(_handle: *mut PluginSession) {
-    janus::log(LogLevel::Verb, "Hanging up WebRTC media.");
+    janus_verb!("Hanging up WebRTC media.");
 }
 
 fn process_join(from: &Arc<Session>, room_id: RoomId, user_id: UserId, subscribe: Option<Subscription>, token: Option<UserToken>) -> MessageResult {
@@ -388,7 +387,7 @@ fn process_join(from: &Arc<Session>, room_id: RoomId, user_id: UserId, subscribe
             // hack -- assume there is only one "master" data connection per user
             let notification = json!({ "event": "join", "user_id": user_id, "room_id": room_id });
             if let Err(e) = notify_except(&notification, user_id, &*sessions) {
-                janus::log(LogLevel::Err, &format!("Error sending notification for user join: {:?}", e))
+                janus_err!("Error sending notification for user join: {:?}", e)
             }
         }
         if let Some(publisher_id) = subscription.media {
@@ -433,7 +432,7 @@ fn process_message(from: &Arc<Session>, msg: &JanssonValue) -> MessageResult {
     match msg_contents {
         OptionalField::None {} => Ok(MessageResponse::msg(json!({}))),
         OptionalField::Some(kind) => {
-            janus::log(LogLevel::Info, &format!("Processing {:?} on connection {:?}.", kind, from));
+            janus_info!("Processing {:?} on connection {:?}.", kind, from);
             match kind {
                 MessageKind::ListUsers => process_list_users(),
                 MessageKind::Subscribe { what } => process_subscribe(from, what),
@@ -485,7 +484,7 @@ fn process_jsep(from: &Arc<Session>, jsep: &JanssonValue) -> JsepResult {
     match jsep_contents {
         OptionalField::None {} => Ok(json!({})),
         OptionalField::Some(kind) => {
-            janus::log(LogLevel::Info, &format!("Processing {:?} from {:?}.", kind, from));
+            janus_info!("Processing {:?} from {:?}.", kind, from);
             match kind {
                 JsepKind::Offer { sdp } => process_offer(from, &sdp),
                 JsepKind::Answer { .. } => process_answer(),
@@ -497,7 +496,7 @@ fn process_jsep(from: &Arc<Session>, jsep: &JanssonValue) -> JsepResult {
 fn push_response(from: &Session, txn: TransactionId, body: &JsonValue, jsep: Option<JsonValue>) -> Result<(), Box<Error>> {
     let push_event = gateway_callbacks().push_event;
     let jsep = jsep.unwrap_or_else(|| json!({}));
-    janus::log(LogLevel::Info, &format!("{:?} sending response to {:?}: body = {}.", from.as_ptr(), txn, body));
+    janus_info!("{:?} sending response to {:?}: body = {}.", from.as_ptr(), txn, body);
     Ok(janus::get_result(push_event(from.as_ptr(), &mut PLUGIN, txn.0, from_serde_json(body).as_mut_ref(), from_serde_json(&jsep).as_mut_ref()))?)
 }
 
@@ -542,12 +541,12 @@ fn handle_message_async(RawMessage { jsep, msg, txn, from }: RawMessage) -> Resu
 
     // getting messages for destroyed connections is slightly concerning,
     // because messages shouldn't be backed up for that long, so warn if it happens
-    Ok(janus::log(LogLevel::Warn, "Message received for destroyed session; discarding."))
+    Ok(janus_warn!("Message received for destroyed session; discarding."))
 }
 
 extern "C" fn handle_message(handle: *mut PluginSession, transaction: *mut c_char,
                              message: *mut RawJanssonValue, jsep: *mut RawJanssonValue) -> *mut RawPluginResult {
-    janus::log(LogLevel::Verb, "Queueing signalling message.");
+    janus_verb!("Queueing signalling message.");
     let result = match unsafe { Session::from_ptr(handle) } {
         Ok(sess) => {
             let msg = RawMessage {
@@ -557,15 +556,22 @@ extern "C" fn handle_message(handle: *mut PluginSession, transaction: *mut c_cha
                 jsep: unsafe { JanssonValue::new(jsep) }
             };
             STATE.message_channel.get().unwrap().send(msg).ok();
-            PluginResult::new(PluginResultType::JANUS_PLUGIN_OK_WAIT, cstr!("Processing."), Some(from_serde_json(&json!({}))))
+            PluginResult::ok_wait(Some(c_str!("Processing.")))
         },
-        Err(_) => PluginResult::new(PluginResultType::JANUS_PLUGIN_ERROR, cstr!("No handle associated with message!"), None)
+        Err(_) => PluginResult::error(c_str!("No handle associated with message!"))
     };
     result.into_raw()
 }
 
 const PLUGIN: Plugin = build_plugin!(
-    METADATA,
+    PluginMetadata {
+        version: 1,
+        name: c_str!("Janus SFU plugin"),
+        package: c_str!("janus.plugin.sfu"),
+        version_str: c_str!(env!("CARGO_PKG_VERSION")),
+        description: c_str!(env!("CARGO_PKG_DESCRIPTION")),
+        author: c_str!(env!("CARGO_PKG_AUTHORS")),
+    },
     init,
     destroy,
     create_session,
