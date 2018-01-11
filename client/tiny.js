@@ -194,6 +194,7 @@ function attachSubscriber(session, otherId) {
   console.info("Attaching subscriber to " + otherId + " for session: ", session);
   var conn = new RTCPeerConnection(PEER_CONNECTION_CONFIG);
   conn.ontrack = function(ev) {
+    console.info("Attaching " + ev.track.kind + " track from " + otherId + " for session: ", session);
     if (ev.track.kind === "audio") {
       var audioEl = document.createElement("audio");
       audioEl.controls = true;

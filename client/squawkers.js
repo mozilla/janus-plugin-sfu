@@ -10,8 +10,8 @@ class Squawker {
     this.conn = conn;
     this.handle = handle;
 
-    this.audioUrl = data.audioUrl || (data.audioFile && URL.createObjectURL(audioFile)) || null;
-    this.videoUrl = data.videoUrl || (data.videoFile && URL.createObjectURL(videoFile)) || null;
+    this.audioUrl = data.audioUrl || (data.audioFile && URL.createObjectURL(data.audioFile)) || null;
+    this.videoUrl = data.videoUrl || (data.videoFile && URL.createObjectURL(data.videoFile)) || null;
     this.dataFile = data.dataFile;
     this.dataUrl = data.dataUrl;
   }
@@ -33,7 +33,7 @@ class SquawkerItem extends React.Component {
 
   componentDidMount() {
     var audioLoaded = this.props.squawker.audioUrl ? false : true;
-    var videoLoaded = this.props.squawker.videoFile ? false : true;
+    var videoLoaded = this.props.squawker.videoUrl ? false : true;
     var attachIfReady = () => {
       if (audioLoaded && videoLoaded) {
         this.attachPublisher(this.props.squawker);
@@ -70,7 +70,7 @@ class SquawkerItem extends React.Component {
   }
 
   getVideoStream() {
-    if (!this.props.squawker.videoFile) { return null; }
+    if (!this.props.squawker.videoUrl) { return null; }
     return this.captureStream(this.videoEl);
   }
 
@@ -100,7 +100,7 @@ class SquawkerItem extends React.Component {
       var remoteReady = offerReady
           .then(handle.sendJsep.bind(handle))
           .then(answer => conn.setRemoteDescription(answer.jsep));
-      var connectionReady = Promise.all([iceReady, localReady, remoteReady]);
+      var connectionReady = Promise.all([localReady, remoteReady]);
       return connectionReady.then(() => handle.sendMessage({
         kind: "join",
         room_id: this.props.roomId,
@@ -109,7 +109,9 @@ class SquawkerItem extends React.Component {
       })).then(() => {
         this.audioEl.play();
         this.videoEl.play();
-        this.sendFileData(reliableChannel, unreliableChannel);
+        if (this.props.squawker.dataUrl || this.props.squawker.dataFile) {
+          this.sendFileData(reliableChannel, unreliableChannel);
+        }
       });
     });
   }
@@ -136,7 +138,7 @@ class SquawkerItem extends React.Component {
       return response.text();
     }
     else {
-      return await this.readAsText(this.props.squawker.dataFile)
+      return await this.readAsText(this.props.squawker.dataFile);
     }
   }
 
