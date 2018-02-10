@@ -1,8 +1,19 @@
-Minijanus.verbose = true;
-
 const e = React.createElement;
 const peerConfig = { iceServers: [{ urls: "stun:stun.l.google.com:19302" }] };
 const params = new URLSearchParams(location.search.slice(1));
+
+function associate(conn, handle) {
+  conn.addEventListener("icecandidate", ev => {
+    handle.sendTrickle(ev.candidate || null).catch(e => console.error("Error trickling ICE: ", e));
+  });
+  conn.addEventListener("negotiationneeded", _ => {
+    console.info("Sending new offer for handle: ", handle);
+    var offer = conn.createOffer();
+    var local = offer.then(o => conn.setLocalDescription(o));
+    var remote = offer.then(j => handle.sendJsep(j)).then(r => conn.setRemoteDescription(r.jsep));
+    Promise.all([local, remote]).catch(e => console.error("Error negotiating offer: ", e));
+  });
+}
 
 class Squawker {
   constructor(userId, conn, handle, data) {
@@ -15,18 +26,6 @@ class Squawker {
     this.dataFile = data.dataFile;
     this.dataUrl = data.dataUrl;
   }
-
-  negotiateIce() {
-    return new Promise((resolve, reject) => {
-      this.conn.addEventListener("icecandidate", ev => {
-        this.handle.sendTrickle(ev.candidate || null).then(() => {
-          if (!ev.candidate) { // this was the last candidate on our end and now they received it
-            resolve();
-          }
-        });
-      });
-    });
-  };
 }
 
 class SquawkerItem extends React.Component {
@@ -78,30 +77,19 @@ class SquawkerItem extends React.Component {
     console.info("Attaching publisher for squawker: ", this.props.squawker.userId);
     var handle = squawker.handle;
     var conn = squawker.conn;
+    associate(conn, handle);
     return handle.attach("janus.plugin.sfu").then(() => {
       this.setState({ handle: handle });
-      var iceReady = squawker.negotiateIce();
-
       const audioStream = this.getAudioStream();
-      if (audioStream) {
-        audioStream.getTracks().forEach(track => conn.addTrack(track, audioStream));
-      }
-
       const videoStream = this.getVideoStream();
       if (videoStream) {
         videoStream.getTracks().forEach(track => conn.addTrack(track, videoStream));
+      } else if (audioStream) {
+        audioStream.getTracks().forEach(track => conn.addTrack(track, audioStream));
       }
-
       const reliableChannel = conn.createDataChannel("reliable", { ordered: true });
       const unreliableChannel = conn.createDataChannel("unreliable", { ordered: false, maxRetransmits: 0 });
-
-      var offerReady = conn.createOffer({ offerToReceiveAudio: 0, offerToReceiveVideo: 0 });
-      var localReady = offerReady.then(offer => { console.log(offer); return offer; }).then(conn.setLocalDescription.bind(conn));
-      var remoteReady = offerReady
-          .then(handle.sendJsep.bind(handle))
-          .then(answer => conn.setRemoteDescription(answer.jsep));
-      var connectionReady = Promise.all([localReady, remoteReady]);
-      return connectionReady.then(() => handle.sendMessage({
+      return new Promise(resolve => handle.on("webrtcup", resolve)).then(() => handle.sendMessage({
         kind: "join",
         room_id: this.props.roomId,
         user_id: this.props.squawker.userId,
@@ -322,6 +310,6 @@ class SquawkerApp extends React.Component {
 const serverUrl = params.get("janus") || `wss://${location.hostname}:8989`;
 const roomId = params.get("room") || 0;
 const ws = new WebSocket(serverUrl, "janus-protocol");
-const session = new Minijanus.JanusSession(ws.send.bind(ws));
+const session = new Minijanus.JanusSession(ws.send.bind(ws), { verbose: true });
 const root = document.getElementById("root");
 ReactDOM.render(e(SquawkerApp, { ws: ws, session: session, roomId: parseInt(roomId) }), root);
