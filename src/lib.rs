@@ -565,6 +565,7 @@ extern "C" fn handle_message(handle: *mut PluginSession, transaction: *mut c_cha
 
 const PLUGIN: Plugin = build_plugin!(
     PluginMetadata {
+        api_version: 9,
         version: 1,
         name: c_str!("Janus SFU plugin"),
         package: c_str!("janus.plugin.sfu"),
