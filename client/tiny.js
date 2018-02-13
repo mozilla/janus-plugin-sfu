@@ -1,9 +1,6 @@
 const params = new URLSearchParams(location.search.slice(1));
 var USER_ID = Math.floor(Math.random() * (1000000001));
 const roomId = params.get("room") != null ? parseInt(params.get("room")) : 42;
-const mic = !/0|false|off/i.test(params.get("mic"));
-
-Minijanus.verbose = true;
 
 const PEER_CONNECTION_CONFIG = {
   iceServers: [
@@ -32,66 +29,40 @@ function isError(signal) {
   return isPluginError || Minijanus.JanusSession.prototype.isError(signal);
 }
 
-function init() {
-  const server = params.get("janus") || `ws://localhost:8188`;
+function connect(server) {
   document.getElementById("janusServer").value = server;
   showStatus(`Connecting to ${server}...`);
   var ws = new WebSocket(server, "janus-protocol");
-  ws.addEventListener("open", () => {
-    var session = c.session = new Minijanus.JanusSession(ws.send.bind(ws));
-    session.isError = isError;
-    ws.addEventListener("message", ev => handleMessage(session, ev));
-    session.create().then(() => attachPublisher(session)).then(x => {
-      c.publisher = x;
-    }, err => console.error("Error attaching publisher: ", err));
+  var session = c.session = new Minijanus.JanusSession(ws.send.bind(ws), { verbose: true });
+  session.isError = isError;
+  ws.addEventListener("message", ev => session.receive(JSON.parse(ev.data)));
+  ws.addEventListener("open", _ => {
+    session.create()
+      .then(_ => attachPublisher(session))
+      .then(x => { c.publisher = x; },
+            err => console.error("Error attaching publisher: ", err));
   });
 }
 
-function handleMessage(session, ev) {
-  var data = JSON.parse(ev.data);
-  session.receive(data);
-  if (data.janus === "event") {
-    if (data.plugindata && data.plugindata.data) {
-      var contents = data.plugindata.data;
-      switch (contents.event) {
-      case "join":
-        if (contents.room_id === roomId) {
-          addUser(session, contents.user_id, data.jsep);
-        }
-        break;
-      case "leave":
-        if (contents.room_id === roomId) {
-          removeUser(session, contents.user_id);
-        }
-        break;
-      case undefined:
-        // a non-plugin event
-        break;
-      default:
-        console.error("Unknown event received: ", data.plugindata.data);
-        break;
-      }
-    }
-  }
-}
+document.getElementById("micButton").addEventListener("click", _ => {
+  var constraints = { audio: true };
+  navigator.mediaDevices.getUserMedia(constraints)
+    .then(m => m.getTracks().forEach(t => c.publisher.conn.addTrack(t, m)))
+    .catch(e => console.error("Error requesting media: ", e));
+});
 
-function negotiateIce(conn, handle) {
-  return new Promise((resolve, reject) => {
-    conn.addEventListener("icecandidate", ev => {
-      handle.sendTrickle(ev.candidate || null).then(() => {
-        if (!ev.candidate) { // this was the last candidate on our end and now they received it
-          resolve();
-        }
-      }, reject);
-    });
-  });
-};
+document.getElementById("screenButton").addEventListener("click", _ => {
+  var constraints = { video: { mediaSource: "screen" } };
+  navigator.mediaDevices.getUserMedia(constraints)
+    .then(m => m.getTracks().forEach(t => c.publisher.conn.addTrack(t, m)))
+    .catch(e => console.error("Error requesting media: ", e));
+});
 
 function addUser(session, userId) {
   console.info("Adding user " + userId + ".");
-  attachSubscriber(session, userId).then(x => {
-    c.subscribers[userId] = x;
-  }, err => console.error("Error attaching subscriber: "));
+  return attachSubscriber(session, userId)
+    .then(x => { c.subscribers[userId] = x; },
+          err => console.error("Error attaching subscriber: ", err));
 }
 
 function removeUser(session, userId) {
@@ -142,90 +113,87 @@ document.getElementById("clearButton").addEventListener("click", function clearM
   updateMessageCount();
 });
 
+function waitForEvent(name, handle) {
+  return new Promise(resolve => handle.on(name, resolve));
+}
+
+function associate(conn, handle) {
+  conn.addEventListener("icecandidate", ev => {
+    handle.sendTrickle(ev.candidate || null).catch(e => console.error("Error trickling ICE: ", e));
+  });
+  conn.addEventListener("negotiationneeded", _ => {
+    console.info("Sending new offer for handle: ", handle);
+    var offer = conn.createOffer();
+    var local = offer.then(o => conn.setLocalDescription(o));
+    var remote = offer.then(j => handle.sendJsep(j)).then(r => conn.setRemoteDescription(r.jsep));
+    Promise.all([local, remote]).catch(e => console.error("Error negotiating offer: ", e));
+  });
+  handle.on("event", ev => {
+    if (ev.jsep && ev.jsep.type == "offer") {
+      console.info("Accepting new offer for handle: ", handle);
+      var answer = conn.setRemoteDescription(ev.jsep).then(_ => conn.createAnswer());
+      var local = answer.then(a => conn.setLocalDescription(a));
+      var remote = answer.then(j => handle.sendJsep(j));
+      Promise.all([local, remote]).catch(e => console.error("Error negotiating answer: ", e));
+    }
+  });
+}
+
 function attachPublisher(session) {
   console.info("Attaching publisher for session: ", session);
   var conn = new RTCPeerConnection(PEER_CONNECTION_CONFIG);
   var handle = new Minijanus.JanusPluginHandle(session);
+  associate(conn, handle);
+
+  // Handle all of the join and leave events.
+  handle.on("event", ev => {
+    var data = ev.plugindata.data;
+    if (data.event == "join" && data.room_id == roomId) {
+      this.addUser(session, data.user_id);
+    } else if (data.event == "leave" && data.room_id == roomId) {
+      this.removeUser(session, data.user_id);
+    }
+  });
+
   return handle.attach("janus.plugin.sfu").then(() => {
-    var iceReady = negotiateIce(conn, handle);
-
-    var channel = conn.createDataChannel("reliable", { ordered: true });
-    channel.addEventListener("message", storeReliableMessage);
-
+    showStatus(`Connecting WebRTC...`);
+    const reliableChannel = conn.createDataChannel("reliable", { ordered: true });
+    reliableChannel.addEventListener("message", storeReliableMessage);
     const unreliableChannel = conn.createDataChannel("unreliable", { ordered: false, maxRetransmits: 0 });
     unreliableChannel.addEventListener("message", storeUnreliableMessage);
-
-    var mediaReady = mic ? navigator.mediaDevices.getUserMedia({ audio: true }) : Promise.reject();
-    var offerReady = mediaReady
-      .then(
-        media => {
-          media.getTracks().forEach(track => conn.addTrack(track, media));
-          return conn.createOffer({ audio: true });
-        },
-        () => conn.createOffer()
-      );
-    var localReady = offerReady.then(conn.setLocalDescription.bind(conn));
-    var remoteReady = offerReady
-        .then(handle.sendJsep.bind(handle))
-        .then(answer => conn.setRemoteDescription(answer.jsep));
-    showStatus(`Connecting WebRTC...`);
-    var connectionReady = Promise.all([iceReady, localReady, remoteReady]);
-    return connectionReady
-      .then(() => {
+    return waitForEvent("webrtcup", handle)
+      .then(_ => {
         showStatus(`Joining room ${roomId}...`);
-        return handle.sendMessage({ kind: "join", room_id: roomId, user_id: USER_ID, subscribe: { "notifications": true, "data": true }});
+        return handle.sendMessage({ kind: "join", room_id: roomId, user_id: USER_ID, subscribe: { notifications: true, data: true }});
       })
       .then(reply => {
-        showStatus(`Joined room ${roomId}`);
+        showStatus(`Subscribing to others in room ${roomId}`);
         var occupants = reply.plugindata.data.response.users[roomId] || [];
-        for (var i = 0; i < occupants.length; i++) {
-          if (occupants[i] !== USER_ID) {
-            addUser(session, occupants[i]);
-          }
-        }
+        return Promise.all(occupants.map(userId => addUser(session, userId)));
       })
-      .then(() => {
-        return { handle, conn, channel, unreliableChannel };
-      });
+      .then(_ => { return { handle, conn, reliableChannel, unreliableChannel }; });
   });
 }
 
 function attachSubscriber(session, otherId) {
   console.info("Attaching subscriber to " + otherId + " for session: ", session);
   var conn = new RTCPeerConnection(PEER_CONNECTION_CONFIG);
-  conn.ontrack = function(ev) {
-    console.info("Attaching " + ev.track.kind + " track from " + otherId + " for session: ", session);
-    if (ev.track.kind === "audio") {
-      var audioEl = document.createElement("audio");
-      audioEl.controls = true;
-      document.body.appendChild(audioEl);
-      audioEl.srcObject = ev.streams[0];
-      audioEl.play();
-    } else if (ev.track.kind === "video") {
-      var videoEl = document.createElement("video");
-      videoEl.controls = true;
-      document.body.appendChild(videoEl);
-      videoEl.srcObject = ev.streams[0];
-      videoEl.play();
-    }
-  };
-
   var handle = new Minijanus.JanusPluginHandle(session);
+  associate(conn, handle);
+
+  conn.addEventListener("track", ev => {
+    console.info("Attaching " + ev.track.kind + " track from " + otherId + " for session: ", session);
+    var mediaEl = document.createElement(ev.track.kind);
+    document.body.appendChild(mediaEl);
+    mediaEl.controls = true;
+    mediaEl.srcObject = ev.streams[0];
+    mediaEl.play();
+  });
+
   return handle.attach("janus.plugin.sfu")
-    .then(() => {
-      var iceReady = negotiateIce(conn, handle);
-      var localReady = handle.sendMessage({ kind: "join", room_id: roomId, user_id: USER_ID, subscribe: { "media": otherId }})
-          .then(resp => {
-            return conn.setRemoteDescription(resp.jsep)
-              .then(() => conn.createAnswer())
-              .then(conn.setLocalDescription.bind(conn));
-          });
-      return Promise.all([iceReady, localReady])
-        .then(() => handle.sendJsep(conn.localDescription))
-        .then(() => {
-          return { handle: handle, conn: conn };
-        });
-    });
+    .then(_ => handle.sendMessage({ kind: "join", room_id: roomId, user_id: USER_ID, subscribe: { media: otherId }}))
+    .then(_ => waitForEvent("webrtcup", handle))
+    .then(_ => { return { handle: handle, conn: conn }; });
 }
 
-init();
+connect(params.get("janus") || `ws://localhost:8188`);

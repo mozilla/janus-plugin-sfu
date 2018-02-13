@@ -14,6 +14,11 @@
     <form method="GET"><label>Server: <input id="janusServer" name="janus"/></label><input type="submit" value="Go" /></form>
     <p><label>Status: </label><span id="status"></span></p>
 
+    <p>
+      <button id="micButton">Share microphone</button>
+      <button id="screenButton">Share screen</button>
+    </p>
+
     <fieldset>
       <legend>Data messages</legend>
       <div><label>Message count: </label><span id="messageCount"></span></div>
@@ -21,8 +26,8 @@
       <button id="clearButton">Clear</button>
     </fieldset>
 
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/webrtc-adapter/3.4.3/adapter.min.js"></script>
-    <script src="https://rawgit.com/mquander/minijanus.js/master/bundle.js"></script>
+    <script src="https://webrtc.github.io/adapter/adapter-latest.js"></script>
+    <script src="file:///home/mquander/src/minijanus/bundle.js"></script>
     <script src="https://unpkg.com/file-saver@1.3.3/FileSaver.min.js"></script>
     <script src="tiny.js"></script>
   </body>

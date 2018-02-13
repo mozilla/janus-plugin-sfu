@@ -103,12 +103,6 @@ static AUDIO_CODEC: AudioCodec = AudioCodec::Opus;
 /// Safari, and Edge; VP8/9 unfortunately isn't compatible with Safari.
 static VIDEO_CODEC: VideoCodec = VideoCodec::H264;
 
-/// The payload type identifier we use for audio. Basically arbitrary, but 111 is common for Opus in Chrome.
-static AUDIO_PAYLOAD_TYPE: i32 = 111;
-
-/// The payload type identifier we use for video. Basically arbitrary, but 107 is common for H.264 in Chrome.
-static VIDEO_PAYLOAD_TYPE: i32 = 107;
-
 static mut CALLBACKS: Option<&PluginCallbacks> = None;
 
 /// Returns a ref to the callback struct provided by Janus containing function pointers to pass data back to the gateway.
@@ -151,9 +145,9 @@ fn get_users(occupants: &HashMap<RoomId, HashSet<Arc<Session>>>) -> HashMap<Room
 fn get_publisher<'a, T>(user_id: UserId, sessions: T) -> Option<Arc<Session>> where T: IntoIterator<Item=&'a Box<Arc<Session>>> {
     sessions.into_iter()
         .find(|s| {
-            let subscriber_offer = s.subscriber_offer.get();
+            let subscriber_offer = s.subscriber_offer.lock().unwrap();
             let join_state = s.join_state.get();
-            match (subscriber_offer, join_state) {
+            match (subscriber_offer.as_ref(), join_state) {
                 (Some(_), Some(state)) if state.user_id == user_id => true,
                 _ => false
             }
@@ -175,13 +169,25 @@ fn notify_except<'a, T>(json: &JsonValue, myself: UserId, everyone: T) -> Result
     send_notification(json, notifiees)
 }
 
-fn send_notification<'a, T>(json: &JsonValue, sessions: T) -> Result<(), JanusError> where T: IntoIterator<Item=&'a Box<Arc<Session>>> {
-    let mut msg = from_serde_json(json);
+fn send_notification<'a, T>(body: &JsonValue, sessions: T) -> Result<(), JanusError> where T: IntoIterator<Item=&'a Box<Arc<Session>>> {
+    let mut msg = from_serde_json(body);
     let push_event = gateway_callbacks().push_event;
     for session in sessions {
-        janus_info!("Notification going to {:?}: {:?}.", session, json);
+        janus_info!("Notification going to {:?}: {:?}.", session, msg);
         // probably a hack -- we shouldn't stop notifying if we fail one
         janus::get_result(push_event(session.as_ptr(), &mut PLUGIN, ptr::null(), msg.as_mut_ref(), ptr::null_mut()))?
+    }
+    Ok(())
+}
+
+fn send_offer<'a, T>(offer: &JsonValue, sessions: T) -> Result<(), JanusError> where T: IntoIterator<Item=&'a Arc<Session>> {
+    let mut msg = from_serde_json(&json!({}));
+    let mut jsep = from_serde_json(offer);
+    let push_event = gateway_callbacks().push_event;
+    for session in sessions {
+        janus_info!("Offer going to {:?}: {:?}.", session, jsep);
+        // probably a hack -- we shouldn't stop notifying if we fail one
+        janus::get_result(push_event(session.as_ptr(), &mut PLUGIN, ptr::null(), msg.as_mut_ref(), jsep.as_mut_ref()))?
     }
     Ok(())
 }
@@ -238,7 +244,7 @@ extern "C" fn create_session(handle: *mut PluginSession, error: *mut c_int) {
     let initial_state = SessionState {
         destroyed: Mutex::new(false),
         join_state: AtomSetOnce::empty(),
-        subscriber_offer: AtomSetOnce::empty(),
+        subscriber_offer: Arc::new(Mutex::new(None)),
         subscription: AtomSetOnce::empty(),
         fir_seq: AtomicIsize::new(0),
     };
@@ -365,7 +371,7 @@ extern "C" fn hangup_media(_handle: *mut PluginSession) {
     janus_verb!("Hanging up WebRTC media.");
 }
 
-fn process_join(from: &Arc<Session>, room_id: RoomId, user_id: UserId, subscribe: Option<Subscription>, token: Option<UserToken>) -> MessageResult {
+fn process_join(from: &Arc<Session>, room_id: RoomId, user_id: UserId, subscribe: Option<Subscription>, _token: Option<UserToken>) -> MessageResult {
     let state = Box::new(JoinState::new(room_id, user_id));
     if from.join_state.set_if_none(state).is_some() {
         return Err(From::from("Users may only join once!"))
@@ -392,9 +398,12 @@ fn process_join(from: &Arc<Session>, room_id: RoomId, user_id: UserId, subscribe
         }
         if let Some(publisher_id) = subscription.media {
             let publisher = get_publisher(publisher_id, &*sessions).ok_or("Can't subscribe to a nonexistent publisher.")?;
-            let subscriber_offer = publisher.subscriber_offer.get().ok_or("Can't subscribe to a publisher with no media.")?;
             switchboard.subscribe_to_user(from, &publisher);
-            return Ok(MessageResponse::new(body, json!({ "type": "offer", "sdp": subscriber_offer })));
+            let subscriber_offer = publisher.subscriber_offer.lock().unwrap();
+            return Ok(MessageResponse::new(body, json!({
+                "type": "offer",
+                "sdp": subscriber_offer.as_ref().unwrap()
+            })));
         }
     }
     Ok(MessageResponse::msg(body))
@@ -413,9 +422,12 @@ fn process_subscribe(from: &Arc<Session>, what: Subscription) -> MessageResult {
 
     if let Some(publisher_id) = what.media {
         let publisher = get_publisher(publisher_id, &*sessions).ok_or("Can't subscribe to a nonexistent publisher.")?;
-        let subscriber_offer = publisher.subscriber_offer.get().ok_or("Can't subscribe to a publisher with no media.")?;
         switchboard.subscribe_to_user(from, &publisher);
-        return Ok(MessageResponse::new(body, json!({ "type": "offer", "sdp": subscriber_offer })));
+        let subscriber_offer = publisher.subscriber_offer.lock().unwrap();
+        return Ok(MessageResponse::new(body, json!({
+            "type": "offer",
+            "sdp": subscriber_offer.as_ref().unwrap()
+        })));
     }
     Ok(MessageResponse::msg(body))
 }
@@ -443,38 +455,49 @@ fn process_message(from: &Arc<Session>, msg: &JanssonValue) -> MessageResult {
 }
 
 fn process_offer(from: &Session, offer: &Sdp) -> JsepResult {
-    let mut answer = answer_sdp!(
+    // enforce publication of the codecs that we know our client base will be compatible with
+    let answer = answer_sdp!(
         offer,
         OfferAnswerParameters::AudioCodec, AUDIO_CODEC.to_cstr().as_ptr(),
+        OfferAnswerParameters::AudioDirection, MediaDirection::JANUS_SDP_RECVONLY,
         OfferAnswerParameters::VideoCodec, VIDEO_CODEC.to_cstr().as_ptr(),
+        OfferAnswerParameters::VideoDirection, MediaDirection::JANUS_SDP_RECVONLY,
     );
-    // todo: do we still want to rewrite payload types now that we have plugin-directed offers?
-    if let Some(offer_audio_pt) = answer.get_payload_type(AUDIO_CODEC.to_cstr()) {
-        answer.rewrite_payload_type(offer_audio_pt, AUDIO_PAYLOAD_TYPE);
-    }
-    if let Some(offer_video_pt) = answer.get_payload_type(VIDEO_CODEC.to_cstr()) {
-        answer.rewrite_payload_type(offer_video_pt, VIDEO_PAYLOAD_TYPE);
-    }
-    let subscriber_offer = Box::new(offer_sdp!(
+    janus_huge!("Providing answer to {:?}: {}", from, answer.to_string().to_str().unwrap());
+
+    // it's fishy, but we provide audio and video streams to subscribers regardless of whether the client is sending
+    // audio and video right now or not -- this is basically working around pains in renegotiation to do with
+    // reordering/removing media streams on an existing connection. to improve this, we'll want to keep the same offer
+    // around and mutate it, instead of generating a new one every time the publisher changes something.
+
+    let audio_payload_type = answer.get_payload_type(AUDIO_CODEC.to_cstr());
+    let video_payload_type = answer.get_payload_type(VIDEO_CODEC.to_cstr());
+    let subscriber_offer = offer_sdp!(
         ptr::null(),
         answer.c_addr as *const _,
+        OfferAnswerParameters::Data, 1,
         OfferAnswerParameters::Audio, 1,
         OfferAnswerParameters::AudioCodec, AUDIO_CODEC.to_cstr().as_ptr(),
-        OfferAnswerParameters::AudioPayloadType, AUDIO_PAYLOAD_TYPE,
+        OfferAnswerParameters::AudioPayloadType, audio_payload_type.unwrap_or(100),
         OfferAnswerParameters::AudioDirection, MediaDirection::JANUS_SDP_SENDONLY,
         OfferAnswerParameters::Video, 1,
         OfferAnswerParameters::VideoCodec, VIDEO_CODEC.to_cstr().as_ptr(),
-        OfferAnswerParameters::VideoPayloadType, VIDEO_PAYLOAD_TYPE,
+        OfferAnswerParameters::VideoPayloadType, video_payload_type.unwrap_or(100),
         OfferAnswerParameters::VideoDirection, MediaDirection::JANUS_SDP_SENDONLY,
-        OfferAnswerParameters::Data, 0,
-    ));
-    if from.subscriber_offer.set_if_none(subscriber_offer).is_some() {
-        return Err(From::from("Renegotiations not yet supported."))
-    }
+    );
+    janus_huge!("Storing subscriber offer for {:?}: {}", from, subscriber_offer.to_string().to_str().unwrap());
+
+    let switchboard = STATE.switchboard.read().expect("Switchboard lock poisoned; can't continue.");
+    let jsep = json!({ "type": "offer", "sdp": subscriber_offer });
+    match send_offer(&jsep, switchboard.subscribers_to_user(from).iter()) {
+        Ok(_) | Err(JanusError(458 /* session not found */)) => (),
+        Err(e) => janus_err!("Error notifying subscribers about new offer: {}", e)
+    };
+    *from.subscriber_offer.lock().unwrap() = Some(subscriber_offer);
     Ok(json!({ "type": "answer", "sdp": answer }))
 }
 
-fn process_answer() -> JsepResult {
+fn process_answer(_from: &Arc<Session>, _answer: &Sdp) -> JsepResult {
     Ok(json!({})) // todo: check that this guy should actually be sending us an answer?
 }
 
@@ -487,7 +510,7 @@ fn process_jsep(from: &Arc<Session>, jsep: &JanssonValue) -> JsepResult {
             janus_info!("Processing {:?} from {:?}.", kind, from);
             match kind {
                 JsepKind::Offer { sdp } => process_offer(from, &sdp),
-                JsepKind::Answer { .. } => process_answer(),
+                JsepKind::Answer { sdp } => process_answer(from, &sdp),
             }
         }
     }
@@ -565,6 +588,7 @@ extern "C" fn handle_message(handle: *mut PluginSession, transaction: *mut c_cha
 
 const PLUGIN: Plugin = build_plugin!(
     PluginMetadata {
+        api_version: 9,
         version: 1,
         name: c_str!("Janus SFU plugin"),
         package: c_str!("janus.plugin.sfu"),

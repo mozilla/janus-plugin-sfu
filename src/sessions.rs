@@ -1,7 +1,7 @@
 /// Types for representing Janus session state.
 use atom::AtomSetOnce;
 use std::sync::atomic::AtomicIsize;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use messages::{RoomId, UserId, Subscription};
 use janus::sdp::Sdp;
 use janus::session::SessionWrapper;
@@ -35,7 +35,7 @@ pub struct SessionState {
     pub subscription: AtomSetOnce<Box<Subscription>>,
 
     /// If this is a publisher, the offer for subscribing to it.
-    pub subscriber_offer: AtomSetOnce<Box<Sdp>>,
+    pub subscriber_offer: Arc<Mutex<Option<Sdp>>>,
 
     /// The current FIR sequence number for this session's video.
     pub fir_seq: AtomicIsize,

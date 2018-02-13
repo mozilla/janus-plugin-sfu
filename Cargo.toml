@@ -10,10 +10,10 @@ publish = false
 crate_type = ["cdylib"]
 
 [dependencies]
-atom = "0.3.4"
-janus-plugin = { version = "0.7.0", features = ["refcount"] }
+atom = "0.3"
+janus-plugin = { version = "0.8.0", features = ["refcount"] }
 jsonwebtoken = "4.0"
-lazy_static = "0.2"
+lazy_static = "1.0"
 serde = "1.0"
 serde_derive = "1.0"
 serde_json = "1.0"
