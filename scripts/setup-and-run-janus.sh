@@ -70,7 +70,6 @@ git-get () {
 
 if [[ $force_rebuild || ! -e /opt/janus/bin/janus ]]; then
     banner 'getting janus source'
-    # from the refcount branch
     git-get mquander/janus-gateway refcount-stable
 
     sudo apt update
@@ -110,7 +109,7 @@ if [[ $force_rebuild || ! -e /opt/janus/bin/janus ]]; then
     fi
 
     banner 'building and installing janus'
-    pushd meetecho/janus-gateway
+    pushd mquander/janus-gateway
     sh autogen.sh
     ./configure --prefix=/opt/janus --disable-all-plugins
     make
@@ -135,6 +134,10 @@ if [[ $force_rebuild || ! -e /opt/janus/lib/janus/plugins/libjanus_plugin_sfu.so
     popd
 fi
 
+if [ "$(awk '/\[nat\]/,/^stun/' /opt/janus/etc/janus/janus.cfg | wc -l)" -gt "2" ]; then
+    sudo sed 's/\[nat\]/\0\nstun_server = stun2.l.google.com\nstun_port = 19302/' -i /opt/janus/etc/janus/janus.cfg
+fi
+
 if [ "$(awk '/\[plugins\]/,/^disable/' /opt/janus/etc/janus/janus.cfg | wc -l)" -gt "2" ]; then
     sudo sed 's/\[plugins\]/\0\ndisable = '\
 'libjanus_voicemail.so,libjanus_echotest.so,libjanus_recordplay.so,libjanus_streaming.so,'\
@@ -148,10 +151,11 @@ banner 'starting janus and web servers'
 /opt/janus/bin/janus &
 pushd "$script_directory/../client"
 if [[ ! -e server.pem ]]; then
+    banner 'generating ssl cert'
     openssl req -nodes -x509 -newkey rsa:2048 -keyout server.key -out server.pem -days 365 \
         -subj "/C=US/ST=CA/L=MTV/O=foo/OU=foo/CN=foo"
 fi
-twistd -no web --path . -c server.pem -k server.key --https=4433 &
+twistd -no web --path . -c server.pem -k server.key --https=443 &
 popd
 
 trap "kill %1; kill %2; wait" SIGINT
