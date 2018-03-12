@@ -9,11 +9,13 @@ extern crate serde;
 extern crate serde_derive;
 #[macro_use]
 extern crate serde_json;
+extern crate rmp_serde as rmps;
 
 mod messages;
 mod sessions;
 mod switchboard;
 mod auth;
+mod channel;
 
 use atom::AtomSetOnce;
 use messages::{RoomId, UserId};
@@ -34,6 +36,7 @@ use std::sync::{mpsc, Arc, Mutex, RwLock, Weak};
 use std::sync::atomic::{Ordering, AtomicIsize};
 use std::thread;
 use switchboard::Switchboard;
+use channel::{Channel, DatagramKind};
 
 // courtesy of c_string crate, which also has some other stuff we aren't interested in
 // taking in as a dependency here.
@@ -117,7 +120,9 @@ struct State {
     pub sessions: RwLock<Vec<Box<Arc<Session>>>>,
     pub switchboard: RwLock<Switchboard>,
     pub occupants: RwLock<HashMap<RoomId, HashSet<Arc<Session>>>>,
-    pub message_channel: AtomSetOnce<Box<mpsc::SyncSender<RawMessage>>>,
+    pub signalling_message_tx: AtomSetOnce<Box<mpsc::SyncSender<RawMessage>>>,
+    pub socket_message_tx: AtomSetOnce<Box<mpsc::Sender<DatagramKind>>>,
+    pub socket_message_rx: AtomSetOnce<Box<mpsc::Receiver<DatagramKind>>>,
 }
 
 lazy_static! {
@@ -125,7 +130,9 @@ lazy_static! {
         sessions: RwLock::new(Vec::new()),
         occupants: RwLock::new(HashMap::new()),
         switchboard: RwLock::new(Switchboard::new()),
-        message_channel: AtomSetOnce::empty(),
+        signalling_message_tx: AtomSetOnce::empty(),
+        socket_message_tx: AtomSetOnce::empty(),
+        socket_message_rx: AtomSetOnce::empty(),
     };
 }
 
@@ -213,15 +220,32 @@ extern "C" fn init(callbacks: *mut PluginCallbacks, _config_path: *const c_char)
     match unsafe { callbacks.as_ref() } {
         Some(c) => {
             unsafe { CALLBACKS = Some(c) };
-            let (messages_tx, messages_rx) = mpsc::sync_channel(0);
-            STATE.message_channel.set_if_none(Box::new(messages_tx));
+            let (signalling_tx, signalling_rx) = mpsc::sync_channel(0);
+            let (sock_incoming_tx, sock_incoming_rx) = mpsc::channel();
+            let (sock_outgoing_tx, sock_outgoing_rx) = mpsc::channel();
+            STATE.signalling_message_tx.set_if_none(Box::new(signalling_tx));
+            STATE.socket_message_tx.set_if_none(Box::new(sock_outgoing_tx));
+            STATE.socket_message_rx.set_if_none(Box::new(sock_incoming_rx));
 
             thread::spawn(move || {
-                janus_verb!("Message processing thread is alive.");
-                for msg in messages_rx.iter() {
-                    janus_verb!("Processing message: {:?}", msg);
+                let path = "/tmp/janus-sfu-socket";
+                janus_info!("Emitting and receiving messages on socket: {}", path);
+                match Channel::new(path, sock_outgoing_rx, sock_incoming_tx) {
+                    Ok(mut chan) => {
+                        if let Err(e) = chan.service() {
+                            janus_err!("Message socket disconnected: {}", e);
+                        }
+                    }
+                    Err(e) => { janus_err!("Error establishing message socket: {}", e); }
+                }
+            });
+
+            thread::spawn(move || {
+                janus_verb!("Signalling message processing thread is alive.");
+                for msg in signalling_rx.iter() {
+                    janus_verb!("Processing signalling message: {:?}", msg);
                     handle_message_async(msg).err().map(|e| {
-                        janus_err!("Error processing message: {}", e);
+                        janus_err!("Error processing signalling message: {}", e);
                     });
                 }
             });
@@ -278,6 +302,9 @@ extern "C" fn destroy_session(handle: *mut PluginSession, error: *mut c_int) {
                     s.handle != sess.handle && user_matches
                 });
                 if !user_exists {
+                    if let Err(e) = STATE.socket_message_tx.get().unwrap().send(DatagramKind::Leave(joined.user_id)) {
+                        janus_err!("Error sending leave message to socket: {}", e);
+                    }
                     let response = json!({ "event": "leave", "user_id": joined.user_id, "room_id": joined.room_id });
                     match notify_except(&response, joined.user_id, &*sessions) {
                         Ok(_) | Err(JanusError(458 /* session not found */)) => (),
@@ -388,9 +415,11 @@ fn process_join(from: &Arc<Session>, room_id: RoomId, user_id: UserId, subscribe
             return Err(From::from("Users may only subscribe once!"))
         }
         if subscription.data {
-            occupants.entry(room_id).or_insert_with(HashSet::new).insert(Arc::clone(from));
-
             // hack -- assume there is only one "master" data connection per user
+            occupants.entry(room_id).or_insert_with(HashSet::new).insert(Arc::clone(from));
+            if let Err(e) = STATE.socket_message_tx.get().unwrap().send(DatagramKind::Join(user_id)) {
+                janus_err!("Error sending join message to socket: {}", e);
+            }
             let notification = json!({ "event": "join", "user_id": user_id, "room_id": room_id });
             if let Err(e) = notify_except(&notification, user_id, &*sessions) {
                 janus_err!("Error sending notification for user join: {:?}", e)
@@ -578,7 +607,7 @@ extern "C" fn handle_message(handle: *mut PluginSession, transaction: *mut c_cha
                 msg: unsafe { JanssonValue::new(message) },
                 jsep: unsafe { JanssonValue::new(jsep) }
             };
-            STATE.message_channel.get().unwrap().send(msg).ok();
+            STATE.signalling_message_tx.get().unwrap().send(msg).ok();
             PluginResult::ok_wait(Some(c_str!("Processing.")))
         },
         Err(_) => PluginResult::error(c_str!("No handle associated with message!"))
