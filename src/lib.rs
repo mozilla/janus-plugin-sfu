@@ -36,7 +36,7 @@ use std::sync::{mpsc, Arc, Mutex, RwLock, Weak};
 use std::sync::atomic::{Ordering, AtomicIsize};
 use std::thread;
 use switchboard::Switchboard;
-use channel::{Channel, DatagramKind};
+use channel::{Channel, DatagramKind, Topic};
 
 // courtesy of c_string crate, which also has some other stuff we aren't interested in
 // taking in as a dependency here.
@@ -228,9 +228,7 @@ extern "C" fn init(callbacks: *mut PluginCallbacks, _config_path: *const c_char)
             STATE.socket_message_rx.set_if_none(Box::new(sock_incoming_rx));
 
             thread::spawn(move || {
-                let path = "/tmp/janus-sfu-socket";
-                janus_info!("Emitting and receiving messages on socket: {}", path);
-                match Channel::new(path, sock_outgoing_rx, sock_incoming_tx) {
+                match Channel::new(sock_outgoing_rx, sock_incoming_tx) {
                     Ok(mut chan) => {
                         if let Err(e) = chan.service() {
                             janus_err!("Message socket disconnected: {}", e);
@@ -384,6 +382,11 @@ extern "C" fn incoming_data(handle: *mut PluginSession, buf: *mut c_char, len: c
                     relay_data(cohabitator.as_ptr(), buf, len);
                 }
             }
+        }
+        let topic = Topic::UserData(joined.user_id);
+        let payload = unsafe { slice::from_raw_parts(buf as *const u8, len as usize).to_owned() };
+        if let Err(e) = STATE.socket_message_tx.get().unwrap().send(DatagramKind::Message(topic, payload)) {
+            janus_err!("Error sending data channel message to socket: {}", e);
         }
     } else {
         janus_huge!("Discarding data packet from not-yet-joined peer.");
