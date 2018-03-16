@@ -5,12 +5,12 @@ use std::error::Error;
 use std::thread;
 use std::time::Duration;
 use std::path::Path;
-use std::sync::mpsc::{Receiver, Sender, TryRecvError};
 use messages::UserId;
 use rmps::{decode, encode};
+use rb::{Consumer, RbError, SpscRb};
 
-static SOCKET_ERROR_DELAY: Duration = Duration::from_millis(50);
-static CHANNEL_DEPLETED_DELAY: Duration = Duration::from_millis(1);
+static DISCONNECTED_DELAY: Duration = Duration::from_millis(50);
+static MESSAGES_DEPLETED_DELAY: Duration = Duration::from_millis(1);
 
 const OUTGOING_SOCKET_PATH: &'static str = "/tmp/janus-sfu.out.sock";
 const INCOMING_SOCKET_PATH: &'static str = "/tmp/janus-sfu.in.sock";
@@ -22,7 +22,7 @@ pub enum Topic {
     UserData(UserId)
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum DatagramKind {
     /// Indicates that a user has joined.
     Join(UserId),
@@ -36,87 +36,70 @@ pub enum DatagramKind {
     Message(Topic, Vec<u8>)
 }
 
-#[derive(Debug)]
-pub struct Channel {
-    sock: UnixDatagram,
-    outgoing: Receiver<DatagramKind>,
-    incoming: Sender<DatagramKind>,
-    outgoing_buf: Vec<u8>,
-    incoming_buf: Vec<u8>,
+fn read_from_rb<V>(consumer: &Consumer<V>, buf: &mut Vec<V>, count: usize) -> usize {
+    unsafe {
+        match consumer.read(buf) {
+            Ok(n) => { buf.set_len(n); n }
+            Err(RbError::Empty) => 0
+        }
+    }
 }
 
-fn is_transient_error(kind: io::ErrorKind) -> bool {
-    match kind {
-        io::ErrorKind::ConnectionRefused | io::ErrorKind::ConnectionReset | io::ErrorKind::ConnectionAborted |
-        io::ErrorKind::NotConnected | io::ErrorKind::BrokenPipe => true,
-        _ => false
-    }
+#[derive(Debug)]
+pub struct Channel {
+    sock: UnixDatagram
 }
 
 impl Channel {
-    pub fn new(outgoing: Receiver<DatagramKind>, incoming: Sender<DatagramKind>) -> io::Result<Self> {
-        let path = Path::new(INCOMING_SOCKET_PATH);
-        if path.exists() {
-            fs::remove_file(&path);
+    pub fn new(&self, path: P) -> io::Result<Self> where P: AsRef<Path> {
+        let p = path.as_ref();
+        if p.exists() {
+            Fs::remove_file(p);
         }
-        let sock = UnixDatagram::bind(path)?;
+        let sock = UnixDatagram::bind(p)?;
         sock.set_nonblocking(true)?;
-        Ok(Self {
-            sock: sock,
-            outgoing: outgoing,
-            incoming: incoming,
-            outgoing_buf: Vec::new(),
-            incoming_buf: Vec::new(),
-        })
+        Ok(Self { sock })
     }
 
-    fn send_outgoing(&mut self) -> Result<(), Box<Error>> {
+    pub fn service_outgoing(&self, outgoing: &mut Consumer<DatagramKind>, destination: &str) -> Result<(), Box<Error>> {
+        let chunk_size = 1;
+        let mut packet = Vec::new();
+        let mut outgoing_items = Vec::with_capacity(chunk_size);
         loop {
-            match self.outgoing.try_recv() {
-                Err(TryRecvError::Empty) => { return Ok(()); }
-                Err(TryRecvError::Disconnected) => { return Err(From::from("Channel was disconnected.")); }
-                Ok(next_outgoing) => {
-                    self.outgoing_buf.truncate(0);
-                    encode::write(&mut self.outgoing_buf, &next_outgoing)?;
-                    janus_info!("Sending {:?}", next_outgoing);
-                    while let Err(e) = self.sock.send_to(&self.outgoing_buf, OUTGOING_SOCKET_PATH) {
-                        if is_transient_error(e.kind()) {
-                            janus_info!("Error sending message; retrying... ({})", e);
-                        } else {
-                            janus_info!("Outgoing connection broken; retrying... ({})", e);
+            let count = read_from_rb(outgoing, &mut outgoing_items, chunk_size);
+            if count == 0 {
+                thread::sleep(MESSAGES_DEPLETED_DELAY);
+            } else {
+                for next in &outgoing_items[0..count] {
+                    packet.truncate(0);
+                    encode::write(&mut packet, &next)?;
+                    janus_info!("Sending {:?}", next);
+                    match self.sock.send_to(&packet, destination) {
+                        Err(e) => {
+                            thread::sleep(DISCONNECTED_DELAY);
                         }
-                        return Ok(());
+                        Ok(_) => {
+                            outgoing.skip(1);
+                        }
                     }
                 }
             }
         }
     }
 
-    fn receive_incoming(&mut self) -> Result<(), Box<Error>> {
+    pub fn service_incoming<F>(&self, incoming: F) -> Result<(), Box<Error>> where F: Fn(DatagramKind) {
+        let mut buf = Vec::new();
         loop {
-            match self.sock.recv_from(self.incoming_buf.as_mut()) {
+            match self.sock.recv_from(&mut buf) {
                 Ok((x, _)) if x <= 0 => { return Ok(()); }
                 Ok((len, _)) => {
-                    let next_incoming: DatagramKind = decode::from_slice(&self.incoming_buf[..len])?;
-                    self.incoming.send(next_incoming)?;
+                    let next_incoming: DatagramKind = decode::from_slice(&buf[..len])?;
+                    incoming(next_incoming);
                 }
                 Err(e) => {
-                    if is_transient_error(e.kind()) {
-                        //janus_info!("Error receiving message; retrying... ({})", e);
-                    } else {
-                        //janus_info!("Incoming connection broken; retrying... ({})", e);
-                    }
-                    return Ok(());
+                    thread::sleep(DISCONNECTED_DELAY);
                 }
             }
-        }
-    }
-
-    pub fn service(&mut self) -> Result<(), Box<Error>> {
-        loop {
-            self.send_outgoing()?;
-            self.receive_incoming()?;
-            thread::sleep(CHANNEL_DEPLETED_DELAY);
         }
     }
 }

@@ -10,6 +10,7 @@ extern crate serde_derive;
 #[macro_use]
 extern crate serde_json;
 extern crate rmp_serde as rmps;
+extern crate rb;
 
 mod messages;
 mod sessions;
@@ -37,6 +38,7 @@ use std::sync::atomic::{Ordering, AtomicIsize};
 use std::thread;
 use switchboard::Switchboard;
 use channel::{Channel, DatagramKind, Topic};
+use rb::{RB, SpscRb, Producer, RbProducer};
 
 // courtesy of c_string crate, which also has some other stuff we aren't interested in
 // taking in as a dependency here.
@@ -121,8 +123,7 @@ struct State {
     pub switchboard: RwLock<Switchboard>,
     pub occupants: RwLock<HashMap<RoomId, HashSet<Arc<Session>>>>,
     pub signalling_message_tx: AtomSetOnce<Box<mpsc::SyncSender<RawMessage>>>,
-    pub socket_message_tx: AtomSetOnce<Box<mpsc::Sender<DatagramKind>>>,
-    pub socket_message_rx: AtomSetOnce<Box<mpsc::Receiver<DatagramKind>>>,
+    pub socket_message_producer: AtomSetOnce<Box<Producer<DatagramKind>>>,
 }
 
 lazy_static! {
@@ -131,8 +132,7 @@ lazy_static! {
         occupants: RwLock::new(HashMap::new()),
         switchboard: RwLock::new(Switchboard::new()),
         signalling_message_tx: AtomSetOnce::empty(),
-        socket_message_tx: AtomSetOnce::empty(),
-        socket_message_rx: AtomSetOnce::empty(),
+        socket_message_producer: AtomSetOnce::empty(),
     };
 }
 
@@ -221,20 +221,24 @@ extern "C" fn init(callbacks: *mut PluginCallbacks, _config_path: *const c_char)
         Some(c) => {
             unsafe { CALLBACKS = Some(c) };
             let (signalling_tx, signalling_rx) = mpsc::sync_channel(0);
-            let (sock_incoming_tx, sock_incoming_rx) = mpsc::channel();
-            let (sock_outgoing_tx, sock_outgoing_rx) = mpsc::channel();
             STATE.signalling_message_tx.set_if_none(Box::new(signalling_tx));
-            STATE.socket_message_tx.set_if_none(Box::new(sock_outgoing_tx));
-            STATE.socket_message_rx.set_if_none(Box::new(sock_incoming_rx));
+
+            let sock_queue = SpscRb::new();
+            let sock_channel = Channel::new("/tmp/janus-sfu.in.sock").unwrap();
+            let (sock_producer, sock_consumer) = (sock_queue.producer(), sock_queue.consumer());
+            STATE.socket_message_producer.set_if_none(Box::new(sock_producer));
 
             thread::spawn(move || {
-                match Channel::new(sock_outgoing_rx, sock_incoming_tx) {
-                    Ok(mut chan) => {
-                        if let Err(e) = chan.service() {
-                            janus_err!("Message socket disconnected: {}", e);
-                        }
-                    }
-                    Err(e) => { janus_err!("Error establishing message socket: {}", e); }
+                if let Err(e) = sock_channel.service_outgoing(&mut sock_consumer, "/tmp/janus-sfu.out.sock") {
+                    janus_err!("Message socket disconnected: {}", e);
+                }
+            });
+
+            thread::spawn(move || {
+                if let Err(e) = sock_channel.service_incoming(|incoming| {
+                    janus_info!("Incoming message: {:?}", incoming);
+                }) {
+                    janus_err!("Message socket disconnected: {}", e);
                 }
             });
 
@@ -300,9 +304,7 @@ extern "C" fn destroy_session(handle: *mut PluginSession, error: *mut c_int) {
                     s.handle != sess.handle && user_matches
                 });
                 if !user_exists {
-                    if let Err(e) = STATE.socket_message_tx.get().unwrap().send(DatagramKind::Leave(joined.user_id)) {
-                        janus_err!("Error sending leave message to socket: {}", e);
-                    }
+                    STATE.socket_message_producer.get().unwrap().write([DatagramKind::Leave(joined.user_id)]);
                     let response = json!({ "event": "leave", "user_id": joined.user_id, "room_id": joined.room_id });
                     match notify_except(&response, joined.user_id, &*sessions) {
                         Ok(_) | Err(JanusError(458 /* session not found */)) => (),
@@ -385,9 +387,7 @@ extern "C" fn incoming_data(handle: *mut PluginSession, buf: *mut c_char, len: c
         }
         let topic = Topic::UserData(joined.user_id);
         let payload = unsafe { slice::from_raw_parts(buf as *const u8, len as usize).to_owned() };
-        if let Err(e) = STATE.socket_message_tx.get().unwrap().send(DatagramKind::Message(topic, payload)) {
-            janus_err!("Error sending data channel message to socket: {}", e);
-        }
+        STATE.socket_message_producer.get().unwrap().write([DatagramKind::Message(topic, payload)]);
     } else {
         janus_huge!("Discarding data packet from not-yet-joined peer.");
     }
