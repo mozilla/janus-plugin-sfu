@@ -3,6 +3,7 @@ name = "janus-plugin-sfu"
 description = "Janus SFU for game networking."
 version = "0.1.0"
 authors = ["Marshall Quander <marshall@quander.me>"]
+repository = "https://github.com/mozilla/janus-plugin-sfu"
 license = "MPL-2.0"
 publish = false
 
@@ -11,7 +12,7 @@ crate_type = ["cdylib"]
 
 [dependencies]
 atom = "0.3"
-janus-plugin = { version = "0.8.0", features = ["refcount"] }
+janus-plugin = { version = "0.9.0", features = ["refcount"] }
 jsonwebtoken = "4.0"
 lazy_static = "1.0"
 serde = "1.0"

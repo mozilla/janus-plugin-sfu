@@ -22,6 +22,12 @@ This plugin should be compatible with any OS that can run Janus; that includes L
 
 This one doesn't have all of the features of janus_videoroom yet, but it supports data channels. It's designed specifically for situations where video is not relevant but one needs multicasted audio and data.
 
+## Dependencies
+
+```
+$ sudo apt install libjansson-dev
+```
+
 ## Building
 
 ```

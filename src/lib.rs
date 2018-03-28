@@ -18,7 +18,7 @@ mod auth;
 use atom::AtomSetOnce;
 use messages::{RoomId, UserId};
 use auth::UserToken;
-use janus::{JanusError, JanssonDecodingFlags, JanssonEncodingFlags, JanssonValue, Plugin, PluginCallbacks, PluginMetadata, PluginResult, PluginSession, RawPluginResult, RawJanssonValue};
+use janus::{JanusError, JanssonDecodingFlags, JanssonEncodingFlags, JanssonValue, Plugin, PluginCallbacks, LibraryMetadata, PluginResult, PluginSession, RawPluginResult, RawJanssonValue};
 use janus::sdp::{AudioCodec, MediaDirection, OfferAnswerParameters, Sdp, VideoCodec};
 use messages::{JsepKind, MessageKind, OptionalField, Subscription};
 use serde_json::Value as JsonValue;
@@ -575,8 +575,8 @@ extern "C" fn handle_message(handle: *mut PluginSession, transaction: *mut c_cha
             let msg = RawMessage {
                 from: Arc::downgrade(&sess),
                 txn: TransactionId(transaction),
-                msg: unsafe { JanssonValue::new(message) },
-                jsep: unsafe { JanssonValue::new(jsep) }
+                msg: unsafe { JanssonValue::from_raw(message) },
+                jsep: unsafe { JanssonValue::from_raw(jsep) }
             };
             STATE.message_channel.get().unwrap().send(msg).ok();
             PluginResult::ok_wait(Some(c_str!("Processing.")))
@@ -587,7 +587,7 @@ extern "C" fn handle_message(handle: *mut PluginSession, transaction: *mut c_cha
 }
 
 const PLUGIN: Plugin = build_plugin!(
-    PluginMetadata {
+    LibraryMetadata {
         api_version: 9,
         version: 1,
         name: c_str!("Janus SFU plugin"),
