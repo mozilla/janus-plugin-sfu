@@ -95,7 +95,8 @@ class SquawkerItem extends React.Component {
     const videoStream = this.getVideoStream();
     if (videoStream) {
       videoStream.getTracks().forEach(track => conn.addTrack(track, videoStream));
-    } else if (audioStream) {
+    } 
+    if (audioStream) {
       audioStream.getTracks().forEach(track => conn.addTrack(track, audioStream));
     }
 
