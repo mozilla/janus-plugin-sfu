@@ -39,8 +39,7 @@ function connect(server) {
   ws.addEventListener("open", _ => {
     session.create()
       .then(_ => attachPublisher(session))
-      .then(x => { c.publisher = x; },
-            err => console.error("Error attaching publisher: ", err));
+      .then(x => { c.publisher = x; }, err => console.error("Error attaching publisher: ", err));
   });
 }
 
@@ -61,12 +60,12 @@ document.getElementById("screenButton").addEventListener("click", _ => {
 function addUser(session, userId) {
   console.info("Adding user " + userId + ".");
   return attachSubscriber(session, userId)
-    .then(x => { c.subscribers[userId] = x; },
-          err => console.error("Error attaching subscriber: ", err));
+    .then(x => { c.subscribers[userId] = x; }, err => console.error("Error attaching subscriber: ", err));
 }
 
 function removeUser(session, userId) {
   console.info("Removing user " + userId + ".");
+  document.querySelectorAll('.media-' + userId).forEach(el => el.remove());
   var subscriber = c.subscribers[userId];
   if (subscriber != null) {
     subscriber.handle.detach();
@@ -139,7 +138,7 @@ function associate(conn, handle) {
   });
 }
 
-function attachPublisher(session) {
+async function attachPublisher(session) {
   console.info("Attaching publisher for session: ", session);
   var conn = new RTCPeerConnection(PEER_CONNECTION_CONFIG);
   var handle = new Minijanus.JanusPluginHandle(session);
@@ -155,24 +154,27 @@ function attachPublisher(session) {
     }
   });
 
-  return handle.attach("janus.plugin.sfu").then(() => {
-    showStatus(`Connecting WebRTC...`);
-    const reliableChannel = conn.createDataChannel("reliable", { ordered: true });
-    reliableChannel.addEventListener("message", storeReliableMessage);
-    const unreliableChannel = conn.createDataChannel("unreliable", { ordered: false, maxRetransmits: 0 });
-    unreliableChannel.addEventListener("message", storeUnreliableMessage);
-    return waitForEvent("webrtcup", handle)
-      .then(_ => {
-        showStatus(`Joining room ${roomId}...`);
-        return handle.sendMessage({ kind: "join", room_id: roomId, user_id: USER_ID, subscribe: { notifications: true, data: true }});
-      })
-      .then(reply => {
-        showStatus(`Subscribing to others in room ${roomId}`);
-        var occupants = reply.plugindata.data.response.users[roomId] || [];
-        return Promise.all(occupants.map(userId => addUser(session, userId)));
-      })
-      .then(_ => { return { handle, conn, reliableChannel, unreliableChannel }; });
+  await handle.attach("janus.plugin.sfu")
+  showStatus(`Connecting WebRTC...`);
+  const reliableChannel = conn.createDataChannel("reliable", { ordered: true });
+  reliableChannel.addEventListener("message", storeReliableMessage);
+  const unreliableChannel = conn.createDataChannel("unreliable", { ordered: false, maxRetransmits: 0 });
+  unreliableChannel.addEventListener("message", storeUnreliableMessage);
+
+  await waitForEvent("webrtcup", handle);
+  showStatus(`Joining room ${roomId}...`);
+  const reply = await handle.sendMessage({ 
+    kind: "join",
+    room_id: roomId,
+    user_id: USER_ID,
+    subscribe: { notifications: true, data: true }
   });
+
+  showStatus(`Subscribing to others in room ${roomId}`);
+  var occupants = reply.plugindata.data.response.users[roomId] || [];
+  await Promise.all(occupants.map(userId => addUser(session, userId)));
+
+  return { handle, conn, reliableChannel, unreliableChannel };
 }
 
 function attachSubscriber(session, otherId) {
@@ -184,10 +186,11 @@ function attachSubscriber(session, otherId) {
   conn.addEventListener("track", ev => {
     console.info("Attaching " + ev.track.kind + " track from " + otherId + " for session: ", session);
     var mediaEl = document.createElement(ev.track.kind);
-    document.body.appendChild(mediaEl);
+    mediaEl.className = 'media-' + otherId;
     mediaEl.controls = true;
+    mediaEl.autoplay = true;
     mediaEl.srcObject = ev.streams[0];
-    mediaEl.play();
+    document.body.appendChild(mediaEl);
   });
 
   return handle.attach("janus.plugin.sfu")

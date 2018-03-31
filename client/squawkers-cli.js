@@ -7,11 +7,11 @@ Options:
     -r --room=<room>        Room id [default: 2011].
     -n --num=<num>          Number of squawkers [default: 5].
     -l --delay=<secs>       Seconds of delay between creating each squawker [default: 5].
-    -R --refresh=<secs>     If specified, continuosly reload the client the client after this many seconds to simulate
-                            clients leaving the room.
+    -R --refresh=<secs>     If specified, continuously reload the client after this many seconds to simulate clients 
+                            leaving the room.
     -j --janus=<url>        Janus server url [default: wss://dev-janus.reticulum.io].
-    -a --audio=<url>        Url for audio file [default: https://ucarecdn.com/c690e31e-70e2-4500-bbdd-4b83bfe3e156/].
-    -d --data=<url>         Url for data file [default: https://ucarecdn.com/b0696343-bca0-41a1-ad9e-7d5c491b258f/].
+    -a --audio=<url>        Url for audio file [default: https://ucarecdn.com/3b8bbf6a-c18e-4662-a4a2-99749802cbdc/].
+    -d --data=<url>         Url for data file [default: https://ucarecdn.com/1c202eb0-2903-4065-9b67-298350eb2400/].
     -v --video=<url>        Url for video file.
     -h --help               Show this screen.
 `;
@@ -44,6 +44,9 @@ const querystring = require('querystring');
     await page.goto(url);
 
     if (options['--refresh']) {
-        setInterval(() => page.reload(), parseInt(options['--refresh'], 10) * 1000);
+        setInterval(() => {
+            console.log('reloading...');
+            page.reload();
+        }, parseInt(options['--refresh'], 10) * 1000);
     }
 })();
