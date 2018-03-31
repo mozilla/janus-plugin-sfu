@@ -46,17 +46,18 @@
   <body>
     <header>
       <p>Page for managing squawkers -- small broadcast-only Janus entities used to simulate load or automate behavior.</p>
-      <p>Note that right now this only works in Firefox. You may enjoy setting the security.fileuri.strict_origin_policy
+      <p>You may enjoy setting the security.fileuri.strict_origin_policy
         setting in about:config to false if you want to load media from file:// URLs.</p>
       <p>Start adding squawkers below. Data files can be recorded with tiny.html</p>
     </header>
     <div id="root">
       <!-- owned by React -->
     </div>
+
     <script crossorigin src="https://unpkg.com/react@16/umd/react.development.js"></script>
     <script crossorigin src="https://unpkg.com/react-dom@16/umd/react-dom.development.js"></script>
-    <script crossorigin src="https://webrtc.github.io/adapter/adapter-latest.js"></script>
-    <script crossorigin src="https://rawgit.com/mquander/minijanus.js/master/bundle.js"></script>
+    <script crossorigin src="https://unpkg.com/webrtc-adapter@6/out/adapter.js"></script>
+    <script crossorigin src="https://unpkg.com/minijanus/bundle.js"></script>
     <script src="squawkers.js"></script>
   </body>
 </html>

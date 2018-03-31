@@ -1,5 +1,12 @@
 const e = React.createElement;
-const peerConfig = { iceServers: [{ urls: "stun:stun.l.google.com:19302" }] };
+
+const PEER_CONNECTION_CONFIG = {
+  iceServers: [
+    { urls: "stun:stun.l.google.com:19302" },
+    { urls: "stun:global.stun.twilio.com:3478?transport=udp" }
+  ]
+};
+
 const params = new URLSearchParams(location.search.slice(1));
 
 function associate(conn, handle) {
@@ -29,21 +36,18 @@ class Squawker {
 }
 
 class SquawkerItem extends React.Component {
-
   componentDidMount() {
-    var audioLoaded = this.props.squawker.audioUrl ? false : true;
-    var videoLoaded = this.props.squawker.videoUrl ? false : true;
+    var haveAudio = this.audioEl.src;
+    var haveVideo = this.videoEl.src;
+    var audioLoaded = this.audioEl.readyState !== 0;
+    var videoLoaded = this.videoEl.readyState !== 0;
     var attachIfReady = () => {
-      if (audioLoaded && videoLoaded) {
+      if ((!haveAudio || audioLoaded) && (!haveVideo || videoLoaded)) {
         this.attachPublisher(this.props.squawker);
       }
     };
-    if (!audioLoaded) {
-      this.audioEl.addEventListener("loadedmetadata", () => { audioLoaded = true; attachIfReady(); });
-    }
-    if (!videoLoaded) {
-      this.videoEl.addEventListener("loadedmetadata", () => { videoLoaded = true; attachIfReady(); });
-    }
+    this.audioEl.addEventListener("loadedmetadata", () => { audioLoaded = true; attachIfReady(); });
+    this.videoEl.addEventListener("loadedmetadata", () => { videoLoaded = true; attachIfReady(); });
     // workaround for broken `loop` attribute in headless chrome
     this.audioEl.addEventListener("timeupdate", () => {
       if (this.audioEl.currentTime > this.audioEl.duration - 1) { this.audioEl.currentTime = 0; }
@@ -51,6 +55,7 @@ class SquawkerItem extends React.Component {
     this.videoEl.addEventListener("timeupdate", () => {
       if (this.videoEl.currentTime > this.videoEl.duration - 1) { this.videoEl.currentTime = 0; }
     });
+    attachIfReady();
   }
 
   captureStream(el) {
@@ -73,35 +78,38 @@ class SquawkerItem extends React.Component {
     return this.captureStream(this.videoEl);
   }
 
-  attachPublisher(squawker) {
+  async attachPublisher(squawker) {
     console.info("Attaching publisher for squawker: ", this.props.squawker.userId);
+
     var handle = squawker.handle;
     var conn = squawker.conn;
     associate(conn, handle);
-    return handle.attach("janus.plugin.sfu").then(() => {
-      this.setState({ handle: handle });
-      const audioStream = this.getAudioStream();
-      const videoStream = this.getVideoStream();
-      if (videoStream) {
-        videoStream.getTracks().forEach(track => conn.addTrack(track, videoStream));
-      } else if (audioStream) {
-        audioStream.getTracks().forEach(track => conn.addTrack(track, audioStream));
-      }
-      const reliableChannel = conn.createDataChannel("reliable", { ordered: true });
-      const unreliableChannel = conn.createDataChannel("unreliable", { ordered: false, maxRetransmits: 0 });
-      return new Promise(resolve => handle.on("webrtcup", resolve)).then(() => handle.sendMessage({
-        kind: "join",
-        room_id: this.props.roomId,
-        user_id: this.props.squawker.userId,
-        subscribe: { notify: true, data: true } // data = true necessary atm to send join notification
-      })).then(() => {
-        this.audioEl.play();
-        this.videoEl.play();
-        if (this.props.squawker.dataUrl || this.props.squawker.dataFile) {
-          this.sendFileData(reliableChannel, unreliableChannel);
-        }
-      });
+
+    await handle.attach("janus.plugin.sfu");
+    this.setState({ handle: handle });
+    const reliableChannel = conn.createDataChannel("reliable", { ordered: true });
+    const unreliableChannel = conn.createDataChannel("unreliable", { ordered: false, maxRetransmits: 0 });
+
+    await new Promise(resolve => handle.on("webrtcup", resolve));
+    const audioStream = this.getAudioStream();
+    const videoStream = this.getVideoStream();
+    if (videoStream) {
+      videoStream.getTracks().forEach(track => conn.addTrack(track, videoStream));
+    } else if (audioStream) {
+      audioStream.getTracks().forEach(track => conn.addTrack(track, audioStream));
+    }
+
+    await handle.sendMessage({
+      kind: "join",
+      room_id: this.props.roomId,
+      user_id: this.props.squawker.userId,
+      subscribe: { notifications: true, data: true } // data = true necessary atm to send join notification
     });
+    this.audioEl.play();
+    this.videoEl.play();
+    if (this.props.squawker.dataUrl || this.props.squawker.dataFile) {
+      this.sendFileData(reliableChannel, unreliableChannel);
+    }
   }
 
   async readAsText(file) {
@@ -191,9 +199,24 @@ class SquawkerItem extends React.Component {
       e("article", { className: "squawker" },
         e("h1", {},
           "User ID: ",
-          e("span", { className: "user-id" }, squawker.userId.toString())),
-        e("audio", { crossOrigin: 'anonymous', controls: true, src: squawker.audioUrl, ref: (audio) => this.audioEl = audio }),
-        e("video", { crossOrigin: 'anonymous', controls: true, src: squawker.videoUrl, ref: (video) => this.videoEl = video })));
+          e("span", { className: "user-id" }, squawker.userId.toString())
+        ),
+        e("audio", {
+          crossOrigin: 'anonymous',
+          controls: true,
+          muted: true,
+          src: squawker.audioUrl,
+          ref: (audio) => this.audioEl = audio 
+        }),
+        e("video", {
+          crossOrigin: 'anonymous',
+          controls: true,
+          muted: true,
+          src: squawker.videoUrl,
+          ref: (video) => this.videoEl = video 
+        })
+      )
+    );
   }
 }
 
@@ -225,7 +248,7 @@ class AddSquawkerForm extends React.Component {
     };
     this.props.onCreate(new Squawker(
       this.generateUserId(),
-      new RTCPeerConnection(peerConfig),
+      new RTCPeerConnection(PEER_CONNECTION_CONFIG),
       new Minijanus.JanusPluginHandle(this.props.session),
       data
     ));
