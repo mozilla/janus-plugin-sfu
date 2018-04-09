@@ -395,31 +395,37 @@ extern "C" fn hangup_media(_handle: *mut PluginSession) {
 }
 
 fn process_join(from: &Arc<Session>, room_id: RoomId, user_id: UserId, subscribe: Option<Subscription>, _token: Option<UserToken>) -> MessageResult {
-    let state = Box::new(JoinState::new(room_id, user_id));
-    if from.join_state.set_if_none(state).is_some() {
-        return Err(From::from("Users may only join once!"))
-    }
-
+    // todo: holy shit clean this function up somehow
     let sessions = STATE.sessions.read()?;
     let mut switchboard = STATE.switchboard.write()?;
     let mut occupants = STATE.occupants.write()?;
     let body = json!({ "users": get_users(&occupants) });
+    let cohabitators = occupants.entry(room_id).or_insert_with(HashSet::new);
 
+    let already_joined = !from.join_state.is_none();
+    let already_subscribed = !from.subscription.is_none();
+    if already_joined {
+        return Err(From::from("Handles may only join once!"))
+    }
+    if already_subscribed && subscribe.is_some() {
+        return Err(From::from("Handles may only subscribe once!"))
+    }
+
+    let mut is_master_handle = false;
     if let Some(subscription) = subscribe {
-        let subscription_state = Box::new(subscription);
-        if from.subscription.set_if_none(subscription_state).is_some() {
-            return Err(From::from("Users may only subscribe once!"))
+        let max_room_size = STATE.config.get().unwrap().max_room_size;
+        let room_is_full = cohabitators.len() >= max_room_size;
+        is_master_handle = subscription.data; // hack -- assume there is only one "master" data connection per user
+        if is_master_handle && room_is_full {
+            return Err(From::from("Room is full."))
         }
-        if subscription.data {
-            let cohabitators = occupants.entry(room_id).or_insert_with(HashSet::new);
-            let max_room_size = STATE.config.get().unwrap().max_room_size;
-            if cohabitators.len() >= max_room_size {
-                return Err(From::from("Room is full."))
-            }
+    }
 
+    from.join_state.set_if_none(Box::new(JoinState::new(room_id, user_id)));
+    if let Some(subscription) = subscribe {
+        from.subscription.set_if_none(Box::new(subscription));
+        if is_master_handle {
             cohabitators.insert(Arc::clone(from));
-
-            // hack -- assume there is only one "master" data connection per user
             let notification = json!({ "event": "join", "user_id": user_id, "room_id": room_id });
             if let Err(e) = notify_except(&notification, user_id, &*sessions) {
                 janus_err!("Error sending notification for user join: {:?}", e)
