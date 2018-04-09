@@ -1,4 +1,5 @@
 extern crate atom;
+extern crate ini;
 #[macro_use]
 extern crate janus_plugin as janus;
 extern crate jsonwebtoken as jwt;
@@ -14,10 +15,12 @@ mod messages;
 mod sessions;
 mod switchboard;
 mod auth;
+mod config;
 
 use atom::AtomSetOnce;
 use messages::{RoomId, UserId};
 use auth::UserToken;
+use config::Config;
 use janus::{JanusError, JanssonDecodingFlags, JanssonEncodingFlags, JanssonValue, Plugin, PluginCallbacks, LibraryMetadata, PluginResult, PluginSession, RawPluginResult, RawJanssonValue};
 use janus::sdp::{AudioCodec, MediaDirection, OfferAnswerParameters, Sdp, VideoCodec};
 use messages::{JsepKind, MessageKind, OptionalField, Subscription};
@@ -28,6 +31,7 @@ use std::collections::hash_map::Entry;
 use std::error::Error;
 use std::ffi::CStr;
 use std::os::raw::{c_char, c_int};
+use std::path::Path;
 use std::ptr;
 use std::slice;
 use std::sync::{mpsc, Arc, Mutex, RwLock, Weak};
@@ -118,6 +122,7 @@ struct State {
     pub switchboard: RwLock<Switchboard>,
     pub occupants: RwLock<HashMap<RoomId, HashSet<Arc<Session>>>>,
     pub message_channel: AtomSetOnce<Box<mpsc::SyncSender<RawMessage>>>,
+    pub config: AtomSetOnce<Box<Config>>,
 }
 
 lazy_static! {
@@ -126,6 +131,7 @@ lazy_static! {
         occupants: RwLock::new(HashMap::new()),
         switchboard: RwLock::new(Switchboard::new()),
         message_channel: AtomSetOnce::empty(),
+        config: AtomSetOnce::empty(),
     };
 }
 
@@ -209,7 +215,24 @@ fn send_fir<'a, T>(publishers: T) where T: IntoIterator<Item=&'a Arc<Session>> {
     }
 }
 
-extern "C" fn init(callbacks: *mut PluginCallbacks, _config_path: *const c_char) -> c_int {
+fn get_config(config_root: *const c_char) -> Result<Config, Box<Error>> {
+    let config_path = unsafe { Path::new(CStr::from_ptr(config_root).to_str()?) };
+    let config_file = config_path.join("janus.plugin.sfu.cfg");
+    Config::from_path(config_file)
+}
+
+extern "C" fn init(callbacks: *mut PluginCallbacks, config_path: *const c_char) -> c_int {
+    let config = match get_config(config_path) {
+        Ok(c) => {
+            janus_info!("Loaded SFU plugin configuration: {:?}", c);
+            c
+        }
+        Err(e) => {
+            janus_warn!("Error loading configuration for SFU plugin: {}", e);
+            Config::default()
+        }
+    };
+    STATE.config.set_if_none(Box::new(config));
     match unsafe { callbacks.as_ref() } {
         Some(c) => {
             unsafe { CALLBACKS = Some(c) };
@@ -388,7 +411,13 @@ fn process_join(from: &Arc<Session>, room_id: RoomId, user_id: UserId, subscribe
             return Err(From::from("Users may only subscribe once!"))
         }
         if subscription.data {
-            occupants.entry(room_id).or_insert_with(HashSet::new).insert(Arc::clone(from));
+            let cohabitators = occupants.entry(room_id).or_insert_with(HashSet::new);
+            let max_room_size = STATE.config.get().unwrap().max_room_size;
+            if cohabitators.len() >= max_room_size {
+                return Err(From::from("Room is full."))
+            }
+
+            cohabitators.insert(Arc::clone(from));
 
             // hack -- assume there is only one "master" data connection per user
             let notification = json!({ "event": "join", "user_id": user_id, "room_id": room_id });
@@ -533,11 +562,11 @@ fn handle_message_async(RawMessage { jsep, msg, txn, from }: RawMessage) -> Resu
             let jsep_result = jsep.map(|x| process_jsep(from, &x));
             return match (msg_result, jsep_result) {
                 (Some(Err(msg_err)), _) => {
-                    let resp = json!({ "success": false, "error": format!("Error processing message: {}", msg_err)});
+                    let resp = json!({ "success": false, "error": { "msg": format!("{}", msg_err) }});
                     push_response(from, txn, &resp, None)
                 }
                 (_, Some(Err(jsep_err))) => {
-                    let resp = json!({ "success": false, "error": format!("Error processing JSEP: {}", jsep_err)});
+                    let resp = json!({ "success": false, "error": { "msg": format!("{}", jsep_err) }});
                     push_response(from, txn, &resp, None)
                 }
                 (Some(Ok(msg_resp)), None) => {
