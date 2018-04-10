@@ -95,7 +95,7 @@ class SquawkerItem extends React.Component {
     const videoStream = this.getVideoStream();
     if (videoStream) {
       videoStream.getTracks().forEach(track => conn.addTrack(track, videoStream));
-    } 
+    }
     if (audioStream) {
       audioStream.getTracks().forEach(track => conn.addTrack(track, audioStream));
     }
@@ -207,14 +207,14 @@ class SquawkerItem extends React.Component {
           controls: true,
           muted: true,
           src: squawker.audioUrl,
-          ref: (audio) => this.audioEl = audio 
+          ref: (audio) => this.audioEl = audio
         }),
         e("video", {
           crossOrigin: 'anonymous',
           controls: true,
           muted: true,
           src: squawker.videoUrl,
-          ref: (video) => this.videoEl = video 
+          ref: (video) => this.videoEl = video
         })
       )
     );
@@ -332,8 +332,8 @@ class SquawkerApp extends React.Component {
 }
 
 const serverUrl = params.get("janus") || `wss://${location.hostname}:8989`;
-const roomId = params.get("room") || 0;
+const roomId = params.get("room") || "0";
 const ws = new WebSocket(serverUrl, "janus-protocol");
 const session = new Minijanus.JanusSession(ws.send.bind(ws), { verbose: true });
 const root = document.getElementById("root");
-ReactDOM.render(e(SquawkerApp, { ws: ws, session: session, roomId: parseInt(roomId) }), root);
+ReactDOM.render(e(SquawkerApp, { ws: ws, session: session, roomId: roomId }), root);

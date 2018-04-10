@@ -136,38 +136,38 @@ lazy_static! {
 }
 
 // todo: this should probably be a serialize implementation on an `OccupancyMap` struct wrapping a hashmap, or something.
-fn get_users(occupants: &HashMap<RoomId, HashSet<Arc<Session>>>) -> HashMap<RoomId, HashSet<UserId>> {
+fn get_users(occupants: &HashMap<RoomId, HashSet<Arc<Session>>>) -> HashMap<&RoomId, HashSet<&UserId>> {
     let mut result = HashMap::new();
     for (room_id, sessions) in occupants {
         for session in sessions {
             if let Some(joined) = session.join_state.get() {
-                result.entry(*room_id).or_insert_with(HashSet::new).insert(joined.user_id);
+                result.entry(room_id).or_insert_with(HashSet::new).insert(&joined.user_id);
             }
         }
     }
     result
 }
 
-fn get_publisher<'a, T>(user_id: UserId, sessions: T) -> Option<Arc<Session>> where T: IntoIterator<Item=&'a Box<Arc<Session>>> {
+fn get_publisher<'a, T>(user_id: &UserId, sessions: T) -> Option<Arc<Session>> where T: IntoIterator<Item=&'a Box<Arc<Session>>> {
     sessions.into_iter()
         .find(|s| {
             let subscriber_offer = s.subscriber_offer.lock().unwrap();
             let join_state = s.join_state.get();
             match (subscriber_offer.as_ref(), join_state) {
-                (Some(_), Some(state)) if state.user_id == user_id => true,
+                (Some(_), Some(state)) if &state.user_id == user_id => true,
                 _ => false
             }
         })
         .map(|s| Arc::clone(s))
 }
 
-fn notify_except<'a, T>(json: &JsonValue, myself: UserId, everyone: T) -> Result<(), JanusError> where T: IntoIterator<Item=&'a Box<Arc<Session>>> {
+fn notify_except<'a, T>(json: &JsonValue, myself: &UserId, everyone: T) -> Result<(), JanusError> where T: IntoIterator<Item=&'a Box<Arc<Session>>> {
     let notifiees = everyone.into_iter().filter(|s| {
         let subscription_state = s.subscription.get();
         let join_state = s.join_state.get();
         match (subscription_state, join_state) {
             (Some(subscription), Some(joined)) => {
-                subscription.notifications && joined.user_id != myself
+                subscription.notifications && &joined.user_id != myself
             }
             _ => false
         }
@@ -301,13 +301,13 @@ extern "C" fn destroy_session(handle: *mut PluginSession, error: *mut c_int) {
                     s.handle != sess.handle && user_matches
                 });
                 if !user_exists {
-                    let response = json!({ "event": "leave", "user_id": joined.user_id, "room_id": joined.room_id });
-                    match notify_except(&response, joined.user_id, &*sessions) {
+                    let response = json!({ "event": "leave", "user_id": &joined.user_id, "room_id": &joined.room_id });
+                    match notify_except(&response, &joined.user_id, &*sessions) {
                         Ok(_) | Err(JanusError(458 /* session not found */)) => (),
                         Err(e) => janus_err!("Error notifying publishers on leave: {}", e)
                     };
                 }
-                if let Entry::Occupied(mut cohabitators) = occupants.entry(joined.room_id) {
+                if let Entry::Occupied(mut cohabitators) = occupants.entry(joined.room_id.clone()) {
                     cohabitators.get_mut().remove(&sess);
                     if cohabitators.get().len() == 0 {
                         cohabitators.remove_entry();
@@ -400,7 +400,7 @@ fn process_join(from: &Arc<Session>, room_id: RoomId, user_id: UserId, subscribe
     let mut switchboard = STATE.switchboard.write()?;
     let mut occupants = STATE.occupants.write()?;
     let body = json!({ "users": get_users(&occupants) });
-    let cohabitators = occupants.entry(room_id).or_insert_with(HashSet::new);
+    let cohabitators = occupants.entry(room_id.clone()).or_insert_with(HashSet::new);
 
     let already_joined = !from.join_state.is_none();
     let already_subscribed = !from.subscription.is_none();
@@ -412,7 +412,7 @@ fn process_join(from: &Arc<Session>, room_id: RoomId, user_id: UserId, subscribe
     }
 
     let mut is_master_handle = false;
-    if let Some(subscription) = subscribe {
+    if let Some(subscription) = subscribe.clone() {
         let max_room_size = STATE.config.get().unwrap().max_room_size;
         let room_is_full = cohabitators.len() >= max_room_size;
         is_master_handle = subscription.data; // hack -- assume there is only one "master" data connection per user
@@ -421,17 +421,17 @@ fn process_join(from: &Arc<Session>, room_id: RoomId, user_id: UserId, subscribe
         }
     }
 
-    from.join_state.set_if_none(Box::new(JoinState::new(room_id, user_id)));
-    if let Some(subscription) = subscribe {
-        from.subscription.set_if_none(Box::new(subscription));
+    from.join_state.set_if_none(Box::new(JoinState::new(room_id.clone(), user_id.clone())));
+    if let Some(subscription) = subscribe.clone() {
+        from.subscription.set_if_none(Box::new(subscription.clone()));
         if is_master_handle {
             cohabitators.insert(Arc::clone(from));
             let notification = json!({ "event": "join", "user_id": user_id, "room_id": room_id });
-            if let Err(e) = notify_except(&notification, user_id, &*sessions) {
+            if let Err(e) = notify_except(&notification, &user_id, &*sessions) {
                 janus_err!("Error sending notification for user join: {:?}", e)
             }
         }
-        if let Some(publisher_id) = subscription.media {
+        if let Some(publisher_id) = subscription.media.as_ref() {
             let publisher = get_publisher(publisher_id, &*sessions).ok_or("Can't subscribe to a nonexistent publisher.")?;
             switchboard.subscribe_to_user(from, &publisher);
             let subscriber_offer = publisher.subscriber_offer.lock().unwrap();
@@ -445,7 +445,7 @@ fn process_join(from: &Arc<Session>, room_id: RoomId, user_id: UserId, subscribe
 }
 
 fn process_subscribe(from: &Arc<Session>, what: Subscription) -> MessageResult {
-    let subscription_state = Box::new(what);
+    let subscription_state = Box::new(what.clone());
     if from.subscription.set_if_none(subscription_state).is_some() {
         return Err(From::from("Users may only subscribe once!"))
     }
@@ -455,7 +455,7 @@ fn process_subscribe(from: &Arc<Session>, what: Subscription) -> MessageResult {
     let occupants = STATE.occupants.read()?;
     let body = json!({ "users": get_users(&occupants) });
 
-    if let Some(publisher_id) = what.media {
+    if let Some(publisher_id) = what.media.as_ref() {
         let publisher = get_publisher(publisher_id, &*sessions).ok_or("Can't subscribe to a nonexistent publisher.")?;
         switchboard.subscribe_to_user(from, &publisher);
         let subscriber_offer = publisher.subscriber_offer.lock().unwrap();
