@@ -53,8 +53,8 @@ join a room. You can only join one room with any connection.
 ```
 {
     "kind": "join",
-    "room_id": unsigned integer ID
-    "user_id": unsigned integer ID,
+    "room_id": room ID
+    "user_id": user ID,
     "subscribe": [none|subscription object]
 }
 ```
@@ -68,7 +68,7 @@ The response will return the current directory of users on the server by room, a
 ```
 {
     "success": true,
-    "user_ids": {1: [123, 789], 2: [456]}
+    "user_ids": {room_alpha: ["123", "789"], room_beta: ["456"]}
 }
 ```
 
@@ -85,7 +85,7 @@ Lists the current directory of users on the server by room, including you, if yo
 ```
 {
     "success": true,
-    "user_ids": {1: [123, 789], 2: [456]}
+    "user_ids": {room_alpha: ["123", "789"], room_beta: ["456"]}
 }
 ```
 
@@ -97,7 +97,7 @@ Subscribes to some kind of traffic coming from the server.
 {
     "notifications": [none|boolean],
     "data": [none|boolean],
-    "media": [none|unsigned integer user ID]
+    "media": [none|user ID]
 }
 ```
 
@@ -112,7 +112,7 @@ The response will return the current directory of users on the server by room, a
 ```
 {
     "success": true,
-    "user_ids": {1: [123, 789], 2: [456]}
+    "user_ids": {room_alpha: ["123", "789"], room_beta: ["456"]}
 }
 ```
 

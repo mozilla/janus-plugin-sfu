@@ -1,6 +1,6 @@
 const params = new URLSearchParams(location.search.slice(1));
 var USER_ID = Math.floor(Math.random() * (1000000001));
-const roomId = params.get("room") != null ? parseInt(params.get("room")) : 42;
+const roomId = params.get("room") != null ? params.get("room") : "42";
 
 const PEER_CONNECTION_CONFIG = {
   iceServers: [
@@ -163,7 +163,7 @@ async function attachPublisher(session) {
 
   await waitForEvent("webrtcup", handle);
   showStatus(`Joining room ${roomId}...`);
-  const reply = await handle.sendMessage({ 
+  const reply = await handle.sendMessage({
     kind: "join",
     room_id: roomId,
     user_id: USER_ID,
