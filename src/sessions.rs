@@ -1,7 +1,5 @@
 /// Types for representing Janus session state.
-use super::serde::ser::{Serialize, Serializer};
 use atom::AtomSetOnce;
-use std::fmt;
 use std::sync::atomic::AtomicIsize;
 use std::sync::{Arc, Mutex};
 use messages::{RoomId, UserId, Subscription};
