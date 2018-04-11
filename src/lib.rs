@@ -21,7 +21,8 @@ use atom::AtomSetOnce;
 use messages::{RoomId, UserId};
 use auth::UserToken;
 use config::Config;
-use janus::{JanusError, JanssonDecodingFlags, JanssonEncodingFlags, JanssonValue, Plugin, PluginCallbacks, LibraryMetadata, PluginResult, PluginSession, RawPluginResult, RawJanssonValue};
+use janus::{JanusError, JanssonDecodingFlags, JanssonEncodingFlags, JanssonValue, Plugin, PluginCallbacks, LibraryMetadata, PluginResult,
+            PluginSession, RawPluginResult, RawJanssonValue};
 use janus::sdp::{AudioCodec, MediaDirection, OfferAnswerParameters, Sdp, VideoCodec};
 use messages::{JsepKind, MessageKind, OptionalField, Subscription};
 use serde_json::Value as JsonValue;
@@ -335,14 +336,14 @@ extern "C" fn query_session(_handle: *mut PluginSession) -> *mut RawJanssonValue
 extern "C" fn setup_media(handle: *mut PluginSession) {
     let sess = unsafe { Session::from_ptr(handle).expect("Session can't be null!") };
     let switchboard = STATE.switchboard.read().expect("Switchboard is poisoned :(");
-    send_fir(&switchboard.publishers_to_user(&sess));
+    send_fir(&switchboard.senders_to(&sess));
     janus_verb!("WebRTC media is now available on {:?}.", sess);
 }
 
 extern "C" fn incoming_rtp(handle: *mut PluginSession, video: c_int, buf: *mut c_char, len: c_int) {
     let sess = unsafe { Session::from_ptr(handle).expect("Session can't be null!") };
     let switchboard = STATE.switchboard.read().expect("Switchboard lock poisoned; can't continue.");
-    let subscribers = switchboard.subscribers_to_user(&sess);
+    let subscribers = switchboard.recipients_for(&sess);
     let relay_rtp = gateway_callbacks().relay_rtp;
     for other in subscribers {
         relay_rtp(other.as_ptr(), video, buf, len);
@@ -355,14 +356,14 @@ extern "C" fn incoming_rtcp(handle: *mut PluginSession, video: c_int, buf: *mut 
     let packet = unsafe { slice::from_raw_parts(buf, len as usize) };
     match video {
         1 if janus::rtcp::has_pli(packet) => {
-            send_pli(&switchboard.publishers_to_user(&sess));
+            send_pli(&switchboard.senders_to(&sess));
         }
         1 if janus::rtcp::has_fir(packet) => {
-            send_fir(&switchboard.publishers_to_user(&sess));
+            send_fir(&switchboard.senders_to(&sess));
         }
         _ => {
             let relay_rtcp = gateway_callbacks().relay_rtcp;
-            for subscriber in switchboard.subscribers_to_user(&sess) {
+            for subscriber in switchboard.recipients_for(&sess) {
                 relay_rtcp(subscriber.as_ptr(), video, buf, len);
             }
         }
@@ -422,7 +423,7 @@ fn process_join(from: &Arc<Session>, room_id: RoomId, user_id: UserId, subscribe
     }
 
     from.join_state.set_if_none(Box::new(JoinState::new(room_id.clone(), user_id.clone())));
-    if let Some(subscription) = subscribe.clone() {
+    if let Some(subscription) = subscribe {
         from.subscription.set_if_none(Box::new(subscription.clone()));
         if is_master_handle {
             cohabitators.insert(Arc::clone(from));
@@ -431,17 +432,37 @@ fn process_join(from: &Arc<Session>, room_id: RoomId, user_id: UserId, subscribe
                 janus_err!("Error sending notification for user join: {:?}", e)
             }
         }
-        if let Some(publisher_id) = subscription.media.as_ref() {
+        if let Some(ref publisher_id) = subscription.media {
             let publisher = get_publisher(publisher_id, &*sessions).ok_or("Can't subscribe to a nonexistent publisher.")?;
-            switchboard.subscribe_to_user(from, &publisher);
-            let subscriber_offer = publisher.subscriber_offer.lock().unwrap();
-            return Ok(MessageResponse::new(body, json!({
+            let jsep = json!({
                 "type": "offer",
-                "sdp": subscriber_offer.as_ref().unwrap()
-            })));
+                "sdp": publisher.subscriber_offer.lock().unwrap().as_ref().unwrap()
+            });
+            switchboard.subscribe_to_user(from.clone(), publisher);
+            return Ok(MessageResponse::new(body, jsep));
         }
     }
     Ok(MessageResponse::msg(body))
+}
+
+fn process_block(from: &Arc<Session>, whom: UserId) -> MessageResult {
+    if let Some(joined) = from.join_state.get() {
+        let mut switchboard = STATE.switchboard.write()?;
+        switchboard.establish_block(Arc::new(joined.user_id.clone()), Arc::new(whom));
+        Ok(MessageResponse::msg(json!({})))
+    } else {
+        Err(From::from("Cannot block when not in a room."))
+    }
+}
+
+fn process_unblock(from: &Arc<Session>, whom: UserId) -> MessageResult {
+    if let Some(joined) = from.join_state.get() {
+        let mut switchboard = STATE.switchboard.write()?;
+        switchboard.lift_block(&joined.user_id, &whom);
+        Ok(MessageResponse::msg(json!({})))
+    } else {
+        Err(From::from("Cannot unblock when not in a room."))
+    }
 }
 
 fn process_subscribe(from: &Arc<Session>, what: Subscription) -> MessageResult {
@@ -455,14 +476,14 @@ fn process_subscribe(from: &Arc<Session>, what: Subscription) -> MessageResult {
     let occupants = STATE.occupants.read()?;
     let body = json!({ "users": get_users(&occupants) });
 
-    if let Some(publisher_id) = what.media.as_ref() {
+    if let Some(ref publisher_id) = what.media {
         let publisher = get_publisher(publisher_id, &*sessions).ok_or("Can't subscribe to a nonexistent publisher.")?;
-        switchboard.subscribe_to_user(from, &publisher);
-        let subscriber_offer = publisher.subscriber_offer.lock().unwrap();
-        return Ok(MessageResponse::new(body, json!({
+        let jsep = json!({
             "type": "offer",
-            "sdp": subscriber_offer.as_ref().unwrap()
-        })));
+            "sdp": publisher.subscriber_offer.lock().unwrap().as_ref().unwrap()
+        });
+        switchboard.subscribe_to_user(from.clone(), publisher);
+        return Ok(MessageResponse::new(body, jsep));
     }
     Ok(MessageResponse::msg(body))
 }
@@ -483,6 +504,8 @@ fn process_message(from: &Arc<Session>, msg: &JanssonValue) -> MessageResult {
             match kind {
                 MessageKind::ListUsers => process_list_users(),
                 MessageKind::Subscribe { what } => process_subscribe(from, what),
+                MessageKind::Block { whom } => process_block(from, whom),
+                MessageKind::Unblock { whom } => process_unblock(from, whom),
                 MessageKind::Join { room_id, user_id, subscribe, token } => process_join(from, room_id, user_id, subscribe, token),
             }
         }
@@ -524,7 +547,7 @@ fn process_offer(from: &Session, offer: &Sdp) -> JsepResult {
 
     let switchboard = STATE.switchboard.read().expect("Switchboard lock poisoned; can't continue.");
     let jsep = json!({ "type": "offer", "sdp": subscriber_offer });
-    match send_offer(&jsep, switchboard.subscribers_to_user(from).iter()) {
+    match send_offer(&jsep, switchboard.subscribers_to(from).iter()) {
         Ok(_) | Err(JanusError(458 /* session not found */)) => (),
         Err(e) => janus_err!("Error notifying subscribers about new offer: {}", e)
     };
@@ -532,11 +555,11 @@ fn process_offer(from: &Session, offer: &Sdp) -> JsepResult {
     Ok(json!({ "type": "answer", "sdp": answer }))
 }
 
-fn process_answer(_from: &Arc<Session>, _answer: &Sdp) -> JsepResult {
+fn process_answer(_from: &Session, _answer: &Sdp) -> JsepResult {
     Ok(json!({})) // todo: check that this guy should actually be sending us an answer?
 }
 
-fn process_jsep(from: &Arc<Session>, jsep: &JanssonValue) -> JsepResult {
+fn process_jsep(from: &Session, jsep: &JanssonValue) -> JsepResult {
     let jsep_str = jsep.to_libcstring(JanssonEncodingFlags::empty());
     let jsep_contents: OptionalField<JsepKind> = serde_json::from_str(jsep_str.to_str()?)?;
     match jsep_contents {

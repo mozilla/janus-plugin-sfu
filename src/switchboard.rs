@@ -1,71 +1,164 @@
 /// Tools for managing the set of subscriptions between connections.
 use super::serde::ser::{Serialize, Serializer, SerializeSeq};
+use messages::UserId;
 use sessions::Session;
 use std::collections::HashMap;
+use std::fmt;
 use std::sync::{Arc, Weak};
+use std::hash::Hash;
 
-/// A data structure for expressing which connections should be sending data to which other connections.  Basically a
-/// bidirectional map from subscriber to publisher and vice versa, optimized for fast lookups in both directions.
+#[derive(Debug)]
+pub struct BidirectionalMultimap<T> where T: Eq + Hash {
+    forward_mapping: HashMap<Arc<T>, Vec<Weak<T>>>,
+    inverse_mapping: HashMap<Arc<T>, Vec<Weak<T>>>,
+}
+
+//#[derive(Serialize)]
+//struct Association<'a, T> where T: Serialize + 'a { from: &'a T, to: &'a T }
+
+impl<T> Serialize for BidirectionalMultimap<T> where T: Eq + Hash {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error> where S: Serializer {
+        let mut assocs = serializer.serialize_seq(None)?;
+        // for (from, tos) in &self.forward_mapping {
+        //     for to in tos {
+        //         if let Some(to) = to.upgrade() {
+        //             assocs.serialize_element(&Association { from: from.as_ref(), to: to.as_ref() })?;
+        //         }
+        //     }
+        // }
+        assocs.end()
+    }
+}
+
+impl<T> BidirectionalMultimap<T> where T: Eq + Hash {
+    pub fn new() -> Self {
+        Self {
+            forward_mapping: HashMap::new(),
+            inverse_mapping: HashMap::new(),
+        }
+    }
+
+    pub fn associate(&mut self, k: Arc<T>, v: Arc<T>) {
+        let weak_k = Arc::downgrade(&k);
+        let weak_v = Arc::downgrade(&v);
+        self.forward_mapping.entry(k).or_insert_with(Vec::new).push(weak_v);
+        self.inverse_mapping.entry(v).or_insert_with(Vec::new).push(weak_k);
+    }
+
+    pub fn disassociate(&mut self, k: &T, v: &T) {
+        if let Some(vals) = self.forward_mapping.get_mut(k) {
+            vals.retain(|x| x.upgrade().map(|x| x.as_ref() != v).unwrap_or(false));
+        }
+        if let Some(keys) = self.inverse_mapping.get_mut(v) {
+            keys.retain(|x| x.upgrade().map(|x| x.as_ref() != k).unwrap_or(false));
+        }
+    }
+
+    pub fn forget(&mut self, x: &T) {
+        self.remove_key(x);
+        self.remove_value(x);
+    }
+
+    pub fn remove_key(&mut self, k: &T) {
+        self.forward_mapping.remove(k);
+    }
+
+    pub fn remove_value(&mut self, v: &T) {
+        self.inverse_mapping.remove(v);
+    }
+
+    pub fn get_values(&self, k: &T) -> Vec<Arc<T>> {
+        self.forward_mapping.get(k).map(Vec::as_slice).unwrap_or(&[]).iter().filter_map(|s| s.upgrade()).collect()
+    }
+
+    pub fn get_keys(&self, v: &T) -> Vec<Arc<T>> {
+        self.inverse_mapping.get(v).map(Vec::as_slice).unwrap_or(&[]).iter().filter_map(|s| s.upgrade()).collect()
+    }
+}
+
+/// A data structure for expressing which connections should be sending data to which other connections.
 ///
 /// Note that internally, strong references are kept as keys for each subscriber and publisher in the switchboard, but
 /// only weak references are kept as values. This turns the cost of removing a session from O(N) up front, where N is
 /// the number of map entries, into O(1), at the cost of suffering a little bit occasionally as we encounter the dead
 /// entries.
-#[derive(Debug)]
+#[derive(Debug, Serialize)]
 pub struct Switchboard {
-    /// For a given connection, which connections are subscribing to traffic from them.
-    publisher_to_subscribers: HashMap<Arc<Session>, Vec<Weak<Session>>>,
-    /// For a given connection, which connections are publishing traffic to them.
-    subscriber_to_publishers: HashMap<Arc<Session>, Vec<Weak<Session>>>,
-}
-
-impl Serialize for Switchboard {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error> where S: Serializer {
-        #[derive(Serialize)]
-        struct Connection { publisher: String, subscriber: String };
-        let mut connections = serializer.serialize_seq(None)?;
-        for (publisher, subscriptions) in &self.publisher_to_subscribers {
-            for subscription in subscriptions {
-                if let Some(subscriber) = subscription.upgrade() {
-                    let publisher_handle = format!("{:p}", publisher.as_ptr());
-                    let subscriber_handle = format!("{:p}", subscriber.as_ptr());
-                    let conn = Connection {
-                        publisher: publisher_handle,
-                        subscriber: subscriber_handle,
-                    };
-                    connections.serialize_element(&conn)?;
-                }
-            }
-        }
-        connections.end()
-    }
+    /// Which connections are subscribing to traffic from which other connections.
+    publisher_to_subscribers: BidirectionalMultimap<Session>,
+    /// Which users have explicitly blocked traffic to and from other users.
+    blockers_to_miscreants: BidirectionalMultimap<UserId>,
 }
 
 impl Switchboard {
     pub fn new() -> Self {
         Self {
-            publisher_to_subscribers: HashMap::new(),
-            subscriber_to_publishers: HashMap::new(),
+            publisher_to_subscribers: BidirectionalMultimap::new(),
+            blockers_to_miscreants: BidirectionalMultimap::new(),
         }
     }
 
-    pub fn remove_session(&mut self, session: &Arc<Session>) {
-        self.publisher_to_subscribers.remove(session);
-        self.subscriber_to_publishers.remove(session);
+    pub fn establish_block(&mut self, from: Arc<UserId>, target: Arc<UserId>) {
+        self.blockers_to_miscreants.associate(from, target);
     }
 
-    pub fn subscribe_to_user(&mut self, subscriber: &Arc<Session>, publisher: &Arc<Session>) {
-        self.subscriber_to_publishers.entry(Arc::clone(subscriber)).or_insert_with(Vec::new).push(Arc::downgrade(publisher));
-        self.publisher_to_subscribers.entry(Arc::clone(publisher)).or_insert_with(Vec::new).push(Arc::downgrade(subscriber));
+    pub fn lift_block(&mut self, from: &UserId, target: &UserId) {
+        self.blockers_to_miscreants.disassociate(from, target);
     }
 
-    pub fn subscribers_to_user(&self, publisher: &Session) -> Vec<Arc<Session>> {
-        let all_subscriptions = self.publisher_to_subscribers.get(publisher).map(Vec::as_slice).unwrap_or(&[]).iter();
-        all_subscriptions.filter_map(|s| s.upgrade()).collect()
+    pub fn remove_session(&mut self, session: &Session) {
+        self.publisher_to_subscribers.forget(session);
     }
 
-    pub fn publishers_to_user(&self, subscriber: &Session) -> Vec<Arc<Session>> {
-        let all_subscriptions = self.subscriber_to_publishers.get(subscriber).map(Vec::as_slice).unwrap_or(&[]).iter();
-        all_subscriptions.filter_map(|s| s.upgrade()).collect()
+    pub fn subscribe_to_user(&mut self, subscriber: Arc<Session>, publisher: Arc<Session>) {
+        self.publisher_to_subscribers.associate(subscriber, publisher);
+    }
+
+    pub fn subscribers_to(&self, publisher: &Session) -> Vec<Arc<Session>> {
+        self.publisher_to_subscribers.get_values(publisher)
+    }
+
+    pub fn publishers_to(&self, subscriber: &Session) -> Vec<Arc<Session>> {
+        self.publisher_to_subscribers.get_keys(subscriber)
+    }
+
+    pub fn recipients_for(&self, sender: &Session) -> Vec<Arc<Session>> {
+        let mut subscribers = self.subscribers_to(sender);
+        if let Some(joined) = sender.join_state.get() {
+            let forward_blocks = self.blockers_to_miscreants.get_keys(&joined.user_id);
+            let reverse_blocks = self.blockers_to_miscreants.get_values(&joined.user_id);
+            let blocks_exist = !forward_blocks.is_empty() || !reverse_blocks.is_empty();
+            if blocks_exist {
+                subscribers.retain(|recipient| {
+                    match recipient.join_state.get() {
+                        None => true,
+                        Some(other) => (
+                            !forward_blocks.iter().any(|x| x.as_ref() == &other.user_id) && !reverse_blocks.iter().any(|x| x.as_ref() == &other.user_id)
+                        )
+                    }
+                });
+            }
+        }
+        subscribers
+    }
+
+    pub fn senders_to(&self, recipient: &Session) -> Vec<Arc<Session>> {
+        let mut publishers = self.publishers_to(recipient);
+        if let Some(joined) = recipient.join_state.get() {
+            let forward_blocks = self.blockers_to_miscreants.get_values(&joined.user_id);
+            let reverse_blocks = self.blockers_to_miscreants.get_keys(&joined.user_id);
+            let blocks_exist = !forward_blocks.is_empty() || !reverse_blocks.is_empty();
+            if blocks_exist {
+                publishers.retain(|sender| {
+                    match sender.join_state.get() {
+                        None => true,
+                        Some(other) => (
+                            !forward_blocks.iter().any(|x| x.as_ref() == &other.user_id) && !reverse_blocks.iter().any(|x| x.as_ref() == &other.user_id)
+                        )
+                    }
+                });
+            }
+        }
+        publishers
     }
 }
