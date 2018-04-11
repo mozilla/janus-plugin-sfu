@@ -53,7 +53,7 @@ join a room. You can only join one room with any connection.
 ```
 {
     "kind": "join",
-    "room_id": room ID
+    "room_id": room ID,
     "user_id": user ID,
     "subscribe": [none|subscription object]
 }
@@ -68,7 +68,9 @@ The response will return the current directory of users on the server by room, a
 ```
 {
     "success": true,
-    "user_ids": {room_alpha: ["123", "789"], room_beta: ["456"]}
+    "response": {
+        "users": {room_alpha: ["123", "789"], room_beta: ["456"]}
+    }
 }
 ```
 
@@ -85,7 +87,9 @@ Lists the current directory of users on the server by room, including you, if yo
 ```
 {
     "success": true,
-    "user_ids": {room_alpha: ["123", "789"], room_beta: ["456"]}
+    "response": {
+        "users": {room_alpha: ["123", "789"], room_beta: ["456"]}
+    }
 }
 ```
 
@@ -95,6 +99,7 @@ Subscribes to some kind of traffic coming from the server.
 
 ```
 {
+    "kind": "subscribe",
     "notifications": [none|boolean],
     "data": [none|boolean],
     "media": [none|user ID]
@@ -112,7 +117,34 @@ The response will return the current directory of users on the server by room, a
 ```
 {
     "success": true,
-    "user_ids": {room_alpha: ["123", "789"], room_beta: ["456"]}
+    "response": {
+        "users": {room_alpha: ["123", "789"], room_beta: ["456"]}
+    }
+}
+```
+
+### Block
+
+Blocks another user. Blocks are bidirectional; the targeted user won't get your data, audio, or video, and you won't get
+theirs. That user will get a `blocked` event letting them know.
+
+```
+{
+    "kind": "block",
+    "whom": [user ID]
+}
+```
+
+Blocks persist between connections. If you block someone and refresh, they will still be blocked.
+
+### Unblock
+
+Unblock a user who you previously blocked. That user will get an `unblocked` event letting them know.
+
+```
+{
+    "kind": "block",
+    "whom": [user ID]
 }
 ```
 
