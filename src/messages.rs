@@ -97,9 +97,6 @@ pub enum MessageKind {
 
     /// Undoes a block targeting the given user.
     Unblock { whom: UserId },
-
-    /// Requests a list of connected users by room.
-    ListUsers,
 }
 
 /// Information about which traffic a client will get pushed to them.
@@ -145,13 +142,6 @@ mod tests {
             let json = r#"{"kind": "fiddle"}"#;
             let result: serde_json::Result<OptionalField<MessageKind>> = serde_json::from_str(json);
             assert!(result.is_err());
-        }
-
-        #[test]
-        fn parse_list_users() {
-            let json = r#"{"kind": "listusers"}"#;
-            let result: MessageKind = serde_json::from_str(json).unwrap();
-            assert_eq!(result, MessageKind::ListUsers);
         }
 
         #[test]

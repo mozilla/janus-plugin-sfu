@@ -63,32 +63,13 @@ If `subscription: {...}` is passed, you will synchronously configure an initial 
 want to get pushed through your connection. The format of the subscription should be identical to that in the
 [subscribe](#subscribe) message, below.
 
-The response will return the current directory of users on the server by room, as below, including yourself. If you `subscribe`d to a user's media, you will also get a JSEP offer you can use to get that user's RTP traffic.
+The response will return the users on the server in the room you joined, as below, including yourself. If you `subscribe`d to a user's media, you will also get a JSEP offer you can use to get that user's RTP traffic.
 
 ```
 {
     "success": true,
     "response": {
-        "users": {room_alpha: ["123", "789"], room_beta: ["456"]}
-    }
-}
-```
-
-### List users
-
-Lists the current directory of users on the server by room, including you, if you've joined any room.
-
-```
-{
-    "kind": "listusers"
-}
-```
-
-```
-{
-    "success": true,
-    "response": {
-        "users": {room_alpha: ["123", "789"], room_beta: ["456"]}
+        "users": {room_alpha: ["123", "789"]}
     }
 }
 ```
@@ -111,17 +92,6 @@ If `notifications` is `true`, you will get websocket events corresponding to eve
 If `data` is `true`, you will get all data traffic from other users in your room, if you've joined a room.
 
 If `media` is a user ID, the server will respond with a JSEP offer which you can use to establish a connection suitable to receive audio and video RTP data coming from that user ID.
-
-The response will return the current directory of users on the server by room, as below, including yourself.
-
-```
-{
-    "success": true,
-    "response": {
-        "users": {room_alpha: ["123", "789"], room_beta: ["456"]}
-    }
-}
-```
 
 ### Block
 
