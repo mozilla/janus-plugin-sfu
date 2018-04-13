@@ -2,6 +2,7 @@
 use messages::{RoomId, UserId};
 use sessions::Session;
 use std::collections::{HashMap, HashSet};
+use std::collections::hash_map::Entry;
 use std::sync::{Arc, Weak};
 use std::hash::Hash;
 
@@ -52,22 +53,17 @@ impl<K, V> BidirectionalMultimap<K, V> where K: Eq + Hash, V: Eq + Hash {
     }
 }
 
-/// A data structure for expressing which connections should be sending traffic to which other connections.
-///
-/// Note that internally, strong references are kept as keys for each subscriber and publisher in the switchboard, but
-/// only weak references are kept as values. This turns the cost of removing a session from O(N) up front, where N is
-/// the number of map entries, into O(1), at the cost of suffering a little bit occasionally as we encounter the dead
-/// entries.
-#[derive(Debug)]
+/// A data structure for storing the state of all active connections and providing fast access to which
+/// connections should be sending traffic to which other connections.#[derive(Debug)]
 pub struct Switchboard {
     /// All active connections.
-    pub sessions: Vec<Box<Arc<Session>>>,
+    sessions: Vec<Box<Arc<Session>>>,
     /// Connections which have joined a room, per room.
-    pub occupants: HashMap<RoomId, HashSet<Arc<Session>>>,
+    occupants: HashMap<RoomId, HashSet<Arc<Session>>>,
     /// Which connections are subscribing to traffic from which other connections.
-    pub publisher_to_subscribers: BidirectionalMultimap<Session, Session>,
+    publisher_to_subscribers: BidirectionalMultimap<Session, Session>,
     /// Which users have explicitly blocked traffic to and from other users.
-    pub blockers_to_miscreants: BidirectionalMultimap<UserId, UserId>,
+    blockers_to_miscreants: BidirectionalMultimap<UserId, UserId>,
 }
 
 impl Switchboard {
@@ -80,6 +76,19 @@ impl Switchboard {
         }
     }
 
+    pub fn connect(&mut self, session: Box<Arc<Session>>) {
+        self.sessions.push(session);
+    }
+
+    pub fn is_connected(&self, user: &UserId) -> bool {
+        self.sessions.iter().any(|s| {
+            match s.join_state.get() {
+                None => false,
+                Some(other_state) => user == &other_state.user_id
+            }
+        })
+    }
+
     pub fn establish_block(&mut self, from: Arc<UserId>, target: Arc<UserId>) {
         self.blockers_to_miscreants.associate(from, target);
     }
@@ -88,10 +97,26 @@ impl Switchboard {
         self.blockers_to_miscreants.disassociate(from, target);
     }
 
+    pub fn join_room(&mut self, session: Arc<Session>, room: RoomId) {
+        self.occupants.entry(room).or_insert_with(HashSet::new).insert(session);
+    }
+
+    pub fn leave_room(&mut self, session: &Session, room: RoomId) {
+        if let Entry::Occupied(mut cohabitators) = self.occupants.entry(room) {
+            cohabitators.get_mut().remove(session);
+            if cohabitators.get().len() == 0 {
+                cohabitators.remove_entry();
+            }
+        }
+    }
+
     pub fn remove_session(&mut self, session: &Session) {
         self.publisher_to_subscribers.remove_key(session);
         self.publisher_to_subscribers.remove_value(session);
-        self.sessions.retain(|s| s.as_ptr() != session.as_ptr());
+        self.sessions.retain(|s| s.handle != session.handle);
+        if let Some(joined) = session.join_state.get() {
+            self.leave_room(session, joined.room_id.clone());
+        }
     }
 
     pub fn subscribe_to_user(&mut self, subscriber: Arc<Session>, publisher: Arc<Session>) {
@@ -106,7 +131,11 @@ impl Switchboard {
         self.publisher_to_subscribers.get_keys(subscriber)
     }
 
-    pub fn recipients_for(&self, sender: &Session) -> Vec<Arc<Session>> {
+    pub fn occupants_of(&self, room: &RoomId) -> HashSet<Arc<Session>> {
+        self.occupants.get(room).map(|x| x.clone()).unwrap_or_else(HashSet::new)
+    }
+
+    pub fn media_recipients_for(&self, sender: &Session) -> Vec<Arc<Session>> {
         let mut subscribers = self.subscribers_to(sender);
         if let Some(joined) = sender.join_state.get() {
             let forward_blocks = self.blockers_to_miscreants.get_keys(&joined.user_id);
@@ -128,7 +157,7 @@ impl Switchboard {
         subscribers
     }
 
-    pub fn senders_for(&self, recipient: &Session) -> Vec<Arc<Session>> {
+    pub fn media_senders_to(&self, recipient: &Session) -> Vec<Arc<Session>> {
         let mut publishers = self.publishers_to(recipient);
         if let Some(joined) = recipient.join_state.get() {
             let forward_blocks = self.blockers_to_miscreants.get_values(&joined.user_id);
@@ -150,6 +179,35 @@ impl Switchboard {
         publishers
     }
 
+    pub fn data_recipients_for(&self, session: &Session) -> HashSet<Arc<Session>> {
+        if let Some(joined) = session.join_state.get() {
+            let mut cohabitators = self.occupants_of(&joined.room_id);
+            let forward_blocks = self.blockers_to_miscreants.get_keys(&joined.user_id);
+            let reverse_blocks = self.blockers_to_miscreants.get_values(&joined.user_id);
+            let blocks_exist = !forward_blocks.is_empty() || !reverse_blocks.is_empty();
+            cohabitators.retain(|cohabitator| cohabitator.handle != session.handle);
+            if blocks_exist {
+                cohabitators.retain(|cohabitator| {
+                    match cohabitator.join_state.get() {
+                        None => true,
+                        Some(other) => {
+                            let blocks = forward_blocks.iter().any(|x| x.as_ref() == &other.user_id);
+                            let is_blocked = reverse_blocks.iter().any(|x| x.as_ref() == &other.user_id);
+                            return !blocks && !is_blocked;
+                        }
+                    }
+                });
+            }
+            cohabitators
+        } else {
+            HashSet::new()
+        }
+    }
+
+    pub fn occupant_count(&self, room: &RoomId) -> usize {
+        self.occupants.get(room).map(HashSet::len).unwrap_or(0)
+    }
+
     pub fn get_users<'a, 'b>(&'a self, room: &'b RoomId) -> HashSet<&'a UserId> {
         let mut result = HashSet::new();
         if let Some(sessions) = self.occupants.get(room) {
@@ -162,7 +220,7 @@ impl Switchboard {
         result
     }
 
-    pub fn get_publisher<'a>(&self, user_id: &UserId) -> Option<Arc<Session>> {
+    pub fn get_publisher<'a, 'b>(&'a self, user_id: &'b UserId) -> Option<&'a Arc<Session>> {
         self.sessions.iter()
             .find(|s| {
                 let subscriber_offer = s.subscriber_offer.lock().unwrap();
@@ -172,6 +230,6 @@ impl Switchboard {
                     _ => false
                 }
             })
-            .map(|s| Arc::clone(&*s))
+            .map(Box::as_ref)
     }
 }
