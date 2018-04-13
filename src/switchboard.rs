@@ -1,7 +1,7 @@
 /// Tools for managing the set of subscriptions between connections.
-use messages::UserId;
+use messages::{RoomId, UserId};
 use sessions::Session;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Weak};
 use std::hash::Hash;
 
@@ -60,6 +60,10 @@ impl<K, V> BidirectionalMultimap<K, V> where K: Eq + Hash, V: Eq + Hash {
 /// entries.
 #[derive(Debug)]
 pub struct Switchboard {
+    /// All active connections.
+    pub sessions: Vec<Box<Arc<Session>>>,
+    /// Connections which have joined a room, per room.
+    pub occupants: HashMap<RoomId, HashSet<Arc<Session>>>,
     /// Which connections are subscribing to traffic from which other connections.
     pub publisher_to_subscribers: BidirectionalMultimap<Session, Session>,
     /// Which users have explicitly blocked traffic to and from other users.
@@ -69,6 +73,8 @@ pub struct Switchboard {
 impl Switchboard {
     pub fn new() -> Self {
         Self {
+            sessions: Vec::new(),
+            occupants: HashMap::new(),
             publisher_to_subscribers: BidirectionalMultimap::new(),
             blockers_to_miscreants: BidirectionalMultimap::new(),
         }
@@ -85,6 +91,7 @@ impl Switchboard {
     pub fn remove_session(&mut self, session: &Session) {
         self.publisher_to_subscribers.remove_key(session);
         self.publisher_to_subscribers.remove_value(session);
+        self.sessions.retain(|s| s.as_ptr() != session.as_ptr());
     }
 
     pub fn subscribe_to_user(&mut self, subscriber: Arc<Session>, publisher: Arc<Session>) {
@@ -141,5 +148,30 @@ impl Switchboard {
             }
         }
         publishers
+    }
+
+    pub fn get_users<'a, 'b>(&'a self, room: &'b RoomId) -> HashSet<&'a UserId> {
+        let mut result = HashSet::new();
+        if let Some(sessions) = self.occupants.get(room) {
+            for session in sessions {
+                if let Some(joined) = session.join_state.get() {
+                    result.insert(&joined.user_id);
+                }
+            }
+        }
+        result
+    }
+
+    pub fn get_publisher<'a>(&self, user_id: &UserId) -> Option<Arc<Session>> {
+        self.sessions.iter()
+            .find(|s| {
+                let subscriber_offer = s.subscriber_offer.lock().unwrap();
+                let join_state = s.join_state.get();
+                match (subscriber_offer.as_ref(), join_state) {
+                    (Some(_), Some(state)) if &state.user_id == user_id => true,
+                    _ => false
+                }
+            })
+            .map(|s| Arc::clone(&*s))
     }
 }

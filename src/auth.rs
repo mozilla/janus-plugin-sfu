@@ -33,7 +33,7 @@ fn parse_user_subject(sub: &str) -> Result<UserId, SubjectParseError> {
     let namespace = &sub[0..separator_idx];
     let ident = &sub[separator_idx+1..];
     if namespace == "User" {
-        ident.parse().map(|uid| UserId(uid)).map_err(|_| SubjectParseError)
+        ident.parse().map_err(|_| SubjectParseError)
     } else {
         Err(SubjectParseError)
     }
