@@ -13,7 +13,6 @@ crate_type = ["cdylib"]
 [dependencies]
 atom = "0.3"
 janus-plugin = { version = "0.10.1", features = ["refcount"] }
-jsonwebtoken = "4.0"
 lazy_static = "1.0"
 serde = "1.0"
 serde_derive = "1.0"

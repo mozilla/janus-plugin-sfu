@@ -2,7 +2,6 @@ extern crate atom;
 extern crate ini;
 #[macro_use]
 extern crate janus_plugin as janus;
-extern crate jsonwebtoken as jwt;
 #[macro_use]
 extern crate lazy_static;
 extern crate serde;
@@ -14,12 +13,10 @@ extern crate serde_json;
 mod messages;
 mod sessions;
 mod switchboard;
-mod auth;
 mod config;
 
 use atom::AtomSetOnce;
 use messages::{RoomId, UserId};
-use auth::UserToken;
 use config::Config;
 use janus::{JanusError, JanusResult, JanssonDecodingFlags, JanssonEncodingFlags, JanssonValue, Plugin, PluginCallbacks,
             LibraryMetadata, PluginResult, PluginSession, RawPluginResult, RawJanssonValue};
@@ -351,7 +348,7 @@ extern "C" fn hangup_media(_handle: *mut PluginSession) {
     janus_verb!("Hanging up WebRTC media.");
 }
 
-fn process_join(from: &Arc<Session>, room_id: RoomId, user_id: UserId, subscribe: Option<Subscription>, _token: Option<UserToken>) -> MessageResult {
+fn process_join(from: &Arc<Session>, room_id: RoomId, user_id: UserId, subscribe: Option<Subscription>) -> MessageResult {
     // todo: holy shit clean this function up somehow
     let mut switchboard = STATE.switchboard.write()?;
     let body = json!({ "users": { room_id.as_str(): switchboard.get_users(&room_id) }});
@@ -466,7 +463,7 @@ fn process_message(from: &Arc<Session>, msg: &JanssonValue) -> MessageResult {
                 MessageKind::Subscribe { what } => process_subscribe(from, what),
                 MessageKind::Block { whom } => process_block(from, whom),
                 MessageKind::Unblock { whom } => process_unblock(from, whom),
-                MessageKind::Join { room_id, user_id, subscribe, token } => process_join(from, room_id, user_id, subscribe, token),
+                MessageKind::Join { room_id, user_id, subscribe } => process_join(from, room_id, user_id, subscribe),
             }
         }
     }

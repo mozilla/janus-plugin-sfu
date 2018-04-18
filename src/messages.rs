@@ -1,7 +1,6 @@
 /// Types and code related to handling signalling messages.
 use std::fmt;
 use super::Sdp;
-use super::auth::UserToken;
 use serde::de::{self, Deserializer, Visitor};
 
 /// A room ID representing a Janus multicast room.
@@ -76,7 +75,6 @@ pub enum MessageKind {
         #[serde(deserialize_with = "deserialize_id")]
         user_id: UserId,
         subscribe: Option<Subscription>,
-        token: Option<UserToken>,
     },
 
     /// Indicates that a client wishes to subscribe to traffic described by the given subscription specification.
@@ -148,8 +146,7 @@ mod tests {
             assert_eq!(result, MessageKind::Join {
                 user_id: "10".into(),
                 room_id: "alpha".into(),
-                subscribe: None,
-                token: None,
+                subscribe: None
             });
         }
 
@@ -164,8 +161,7 @@ mod tests {
                     notifications: true,
                     data: false,
                     media: None
-                }),
-                token: None,
+                })
             });
         }
 
