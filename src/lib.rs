@@ -21,8 +21,8 @@ use atom::AtomSetOnce;
 use messages::{RoomId, UserId};
 use auth::UserToken;
 use config::Config;
-use janus::{JanusError, JanssonDecodingFlags, JanssonEncodingFlags, JanssonValue, Plugin, PluginCallbacks, LibraryMetadata, PluginResult,
-            PluginSession, RawPluginResult, RawJanssonValue};
+use janus::{JanusError, JanusResult, JanssonDecodingFlags, JanssonEncodingFlags, JanssonValue, Plugin, PluginCallbacks,
+            LibraryMetadata, PluginResult, PluginSession, RawPluginResult, RawJanssonValue};
 use janus::sdp::{AudioCodec, MediaDirection, OfferAnswerParameters, Sdp, VideoCodec};
 use messages::{JsepKind, MessageKind, OptionalField, Subscription};
 use serde_json::Value as JsonValue;
@@ -128,9 +128,6 @@ lazy_static! {
     };
 }
 
-/// A result from calling into Janus core.
-type JanusResult = Result<(), JanusError>;
-
 fn notify_user<T: IntoIterator<Item=U>, U: AsRef<Session>>(json: &JsonValue, target: &UserId, everyone: T) -> JanusResult {
     let notifiees = everyone.into_iter().filter(|s| {
         let subscription_state = s.as_ref().subscription.get();
@@ -165,7 +162,7 @@ fn send_notification<T: IntoIterator<Item=U>, U: AsRef<Session>>(body: &JsonValu
     for session in sessions {
         janus_info!("Notification going to {:?}: {:?}.", session.as_ref(), msg);
         // probably a hack -- we shouldn't stop notifying if we fail one
-        janus::get_result(push_event(session.as_ref().as_ptr(), &mut PLUGIN, ptr::null(), msg.as_mut_ref(), ptr::null_mut()))?
+        JanusError::from(push_event(session.as_ref().as_ptr(), &mut PLUGIN, ptr::null(), msg.as_mut_ref(), ptr::null_mut()))?
     }
     Ok(())
 }
@@ -177,7 +174,7 @@ fn send_offer<T: IntoIterator<Item=U>, U: AsRef<Session>>(offer: &JsonValue, ses
     for session in sessions {
         janus_info!("Offer going to {:?}: {:?}.", session.as_ref(), jsep);
         // probably a hack -- we shouldn't stop notifying if we fail one
-        janus::get_result(push_event(session.as_ref().as_ptr(), &mut PLUGIN, ptr::null(), msg.as_mut_ref(), jsep.as_mut_ref()))?
+        JanusError::from(push_event(session.as_ref().as_ptr(), &mut PLUGIN, ptr::null(), msg.as_mut_ref(), jsep.as_mut_ref()))?
     }
     Ok(())
 }
@@ -281,7 +278,8 @@ extern "C" fn destroy_session(handle: *mut PluginSession, error: *mut c_int) {
                     let response = json!({ "event": "leave", "user_id": &joined.user_id, "room_id": &joined.room_id });
                     let occupants = switchboard.occupants_of(&joined.room_id);
                     match notify_except(&response, &joined.user_id, &occupants) {
-                        Ok(_) | Err(JanusError(458 /* session not found */)) => (),
+                        Ok(_) => (),
+                        Err(JanusError { code: 458 }) /* session not found */ => (),
                         Err(e) => janus_err!("Error notifying publishers on leave: {}", e)
                     };
                 }
@@ -407,7 +405,8 @@ fn process_block(from: &Arc<Session>, whom: UserId) -> MessageResult {
         let event = json!({ "event": "blocked", "by": &joined.user_id });
         let occupants = switchboard.occupants_of(&joined.room_id);
         match notify_user(&event, &whom, &occupants) {
-            Ok(_) | Err(JanusError(458 /* session not found */)) => (),
+            Ok(_) => (),
+            Err(JanusError { code: 458 }) /* session not found */ => (),
             Err(e) => janus_err!("Error notifying user about block: {}", e)
         };
         switchboard.establish_block(Arc::new(joined.user_id.clone()), Arc::new(whom));
@@ -427,7 +426,8 @@ fn process_unblock(from: &Arc<Session>, whom: UserId) -> MessageResult {
         }
         let event = json!({ "event": "unblocked", "by": &joined.user_id });
         match notify_user(&event, &whom, &occupants) {
-            Ok(_) | Err(JanusError(458 /* session not found */)) => (),
+            Ok(_) => (),
+            Err(JanusError { code: 458 }) /* session not found */ => (),
             Err(e) => janus_err!("Error notifying user about unblock: {}", e)
         };
         Ok(MessageResponse::msg(json!({})))
@@ -508,7 +508,8 @@ fn process_offer(from: &Session, offer: &Sdp) -> JsepResult {
     let switchboard = STATE.switchboard.read().expect("Switchboard lock poisoned; can't continue.");
     let jsep = json!({ "type": "offer", "sdp": subscriber_offer });
     match send_offer(&jsep, switchboard.subscribers_to(from)) {
-        Ok(_) | Err(JanusError(458 /* session not found */)) => (),
+        Ok(_) => (),
+        Err(JanusError { code: 458 }) /* session not found */ => (),
         Err(e) => janus_err!("Error notifying subscribers about new offer: {}", e)
     };
     *from.subscriber_offer.lock().unwrap() = Some(subscriber_offer);
@@ -534,14 +535,14 @@ fn process_jsep(from: &Session, jsep: &JanssonValue) -> JsepResult {
     }
 }
 
-fn push_response(from: &Session, txn: TransactionId, body: &JsonValue, jsep: Option<JsonValue>) -> Result<(), Box<Error>> {
+fn push_response(from: &Session, txn: TransactionId, body: &JsonValue, jsep: Option<JsonValue>) -> JanusResult {
     let push_event = gateway_callbacks().push_event;
     let jsep = jsep.unwrap_or_else(|| json!({}));
     janus_info!("{:?} sending response to {:?}: body = {}.", from.as_ptr(), txn, body);
-    Ok(janus::get_result(push_event(from.as_ptr(), &mut PLUGIN, txn.0, from_serde_json(body).as_mut_ref(), from_serde_json(&jsep).as_mut_ref()))?)
+    JanusError::from(push_event(from.as_ptr(), &mut PLUGIN, txn.0, from_serde_json(body).as_mut_ref(), from_serde_json(&jsep).as_mut_ref()))
 }
 
-fn handle_message_async(RawMessage { jsep, msg, txn, from }: RawMessage) -> Result<(), Box<Error>> {
+fn handle_message_async(RawMessage { jsep, msg, txn, from }: RawMessage) -> JanusResult {
     if let Some(ref from) = from.upgrade() {
         let destroyed = from.destroyed.lock().expect("Session destruction mutex is poisoned :(");
         if !*destroyed {

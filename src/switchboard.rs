@@ -55,6 +55,7 @@ impl<K, V> BidirectionalMultimap<K, V> where K: Eq + Hash, V: Eq + Hash {
 
 /// A data structure for storing the state of all active connections and providing fast access to which
 /// connections should be sending traffic to which other connections.#[derive(Debug)]
+#[derive(Debug)]
 pub struct Switchboard {
     /// All active connections.
     sessions: Vec<Box<Arc<Session>>>,
