@@ -136,13 +136,12 @@ lazy_static! {
     };
 }
 
-// todo: this should probably be a serialize implementation on an `OccupancyMap` struct wrapping a hashmap, or something.
-fn get_users(occupants: &HashMap<RoomId, HashSet<Arc<Session>>>) -> HashMap<&RoomId, HashSet<&UserId>> {
-    let mut result = HashMap::new();
-    for (room_id, sessions) in occupants {
+fn get_users<'a,'b>(room: &'a RoomId, occupants: &'b HashMap<RoomId, HashSet<Arc<Session>>>) -> HashSet<&'b UserId> {
+    let mut result = HashSet::new();
+    if let Some(sessions) = occupants.get(room) {
         for session in sessions {
             if let Some(joined) = session.join_state.get() {
-                result.entry(room_id).or_insert_with(HashSet::new).insert(&joined.user_id);
+                result.insert(&joined.user_id);
             }
         }
     }
@@ -419,7 +418,7 @@ fn process_join(from: &Arc<Session>, room_id: RoomId, user_id: UserId, subscribe
     let sessions = STATE.sessions.read()?;
     let mut switchboard = STATE.switchboard.write()?;
     let mut occupants = STATE.occupants.write()?;
-    let body = json!({ "users": get_users(&occupants) });
+    let body = json!({ "users": { room_id.clone().0: get_users(&room_id, &occupants) }});
     let cohabitators = occupants.entry(room_id.clone()).or_insert_with(HashSet::new);
 
     let already_joined = !from.join_state.is_none();
@@ -507,9 +506,6 @@ fn process_subscribe(from: &Arc<Session>, what: Subscription) -> MessageResult {
 
     let sessions = STATE.sessions.read()?;
     let mut switchboard = STATE.switchboard.write()?;
-    let occupants = STATE.occupants.read()?;
-    let body = json!({ "users": get_users(&occupants) });
-
     if let Some(ref publisher_id) = what.media {
         let publisher = get_publisher(publisher_id, &*sessions).ok_or("Can't subscribe to a nonexistent publisher.")?;
         let jsep = json!({
@@ -517,15 +513,9 @@ fn process_subscribe(from: &Arc<Session>, what: Subscription) -> MessageResult {
             "sdp": publisher.subscriber_offer.lock().unwrap().as_ref().unwrap()
         });
         switchboard.subscribe_to_user(from.clone(), publisher);
-        return Ok(MessageResponse::new(body, jsep));
+        return Ok(MessageResponse::new(json!({}), jsep));
     }
-    Ok(MessageResponse::msg(body))
-}
-
-fn process_list_users() -> MessageResult {
-    let occupants = STATE.occupants.read()?;
-    let body = json!({ "users": get_users(&occupants) });
-    Ok(MessageResponse::msg(body))
+    Ok(MessageResponse::msg(json!({})))
 }
 
 fn process_message(from: &Arc<Session>, msg: &JanssonValue) -> MessageResult {
@@ -536,7 +526,6 @@ fn process_message(from: &Arc<Session>, msg: &JanssonValue) -> MessageResult {
         OptionalField::Some(kind) => {
             janus_info!("Processing {:?} on connection {:?}.", kind, from);
             match kind {
-                MessageKind::ListUsers => process_list_users(),
                 MessageKind::Subscribe { what } => process_subscribe(from, what),
                 MessageKind::Block { whom } => process_block(from, whom),
                 MessageKind::Unblock { whom } => process_unblock(from, whom),
