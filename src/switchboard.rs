@@ -3,16 +3,17 @@ use messages::{RoomId, UserId};
 use sessions::Session;
 use std::collections::{HashMap, HashSet};
 use std::collections::hash_map::Entry;
-use std::sync::{Arc, Weak};
+use std::sync::Arc;
 use std::hash::Hash;
+use std::fmt::Debug;
 
 #[derive(Debug)]
 pub struct BidirectionalMultimap<K: Eq + Hash, V: Eq + Hash> {
-    forward_mapping: HashMap<Arc<K>, Vec<Weak<V>>>,
-    inverse_mapping: HashMap<Arc<V>, Vec<Weak<K>>>,
+    forward_mapping: HashMap<Arc<K>, Vec<Arc<V>>>,
+    inverse_mapping: HashMap<Arc<V>, Vec<Arc<K>>>,
 }
 
-impl<K, V> BidirectionalMultimap<K, V> where K: Eq + Hash, V: Eq + Hash {
+impl<K, V> BidirectionalMultimap<K, V> where K: Eq + Hash + Debug, V: Eq + Hash + Debug {
     pub fn new() -> Self {
         Self {
             forward_mapping: HashMap::new(),
@@ -21,40 +22,56 @@ impl<K, V> BidirectionalMultimap<K, V> where K: Eq + Hash, V: Eq + Hash {
     }
 
     pub fn associate(&mut self, k: Arc<K>, v: Arc<V>) {
-        let weak_k = Arc::downgrade(&k);
-        let weak_v = Arc::downgrade(&v);
-        self.forward_mapping.entry(k).or_insert_with(Vec::new).push(weak_v);
-        self.inverse_mapping.entry(v).or_insert_with(Vec::new).push(weak_k);
+        let kk = Arc::clone(&k);
+        let vv = Arc::clone(&v);
+        self.forward_mapping.entry(k).or_insert_with(Vec::new).push(vv);
+        self.inverse_mapping.entry(v).or_insert_with(Vec::new).push(kk);
     }
 
     pub fn disassociate(&mut self, k: &K, v: &V) {
         if let Some(vals) = self.forward_mapping.get_mut(k) {
-            vals.retain(|x| x.upgrade().map(|x| x.as_ref() != v).unwrap_or(false));
+            vals.retain(|x| x.as_ref() != v);
         }
         if let Some(keys) = self.inverse_mapping.get_mut(v) {
-            keys.retain(|x| x.upgrade().map(|x| x.as_ref() != k).unwrap_or(false));
+            keys.retain(|x| x.as_ref() != k);
         }
     }
 
     pub fn remove_key(&mut self, k: &K) {
-        self.forward_mapping.remove(k);
+        if let Some(vs) = self.forward_mapping.remove(k) {
+            for v in vs {
+                if let Some(ks) = self.inverse_mapping.get_mut(&v) {
+                    ks.retain(|x| x.as_ref() != k);
+                } else {
+                    janus_err!("Map in inconsistent state: entry ({:?}, {:?}) has no corresponding entry.", k, v);
+                }
+            }
+        }
     }
 
     pub fn remove_value(&mut self, v: &V) {
-        self.inverse_mapping.remove(v);
+        if let Some(ks) = self.inverse_mapping.remove(v) {
+            for k in ks {
+                if let Some(vs) = self.forward_mapping.get_mut(&k) {
+                    vs.retain(|x| x.as_ref() != v);
+                } else {
+                    janus_err!("Map in inconsistent state: entry ({:?}, {:?}) has no corresponding entry.", k, v);
+                }
+            }
+        }
     }
 
     pub fn get_values(&self, k: &K) -> Vec<Arc<V>> {
-        self.forward_mapping.get(k).map(Vec::as_slice).unwrap_or(&[]).iter().filter_map(|s| s.upgrade()).collect()
+        self.forward_mapping.get(k).map(Vec::as_slice).unwrap_or(&[]).iter().map(|x| x.clone()).collect()
     }
 
     pub fn get_keys(&self, v: &V) -> Vec<Arc<K>> {
-        self.inverse_mapping.get(v).map(Vec::as_slice).unwrap_or(&[]).iter().filter_map(|s| s.upgrade()).collect()
+        self.inverse_mapping.get(v).map(Vec::as_slice).unwrap_or(&[]).iter().map(|x| x.clone()).collect()
     }
 }
 
 /// A data structure for storing the state of all active connections and providing fast access to which
-/// connections should be sending traffic to which other connections.#[derive(Debug)]
+/// connections should be sending traffic to which other connections.
 #[derive(Debug)]
 pub struct Switchboard {
     /// All active connections.
