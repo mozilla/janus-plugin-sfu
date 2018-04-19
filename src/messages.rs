@@ -1,17 +1,14 @@
 /// Types and code related to handling signalling messages.
 use std::fmt;
 use super::Sdp;
-use super::auth::UserToken;
-use serde::de::{self, Deserialize, Deserializer, Visitor};
+use serde::de::{self, Deserializer, Visitor};
 
 /// A room ID representing a Janus multicast room.
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
-pub struct RoomId(pub String);
+pub type RoomId = String;
 
 /// A user ID representing a single Janus client. Used to correlate multiple Janus connections back to the same
 /// conceptual user for managing subscriptions.
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
-pub struct UserId(pub String);
+pub type UserId = String;
 
 struct IdVisitor;
 
@@ -38,18 +35,9 @@ impl<'de> Visitor<'de> for IdVisitor {
     }
 }
 
-impl<'de> Deserialize<'de> for RoomId {
-    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<RoomId, D::Error>
-    {
-        deserializer.deserialize_any(IdVisitor).map(|x| RoomId(x))
-    }
-}
-
-impl<'de> Deserialize<'de> for UserId {
-    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<UserId, D::Error>
-    {
-        deserializer.deserialize_any(IdVisitor).map(|x| UserId(x))
-    }
+fn deserialize_id<'de, D: Deserializer<'de>>(deserializer: D) -> Result<String, D::Error>
+{
+    deserializer.deserialize_any(IdVisitor)
 }
 
 /// Useful to represent a JSON message field which may or may not be present.
@@ -82,10 +70,11 @@ pub enum MessageKind {
     /// The "subscribe" field specifies which kind of traffic this client will receive. (Useful for saving a round
     /// trip if you wanted to both join and subscribe, as is typical.)
     Join {
+        #[serde(deserialize_with = "deserialize_id")]
         room_id: RoomId,
+        #[serde(deserialize_with = "deserialize_id")]
         user_id: UserId,
         subscribe: Option<Subscription>,
-        token: Option<UserToken>,
     },
 
     /// Indicates that a client wishes to subscribe to traffic described by the given subscription specification.
@@ -93,10 +82,16 @@ pub enum MessageKind {
 
     /// Indicates that a given user should be blocked from receiving your traffic, and that you should not
     /// receive their traffic (superseding any subscriptions you have.)
-    Block { whom: UserId },
+    Block {
+        #[serde(deserialize_with = "deserialize_id")]
+        whom: UserId
+    },
 
     /// Undoes a block targeting the given user.
-    Unblock { whom: UserId },
+    Unblock {
+        #[serde(deserialize_with = "deserialize_id")]
+        whom: UserId
+    },
 }
 
 /// Information about which traffic a client will get pushed to them.
@@ -149,10 +144,9 @@ mod tests {
             let json = r#"{"kind": "join", "user_id": 10, "room_id": "alpha"}"#;
             let result: MessageKind = serde_json::from_str(json).unwrap();
             assert_eq!(result, MessageKind::Join {
-                user_id: UserId("10".into()),
-                room_id: RoomId("alpha".into()),
-                subscribe: None,
-                token: None,
+                user_id: "10".into(),
+                room_id: "alpha".into(),
+                subscribe: None
             });
         }
 
@@ -161,14 +155,13 @@ mod tests {
             let json = r#"{"kind": "join", "user_id": 10, "room_id": 5, "subscribe": {"notifications": true, "data": false}}"#;
             let result: MessageKind = serde_json::from_str(json).unwrap();
             assert_eq!(result, MessageKind::Join {
-                user_id: UserId("10".into()),
-                room_id: RoomId("5".into()),
+                user_id: "10".into(),
+                room_id: "5".into(),
                 subscribe: Some(Subscription {
                     notifications: true,
                     data: false,
                     media: None
-                }),
-                token: None,
+                })
             });
         }
 
@@ -180,7 +173,7 @@ mod tests {
                 what: Subscription {
                     notifications: false,
                     data: true,
-                    media: Some(UserId("steve".into()))
+                    media: Some("steve".into())
                 }
             });
         }

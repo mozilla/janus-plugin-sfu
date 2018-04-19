@@ -2,7 +2,6 @@ extern crate atom;
 extern crate ini;
 #[macro_use]
 extern crate janus_plugin as janus;
-extern crate jsonwebtoken as jwt;
 #[macro_use]
 extern crate lazy_static;
 extern crate serde;
@@ -14,21 +13,17 @@ extern crate serde_json;
 mod messages;
 mod sessions;
 mod switchboard;
-mod auth;
 mod config;
 
 use atom::AtomSetOnce;
 use messages::{RoomId, UserId};
-use auth::UserToken;
 use config::Config;
-use janus::{JanusError, JanssonDecodingFlags, JanssonEncodingFlags, JanssonValue, Plugin, PluginCallbacks, LibraryMetadata, PluginResult,
-            PluginSession, RawPluginResult, RawJanssonValue};
+use janus::{JanusError, JanusResult, JanssonDecodingFlags, JanssonEncodingFlags, JanssonValue, Plugin, PluginCallbacks,
+            LibraryMetadata, PluginResult, PluginSession, RawPluginResult, RawJanssonValue};
 use janus::sdp::{AudioCodec, MediaDirection, OfferAnswerParameters, Sdp, VideoCodec};
 use messages::{JsepKind, MessageKind, OptionalField, Subscription};
 use serde_json::Value as JsonValue;
 use sessions::{JoinState, Session, SessionState};
-use std::collections::{HashMap, HashSet};
-use std::collections::hash_map::Entry;
 use std::error::Error;
 use std::ffi::CStr;
 use std::os::raw::{c_char, c_int};
@@ -117,54 +112,23 @@ fn gateway_callbacks() -> &'static PluginCallbacks {
 
 #[derive(Debug)]
 struct State {
-    // we always lock sessions, switchboard, occupants -- todo: consider making a state tuple with one RwLock containing all 3
-    // to eliminate the possibility of screwing this up
-    pub sessions: RwLock<Vec<Box<Arc<Session>>>>,
     pub switchboard: RwLock<Switchboard>,
-    pub occupants: RwLock<HashMap<RoomId, HashSet<Arc<Session>>>>,
     pub message_channel: AtomSetOnce<Box<mpsc::SyncSender<RawMessage>>>,
     pub config: AtomSetOnce<Box<Config>>,
 }
 
 lazy_static! {
     static ref STATE: State = State {
-        sessions: RwLock::new(Vec::new()),
-        occupants: RwLock::new(HashMap::new()),
         switchboard: RwLock::new(Switchboard::new()),
         message_channel: AtomSetOnce::empty(),
         config: AtomSetOnce::empty(),
     };
 }
 
-fn get_users<'a,'b>(room: &'a RoomId, occupants: &'b HashMap<RoomId, HashSet<Arc<Session>>>) -> HashSet<&'b UserId> {
-    let mut result = HashSet::new();
-    if let Some(sessions) = occupants.get(room) {
-        for session in sessions {
-            if let Some(joined) = session.join_state.get() {
-                result.insert(&joined.user_id);
-            }
-        }
-    }
-    result
-}
-
-fn get_publisher<'a, T>(user_id: &UserId, sessions: T) -> Option<Arc<Session>> where T: IntoIterator<Item=&'a Box<Arc<Session>>> {
-    sessions.into_iter()
-        .find(|s| {
-            let subscriber_offer = s.subscriber_offer.lock().unwrap();
-            let join_state = s.join_state.get();
-            match (subscriber_offer.as_ref(), join_state) {
-                (Some(_), Some(state)) if &state.user_id == user_id => true,
-                _ => false
-            }
-        })
-        .map(|s| Arc::clone(s))
-}
-
-fn notify_user<'a, T>(json: &JsonValue, target: &UserId, everyone: T) -> Result<(), JanusError> where T: IntoIterator<Item=&'a Box<Arc<Session>>> {
+fn notify_user<T: IntoIterator<Item=U>, U: AsRef<Session>>(json: &JsonValue, target: &UserId, everyone: T) -> JanusResult {
     let notifiees = everyone.into_iter().filter(|s| {
-        let subscription_state = s.subscription.get();
-        let join_state = s.join_state.get();
+        let subscription_state = s.as_ref().subscription.get();
+        let join_state = s.as_ref().join_state.get();
         match (subscription_state, join_state) {
             (Some(subscription), Some(joined)) => {
                 subscription.notifications && &joined.user_id == target
@@ -175,10 +139,10 @@ fn notify_user<'a, T>(json: &JsonValue, target: &UserId, everyone: T) -> Result<
     send_notification(json, notifiees)
 }
 
-fn notify_except<'a, T>(json: &JsonValue, myself: &UserId, everyone: T) -> Result<(), JanusError> where T: IntoIterator<Item=&'a Box<Arc<Session>>> {
+fn notify_except<T: IntoIterator<Item=U>, U: AsRef<Session>>(json: &JsonValue, myself: &UserId, everyone: T) -> JanusResult {
     let notifiees = everyone.into_iter().filter(|s| {
-        let subscription_state = s.subscription.get();
-        let join_state = s.join_state.get();
+        let subscription_state = s.as_ref().subscription.get();
+        let join_state = s.as_ref().join_state.get();
         match (subscription_state, join_state) {
             (Some(subscription), Some(joined)) => {
                 subscription.notifications && &joined.user_id != myself
@@ -189,43 +153,43 @@ fn notify_except<'a, T>(json: &JsonValue, myself: &UserId, everyone: T) -> Resul
     send_notification(json, notifiees)
 }
 
-fn send_notification<'a, T>(body: &JsonValue, sessions: T) -> Result<(), JanusError> where T: IntoIterator<Item=&'a Box<Arc<Session>>> {
+fn send_notification<T: IntoIterator<Item=U>, U: AsRef<Session>>(body: &JsonValue, sessions: T) -> JanusResult {
     let mut msg = from_serde_json(body);
     let push_event = gateway_callbacks().push_event;
     for session in sessions {
-        janus_info!("Notification going to {:?}: {:?}.", session, msg);
+        janus_info!("Notification going to {:?}: {:?}.", session.as_ref(), msg);
         // probably a hack -- we shouldn't stop notifying if we fail one
-        janus::get_result(push_event(session.as_ptr(), &mut PLUGIN, ptr::null(), msg.as_mut_ref(), ptr::null_mut()))?
+        JanusError::from(push_event(session.as_ref().as_ptr(), &mut PLUGIN, ptr::null(), msg.as_mut_ref(), ptr::null_mut()))?
     }
     Ok(())
 }
 
-fn send_offer<'a, T>(offer: &JsonValue, sessions: T) -> Result<(), JanusError> where T: IntoIterator<Item=&'a Arc<Session>> {
+fn send_offer<T: IntoIterator<Item=U>, U: AsRef<Session>>(offer: &JsonValue, sessions: T) -> JanusResult {
     let mut msg = from_serde_json(&json!({}));
     let mut jsep = from_serde_json(offer);
     let push_event = gateway_callbacks().push_event;
     for session in sessions {
-        janus_info!("Offer going to {:?}: {:?}.", session, jsep);
+        janus_info!("Offer going to {:?}: {:?}.", session.as_ref(), jsep);
         // probably a hack -- we shouldn't stop notifying if we fail one
-        janus::get_result(push_event(session.as_ptr(), &mut PLUGIN, ptr::null(), msg.as_mut_ref(), jsep.as_mut_ref()))?
+        JanusError::from(push_event(session.as_ref().as_ptr(), &mut PLUGIN, ptr::null(), msg.as_mut_ref(), jsep.as_mut_ref()))?
     }
     Ok(())
 }
 
-fn send_pli<'a, T>(publishers: T) where T: IntoIterator<Item=&'a Arc<Session>> {
+fn send_pli<T: IntoIterator<Item=U>, U: AsRef<Session>>(publishers: T) {
     let relay_rtcp = gateway_callbacks().relay_rtcp;
     for publisher in publishers {
         let mut pli = janus::rtcp::gen_pli();
-        relay_rtcp(publisher.as_ptr(), 1, pli.as_mut_ptr(), pli.len() as i32);
+        relay_rtcp(publisher.as_ref().as_ptr(), 1, pli.as_mut_ptr(), pli.len() as i32);
     }
 }
 
-fn send_fir<'a, T>(publishers: T) where T: IntoIterator<Item=&'a Arc<Session>> {
+fn send_fir<T: IntoIterator<Item=U>, U: AsRef<Session>>(publishers: T) {
     let relay_rtcp = gateway_callbacks().relay_rtcp;
     for publisher in publishers {
-        let mut seq = publisher.fir_seq.fetch_add(1, Ordering::Relaxed) as i32;
+        let mut seq = publisher.as_ref().fir_seq.fetch_add(1, Ordering::Relaxed) as i32;
         let mut fir = janus::rtcp::gen_fir(&mut seq);
-        relay_rtcp(publisher.as_ptr(), 1, fir.as_mut_ptr(), fir.len() as i32);
+        relay_rtcp(publisher.as_ref().as_ptr(), 1, fir.as_mut_ptr(), fir.len() as i32);
     }
 }
 
@@ -289,7 +253,7 @@ extern "C" fn create_session(handle: *mut PluginSession, error: *mut c_int) {
     match unsafe { Session::associate(handle, initial_state) } {
         Ok(sess) => {
             janus_info!("Initializing SFU session {:?}...", sess);
-            STATE.sessions.write().expect("Sessions table is poisoned :(").push(sess);
+            STATE.switchboard.write().expect("Switchboard is poisoned :(").connect(sess);
         }
         Err(e) => {
             janus_err!("{}", e);
@@ -303,33 +267,20 @@ extern "C" fn destroy_session(handle: *mut PluginSession, error: *mut c_int) {
         Ok(sess) => {
             janus_info!("Destroying SFU session {:?}...", sess);
             let mut destroyed = sess.destroyed.lock().expect("Session destruction mutex is poisoned :(");
-            let mut sessions = STATE.sessions.write().expect("Sessions table is poisoned :(");
             let mut switchboard = STATE.switchboard.write().expect("Switchboard is poisoned :(");
+            switchboard.remove_session(&sess);
             if let Some(joined) = sess.join_state.get() {
-                let mut occupants = STATE.occupants.write().expect("Occupants are poisoned :(");
-                let user_exists = sessions.iter().any(|s| {
-                    let user_matches = match s.join_state.get() {
-                        None => false,
-                        Some(other_state) => joined.user_id == other_state.user_id
-                    };
-                    s.handle != sess.handle && user_matches
-                });
-                if !user_exists {
+                // if they are entirely disconnected, notify their roommates
+                if !switchboard.is_connected(&joined.user_id) {
                     let response = json!({ "event": "leave", "user_id": &joined.user_id, "room_id": &joined.room_id });
-                    match notify_except(&response, &joined.user_id, &*sessions) {
-                        Ok(_) | Err(JanusError(458 /* session not found */)) => (),
+                    let occupants = switchboard.occupants_of(&joined.room_id);
+                    match notify_except(&response, &joined.user_id, &occupants) {
+                        Ok(_) => (),
+                        Err(JanusError { code: 458 }) /* session not found */ => (),
                         Err(e) => janus_err!("Error notifying publishers on leave: {}", e)
                     };
                 }
-                if let Entry::Occupied(mut cohabitators) = occupants.entry(joined.room_id.clone()) {
-                    cohabitators.get_mut().remove(&sess);
-                    if cohabitators.get().len() == 0 {
-                        cohabitators.remove_entry();
-                    }
-                }
             }
-            switchboard.remove_session(&sess);
-            sessions.retain(|s| s.as_ptr() != handle);
             *destroyed = true;
         }
         Err(e) => {
@@ -347,16 +298,15 @@ extern "C" fn query_session(_handle: *mut PluginSession) -> *mut RawJanssonValue
 extern "C" fn setup_media(handle: *mut PluginSession) {
     let sess = unsafe { Session::from_ptr(handle).expect("Session can't be null!") };
     let switchboard = STATE.switchboard.read().expect("Switchboard is poisoned :(");
-    send_fir(&switchboard.senders_for(&sess));
+    send_fir(switchboard.media_senders_to(&sess));
     janus_verb!("WebRTC media is now available on {:?}.", sess);
 }
 
 extern "C" fn incoming_rtp(handle: *mut PluginSession, video: c_int, buf: *mut c_char, len: c_int) {
     let sess = unsafe { Session::from_ptr(handle).expect("Session can't be null!") };
     let switchboard = STATE.switchboard.read().expect("Switchboard lock poisoned; can't continue.");
-    let subscribers = switchboard.recipients_for(&sess);
     let relay_rtp = gateway_callbacks().relay_rtp;
-    for other in subscribers {
+    for other in switchboard.media_recipients_for(&sess) {
         relay_rtp(other.as_ptr(), video, buf, len);
     }
 }
@@ -367,14 +317,14 @@ extern "C" fn incoming_rtcp(handle: *mut PluginSession, video: c_int, buf: *mut 
     let packet = unsafe { slice::from_raw_parts(buf, len as usize) };
     match video {
         1 if janus::rtcp::has_pli(packet) => {
-            send_pli(&switchboard.senders_for(&sess));
+            send_pli(switchboard.media_senders_to(&sess));
         }
         1 if janus::rtcp::has_fir(packet) => {
-            send_fir(&switchboard.senders_for(&sess));
+            send_fir(switchboard.media_senders_to(&sess));
         }
         _ => {
             let relay_rtcp = gateway_callbacks().relay_rtcp;
-            for subscriber in switchboard.recipients_for(&sess) {
+            for subscriber in switchboard.media_recipients_for(&sess) {
                 relay_rtcp(subscriber.as_ptr(), video, buf, len);
             }
         }
@@ -384,24 +334,9 @@ extern "C" fn incoming_rtcp(handle: *mut PluginSession, video: c_int, buf: *mut 
 extern "C" fn incoming_data(handle: *mut PluginSession, buf: *mut c_char, len: c_int) {
     let sess = unsafe { Session::from_ptr(handle).expect("Session can't be null!") };
     let switchboard = STATE.switchboard.read().expect("Switchboard lock poisoned; can't continue.");
-    let occupants = STATE.occupants.read().expect("Occupants lock poisoned; can't continue.");
-    if let Some(joined) = sess.join_state.get() {
-        let relay_data = gateway_callbacks().relay_data;
-        let forward_blocks = switchboard.blockers_to_miscreants.get_keys(&joined.user_id);
-        let reverse_blocks = switchboard.blockers_to_miscreants.get_values(&joined.user_id);
-        if let Some(cohabitators) = occupants.get(&joined.room_id) {
-            for cohabitator in cohabitators {
-                if let Some(other) = cohabitator.join_state.get() {
-                    let blocks = forward_blocks.iter().any(|x| x.as_ref() == &other.user_id);
-                    let is_blocked = reverse_blocks.iter().any(|x| x.as_ref() == &other.user_id);
-                    if sess != *cohabitator && !blocks && !is_blocked {
-                        relay_data(cohabitator.as_ptr(), buf, len);
-                    }
-                }
-            }
-        }
-    } else {
-        janus_huge!("Discarding data packet from not-yet-joined peer.");
+    let relay_data = gateway_callbacks().relay_data;
+    for other in switchboard.data_recipients_for(&sess) {
+        relay_data(other.as_ptr(), buf, len);
     }
 }
 
@@ -413,13 +348,10 @@ extern "C" fn hangup_media(_handle: *mut PluginSession) {
     janus_verb!("Hanging up WebRTC media.");
 }
 
-fn process_join(from: &Arc<Session>, room_id: RoomId, user_id: UserId, subscribe: Option<Subscription>, _token: Option<UserToken>) -> MessageResult {
+fn process_join(from: &Arc<Session>, room_id: RoomId, user_id: UserId, subscribe: Option<Subscription>) -> MessageResult {
     // todo: holy shit clean this function up somehow
-    let sessions = STATE.sessions.read()?;
     let mut switchboard = STATE.switchboard.write()?;
-    let mut occupants = STATE.occupants.write()?;
-    let body = json!({ "users": { room_id.clone().0: get_users(&room_id, &occupants) }});
-    let cohabitators = occupants.entry(room_id.clone()).or_insert_with(HashSet::new);
+    let body = json!({ "users": { room_id.as_str(): switchboard.get_users(&room_id) }});
 
     let already_joined = !from.join_state.is_none();
     let already_subscribed = !from.subscription.is_none();
@@ -431,9 +363,9 @@ fn process_join(from: &Arc<Session>, room_id: RoomId, user_id: UserId, subscribe
     }
 
     let mut is_master_handle = false;
-    if let Some(subscription) = subscribe.clone() {
+    if let Some(subscription) = subscribe.as_ref() {
         let max_room_size = STATE.config.get().unwrap().max_room_size;
-        let room_is_full = cohabitators.len() >= max_room_size;
+        let room_is_full = switchboard.occupant_count(&room_id) >= max_room_size;
         is_master_handle = subscription.data; // hack -- assume there is only one "master" data connection per user
         if is_master_handle && room_is_full {
             return Err(From::from("Room is full."))
@@ -444,19 +376,20 @@ fn process_join(from: &Arc<Session>, room_id: RoomId, user_id: UserId, subscribe
     if let Some(subscription) = subscribe {
         from.subscription.set_if_none(Box::new(subscription.clone()));
         if is_master_handle {
-            cohabitators.insert(Arc::clone(from));
             let notification = json!({ "event": "join", "user_id": user_id, "room_id": room_id });
-            if let Err(e) = notify_except(&notification, &user_id, &*sessions) {
+            let occupants = switchboard.occupants_of(&room_id);
+            switchboard.join_room(Arc::clone(from), room_id);
+            if let Err(e) = notify_except(&notification, &user_id, &occupants) {
                 janus_err!("Error sending notification for user join: {:?}", e)
             }
         }
         if let Some(ref publisher_id) = subscription.media {
-            let publisher = get_publisher(publisher_id, &*sessions).ok_or("Can't subscribe to a nonexistent publisher.")?;
+            let publisher = switchboard.get_publisher(publisher_id).ok_or("Can't subscribe to a nonexistent publisher.")?.clone();
             let jsep = json!({
                 "type": "offer",
                 "sdp": publisher.subscriber_offer.lock().unwrap().as_ref().unwrap()
             });
-            switchboard.subscribe_to_user(from.clone(), publisher);
+            switchboard.subscribe_to_user(Arc::clone(from), publisher);
             return Ok(MessageResponse::new(body, jsep));
         }
     }
@@ -465,11 +398,12 @@ fn process_join(from: &Arc<Session>, room_id: RoomId, user_id: UserId, subscribe
 
 fn process_block(from: &Arc<Session>, whom: UserId) -> MessageResult {
     if let Some(joined) = from.join_state.get() {
-        let sessions = STATE.sessions.read()?;
         let mut switchboard = STATE.switchboard.write()?;
         let event = json!({ "event": "blocked", "by": &joined.user_id });
-        match notify_user(&event, &whom, &*sessions) {
-            Ok(_) | Err(JanusError(458 /* session not found */)) => (),
+        let occupants = switchboard.occupants_of(&joined.room_id);
+        match notify_user(&event, &whom, &occupants) {
+            Ok(_) => (),
+            Err(JanusError { code: 458 }) /* session not found */ => (),
             Err(e) => janus_err!("Error notifying user about block: {}", e)
         };
         switchboard.establish_block(Arc::new(joined.user_id.clone()), Arc::new(whom));
@@ -481,15 +415,16 @@ fn process_block(from: &Arc<Session>, whom: UserId) -> MessageResult {
 
 fn process_unblock(from: &Arc<Session>, whom: UserId) -> MessageResult {
     if let Some(joined) = from.join_state.get() {
-        let sessions = STATE.sessions.read()?;
         let mut switchboard = STATE.switchboard.write()?;
+        let occupants = switchboard.occupants_of(&joined.room_id);
         switchboard.lift_block(&joined.user_id, &whom);
-        if let Some(publisher) = get_publisher(&whom, &*sessions) {
+        if let Some(publisher) = switchboard.get_publisher(&whom) {
             send_fir(&[publisher]);
         }
         let event = json!({ "event": "unblocked", "by": &joined.user_id });
-        match notify_user(&event, &whom, &*sessions) {
-            Ok(_) | Err(JanusError(458 /* session not found */)) => (),
+        match notify_user(&event, &whom, &occupants) {
+            Ok(_) => (),
+            Err(JanusError { code: 458 }) /* session not found */ => (),
             Err(e) => janus_err!("Error notifying user about unblock: {}", e)
         };
         Ok(MessageResponse::msg(json!({})))
@@ -504,10 +439,9 @@ fn process_subscribe(from: &Arc<Session>, what: Subscription) -> MessageResult {
         return Err(From::from("Users may only subscribe once!"))
     }
 
-    let sessions = STATE.sessions.read()?;
     let mut switchboard = STATE.switchboard.write()?;
     if let Some(ref publisher_id) = what.media {
-        let publisher = get_publisher(publisher_id, &*sessions).ok_or("Can't subscribe to a nonexistent publisher.")?;
+        let publisher = switchboard.get_publisher(publisher_id).ok_or("Can't subscribe to a nonexistent publisher.")?.clone();
         let jsep = json!({
             "type": "offer",
             "sdp": publisher.subscriber_offer.lock().unwrap().as_ref().unwrap()
@@ -529,7 +463,7 @@ fn process_message(from: &Arc<Session>, msg: &JanssonValue) -> MessageResult {
                 MessageKind::Subscribe { what } => process_subscribe(from, what),
                 MessageKind::Block { whom } => process_block(from, whom),
                 MessageKind::Unblock { whom } => process_unblock(from, whom),
-                MessageKind::Join { room_id, user_id, subscribe, token } => process_join(from, room_id, user_id, subscribe, token),
+                MessageKind::Join { room_id, user_id, subscribe } => process_join(from, room_id, user_id, subscribe),
             }
         }
     }
@@ -570,8 +504,9 @@ fn process_offer(from: &Session, offer: &Sdp) -> JsepResult {
 
     let switchboard = STATE.switchboard.read().expect("Switchboard lock poisoned; can't continue.");
     let jsep = json!({ "type": "offer", "sdp": subscriber_offer });
-    match send_offer(&jsep, switchboard.subscribers_to(from).iter()) {
-        Ok(_) | Err(JanusError(458 /* session not found */)) => (),
+    match send_offer(&jsep, switchboard.subscribers_to(from)) {
+        Ok(_) => (),
+        Err(JanusError { code: 458 }) /* session not found */ => (),
         Err(e) => janus_err!("Error notifying subscribers about new offer: {}", e)
     };
     *from.subscriber_offer.lock().unwrap() = Some(subscriber_offer);
@@ -597,14 +532,14 @@ fn process_jsep(from: &Session, jsep: &JanssonValue) -> JsepResult {
     }
 }
 
-fn push_response(from: &Session, txn: TransactionId, body: &JsonValue, jsep: Option<JsonValue>) -> Result<(), Box<Error>> {
+fn push_response(from: &Session, txn: TransactionId, body: &JsonValue, jsep: Option<JsonValue>) -> JanusResult {
     let push_event = gateway_callbacks().push_event;
     let jsep = jsep.unwrap_or_else(|| json!({}));
     janus_info!("{:?} sending response to {:?}: body = {}.", from.as_ptr(), txn, body);
-    Ok(janus::get_result(push_event(from.as_ptr(), &mut PLUGIN, txn.0, from_serde_json(body).as_mut_ref(), from_serde_json(&jsep).as_mut_ref()))?)
+    JanusError::from(push_event(from.as_ptr(), &mut PLUGIN, txn.0, from_serde_json(body).as_mut_ref(), from_serde_json(&jsep).as_mut_ref()))
 }
 
-fn handle_message_async(RawMessage { jsep, msg, txn, from }: RawMessage) -> Result<(), Box<Error>> {
+fn handle_message_async(RawMessage { jsep, msg, txn, from }: RawMessage) -> JanusResult {
     if let Some(ref from) = from.upgrade() {
         let destroyed = from.destroyed.lock().expect("Session destruction mutex is poisoned :(");
         if !*destroyed {
