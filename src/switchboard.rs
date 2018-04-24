@@ -241,10 +241,6 @@ impl Switchboard {
         }
     }
 
-    pub fn occupant_count(&self, room: &RoomId) -> usize {
-        self.occupants.get(room).map(Vec::len).unwrap_or(0)
-    }
-
     pub fn get_users(&self, room: &RoomId) -> HashSet<&UserId> {
         let mut result = HashSet::new();
         if let Some(sessions) = self.occupants.get(room) {

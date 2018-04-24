@@ -366,7 +366,7 @@ fn process_join(from: &Arc<Session>, room_id: RoomId, user_id: UserId, subscribe
     let mut is_master_handle = false;
     if let Some(subscription) = subscribe.as_ref() {
         let max_room_size = STATE.config.get().unwrap().max_room_size;
-        let room_is_full = switchboard.occupant_count(&room_id) >= max_room_size;
+        let room_is_full = switchboard.occupants_of(&room_id).len() >= max_room_size;
         is_master_handle = subscription.data; // hack -- assume there is only one "master" data connection per user
         if is_master_handle && room_is_full {
             return Err(From::from("Room is full."))
