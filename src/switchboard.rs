@@ -245,7 +245,7 @@ impl Switchboard {
         self.occupants.get(room).map(Vec::len).unwrap_or(0)
     }
 
-    pub fn get_users<'a, 'b>(&'a self, room: &'b RoomId) -> HashSet<&'a UserId> {
+    pub fn get_users(&self, room: &RoomId) -> HashSet<&UserId> {
         let mut result = HashSet::new();
         if let Some(sessions) = self.occupants.get(room) {
             for session in sessions {
@@ -257,7 +257,7 @@ impl Switchboard {
         result
     }
 
-    pub fn get_publisher<'a, 'b>(&'a self, user_id: &'b UserId) -> Option<&'a Arc<Session>> {
+    pub fn get_publisher(&self, user_id: &UserId) -> Option<&Arc<Session>> {
         self.sessions.iter()
             .find(|s| {
                 let subscriber_offer = s.subscriber_offer.lock().unwrap();
