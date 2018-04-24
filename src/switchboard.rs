@@ -6,42 +6,52 @@ use std::collections::hash_map::Entry;
 use std::sync::Arc;
 use std::hash::Hash;
 use std::fmt::Debug;
+use std::borrow::Borrow;
+use multimap::MultiMap;
 
 #[derive(Debug)]
 pub struct BidirectionalMultimap<K: Eq + Hash, V: Eq + Hash> {
-    forward_mapping: HashMap<Arc<K>, Vec<Arc<V>>>,
-    inverse_mapping: HashMap<Arc<V>, Vec<Arc<K>>>,
+    forward_mapping: MultiMap<K, V>,
+    inverse_mapping: MultiMap<V, K>,
 }
 
-impl<K, V> BidirectionalMultimap<K, V> where K: Eq + Hash + Debug, V: Eq + Hash + Debug {
+impl<K, V> BidirectionalMultimap<K, V> where K: Eq + Hash + Clone + Debug, V: Eq + Hash + Clone + Debug {
     pub fn new() -> Self {
         Self {
-            forward_mapping: HashMap::new(),
-            inverse_mapping: HashMap::new(),
+            forward_mapping: MultiMap::new(),
+            inverse_mapping: MultiMap::new(),
         }
     }
 
-    pub fn associate(&mut self, k: Arc<K>, v: Arc<V>) {
-        let kk = Arc::clone(&k);
-        let vv = Arc::clone(&v);
-        self.forward_mapping.entry(k).or_insert_with(Vec::new).push(vv);
-        self.inverse_mapping.entry(v).or_insert_with(Vec::new).push(kk);
+    pub fn associate(&mut self, k: K, v: V) {
+        let kk = k.clone();
+        let vv = v.clone();
+        self.forward_mapping.insert(k, vv);
+        self.inverse_mapping.insert(v, kk);
     }
 
-    pub fn disassociate(&mut self, k: &K, v: &V) {
-        if let Some(vals) = self.forward_mapping.get_mut(k) {
-            vals.retain(|x| x.as_ref() != v);
+    pub fn disassociate<T, U>(&mut self, k: &T, v: &U)
+        where K: Borrow<T>,
+              T: Hash + Eq,
+              V: Borrow<U>,
+              U: Hash + Eq
+    {
+        if let Some(vals) = self.forward_mapping.get_vec_mut(k) {
+            vals.retain(|x| x.borrow() != v);
         }
-        if let Some(keys) = self.inverse_mapping.get_mut(v) {
-            keys.retain(|x| x.as_ref() != k);
+        if let Some(keys) = self.inverse_mapping.get_vec_mut(v) {
+            keys.retain(|x| x.borrow() != k);
         }
     }
 
-    pub fn remove_key(&mut self, k: &K) {
+    pub fn remove_key<T>(&mut self, k: &T)
+        where K: Borrow<T>,
+              T: Hash + Eq + Debug
+    {
         if let Some(vs) = self.forward_mapping.remove(k) {
             for v in vs {
-                if let Some(ks) = self.inverse_mapping.get_mut(&v) {
-                    ks.retain(|x| x.as_ref() != k);
+                if let Some(ks) = self.inverse_mapping.get_vec_mut(&v) {
+                    ks.retain(|x| x.borrow() != k);
                 } else {
                     janus_err!("Map in inconsistent state: entry ({:?}, {:?}) has no corresponding entry.", k, v);
                 }
@@ -49,11 +59,14 @@ impl<K, V> BidirectionalMultimap<K, V> where K: Eq + Hash + Debug, V: Eq + Hash 
         }
     }
 
-    pub fn remove_value(&mut self, v: &V) {
+    pub fn remove_value<U>(&mut self, v: &U)
+        where V: Borrow<U>,
+              U: Hash + Eq + Debug
+    {
         if let Some(ks) = self.inverse_mapping.remove(v) {
             for k in ks {
-                if let Some(vs) = self.forward_mapping.get_mut(&k) {
-                    vs.retain(|x| x.as_ref() != v);
+                if let Some(vs) = self.forward_mapping.get_vec_mut(&k) {
+                    vs.retain(|x| x.borrow() != v);
                 } else {
                     janus_err!("Map in inconsistent state: entry ({:?}, {:?}) has no corresponding entry.", k, v);
                 }
@@ -61,12 +74,18 @@ impl<K, V> BidirectionalMultimap<K, V> where K: Eq + Hash + Debug, V: Eq + Hash 
         }
     }
 
-    pub fn get_values(&self, k: &K) -> Vec<Arc<V>> {
-        self.forward_mapping.get(k).map(Vec::as_slice).unwrap_or(&[]).iter().map(|x| x.clone()).collect()
+    pub fn get_values<T>(&self, k: &T) -> &[V]
+        where K: Borrow<T>,
+              T: Hash + Eq
+    {
+        self.forward_mapping.get_vec(k).map(Vec::as_slice).unwrap_or(&[])
     }
 
-    pub fn get_keys(&self, v: &V) -> Vec<Arc<K>> {
-        self.inverse_mapping.get(v).map(Vec::as_slice).unwrap_or(&[]).iter().map(|x| x.clone()).collect()
+    pub fn get_keys<U>(&self, v: &U) -> &[K]
+        where V: Borrow<U>,
+              U: Hash + Eq
+    {
+        self.inverse_mapping.get_vec(v).map(Vec::as_slice).unwrap_or(&[])
     }
 }
 
@@ -77,9 +96,9 @@ pub struct Switchboard {
     /// All active connections.
     sessions: Vec<Box<Arc<Session>>>,
     /// Connections which have joined a room, per room.
-    occupants: HashMap<RoomId, HashSet<Arc<Session>>>,
+    occupants: HashMap<RoomId, Vec<Arc<Session>>>,
     /// Which connections are subscribing to traffic from which other connections.
-    publisher_to_subscribers: BidirectionalMultimap<Session, Session>,
+    publisher_to_subscribers: BidirectionalMultimap<Arc<Session>, Arc<Session>>,
     /// Which users have explicitly blocked traffic to and from other users.
     blockers_to_miscreants: BidirectionalMultimap<UserId, UserId>,
 }
@@ -107,7 +126,7 @@ impl Switchboard {
         })
     }
 
-    pub fn establish_block(&mut self, from: Arc<UserId>, target: Arc<UserId>) {
+    pub fn establish_block(&mut self, from: UserId, target: UserId) {
         self.blockers_to_miscreants.associate(from, target);
     }
 
@@ -116,12 +135,12 @@ impl Switchboard {
     }
 
     pub fn join_room(&mut self, session: Arc<Session>, room: RoomId) {
-        self.occupants.entry(room).or_insert_with(HashSet::new).insert(session);
+        self.occupants.entry(room).or_insert_with(Vec::new).push(session);
     }
 
     pub fn leave_room(&mut self, session: &Session, room: RoomId) {
         if let Entry::Occupied(mut cohabitators) = self.occupants.entry(room) {
-            cohabitators.get_mut().remove(session);
+            cohabitators.get_mut().retain(|x| x.as_ref() != session);
             if cohabitators.get().len() == 0 {
                 cohabitators.remove_entry();
             }
@@ -141,20 +160,20 @@ impl Switchboard {
         self.publisher_to_subscribers.associate(publisher, subscriber);
     }
 
-    pub fn subscribers_to(&self, publisher: &Session) -> Vec<Arc<Session>> {
+    pub fn subscribers_to(&self, publisher: &Session) -> &[Arc<Session>] {
         self.publisher_to_subscribers.get_values(publisher)
     }
 
-    pub fn publishers_to(&self, subscriber: &Session) -> Vec<Arc<Session>> {
+    pub fn publishers_to(&self, subscriber: &Session) -> &[Arc<Session>] {
         self.publisher_to_subscribers.get_keys(subscriber)
     }
 
-    pub fn occupants_of(&self, room: &RoomId) -> HashSet<Arc<Session>> {
-        self.occupants.get(room).map(|x| x.clone()).unwrap_or_else(HashSet::new)
+    pub fn occupants_of(&self, room: &RoomId) -> &[Arc<Session>] {
+        self.occupants.get(room).map(Vec::as_slice).unwrap_or(&[])
     }
 
-    pub fn media_recipients_for(&self, sender: &Session) -> Vec<Arc<Session>> {
-        let mut subscribers = self.subscribers_to(sender);
+    pub fn media_recipients_for(&self, sender: &Session) -> Vec<&Arc<Session>> {
+        let mut subscribers: Vec<_> = self.subscribers_to(sender).iter().collect();
         if let Some(joined) = sender.join_state.get() {
             let forward_blocks = self.blockers_to_miscreants.get_keys(&joined.user_id);
             let reverse_blocks = self.blockers_to_miscreants.get_values(&joined.user_id);
@@ -164,8 +183,8 @@ impl Switchboard {
                     match recipient.join_state.get() {
                         None => true,
                         Some(other) => {
-                            let blocks = forward_blocks.iter().any(|x| x.as_ref() == &other.user_id);
-                            let is_blocked = reverse_blocks.iter().any(|x| x.as_ref() == &other.user_id);
+                            let blocks = forward_blocks.contains(&other.user_id);
+                            let is_blocked = reverse_blocks.contains(&other.user_id);
                             return !blocks && !is_blocked;
                         }
                     }
@@ -175,8 +194,8 @@ impl Switchboard {
         subscribers
     }
 
-    pub fn media_senders_to(&self, recipient: &Session) -> Vec<Arc<Session>> {
-        let mut publishers = self.publishers_to(recipient);
+    pub fn media_senders_to(&self, recipient: &Session) -> Vec<&Arc<Session>> {
+        let mut publishers: Vec<_> = self.publishers_to(recipient).iter().collect();
         if let Some(joined) = recipient.join_state.get() {
             let forward_blocks = self.blockers_to_miscreants.get_values(&joined.user_id);
             let reverse_blocks = self.blockers_to_miscreants.get_keys(&joined.user_id);
@@ -186,8 +205,8 @@ impl Switchboard {
                     match sender.join_state.get() {
                         None => true,
                         Some(other) => {
-                            let blocks = forward_blocks.iter().any(|x| x.as_ref() == &other.user_id);
-                            let is_blocked = reverse_blocks.iter().any(|x| x.as_ref() == &other.user_id);
+                            let blocks = forward_blocks.contains(&other.user_id);
+                            let is_blocked = reverse_blocks.contains(&other.user_id);
                             return !blocks && !is_blocked;
                         }
                     }
@@ -197,9 +216,9 @@ impl Switchboard {
         publishers
     }
 
-    pub fn data_recipients_for(&self, session: &Session) -> HashSet<Arc<Session>> {
+    pub fn data_recipients_for(&self, session: &Session) -> Vec<&Arc<Session>> {
         if let Some(joined) = session.join_state.get() {
-            let mut cohabitators = self.occupants_of(&joined.room_id);
+            let mut cohabitators: Vec<_> = self.occupants_of(&joined.room_id).iter().collect();
             let forward_blocks = self.blockers_to_miscreants.get_keys(&joined.user_id);
             let reverse_blocks = self.blockers_to_miscreants.get_values(&joined.user_id);
             let blocks_exist = !forward_blocks.is_empty() || !reverse_blocks.is_empty();
@@ -209,8 +228,8 @@ impl Switchboard {
                     match cohabitator.join_state.get() {
                         None => true,
                         Some(other) => {
-                            let blocks = forward_blocks.iter().any(|x| x.as_ref() == &other.user_id);
-                            let is_blocked = reverse_blocks.iter().any(|x| x.as_ref() == &other.user_id);
+                            let blocks = forward_blocks.contains(&other.user_id);
+                            let is_blocked = reverse_blocks.contains(&other.user_id);
                             return !blocks && !is_blocked;
                         }
                     }
@@ -218,12 +237,12 @@ impl Switchboard {
             }
             cohabitators
         } else {
-            HashSet::new()
+            Vec::new()
         }
     }
 
     pub fn occupant_count(&self, room: &RoomId) -> usize {
-        self.occupants.get(room).map(HashSet::len).unwrap_or(0)
+        self.occupants.get(room).map(Vec::len).unwrap_or(0)
     }
 
     pub fn get_users<'a, 'b>(&'a self, room: &'b RoomId) -> HashSet<&'a UserId> {
