@@ -1,10 +1,18 @@
 PREFIX = /opt/janus/lib/janus/plugins
-TARGET = target/release/libjanus_plugin_sfu.so
 
-install:
-	cargo build --release
-	cargo test --release
+install: release
 	mkdir -p $(DESTDIR)$(PREFIX)
-	cp $(TARGET) $(DESTDIR)$(PREFIX)
+	cp target/release/libjanus_plugin_sfu.so $(DESTDIR)$(PREFIX)
 
-.PHONY: install
+release:
+	RUSTFLAGS=-g cargo build --release
+	cargo test --release
+
+debug:
+	cargo build
+	cargo test
+
+clean:
+	cargo clean
+
+.PHONY: clean install release debug
