@@ -7,7 +7,7 @@ use janus::sdp::Sdp;
 use janus::session::SessionWrapper;
 
 /// State pertaining to this session's join of a particular room as a particular user ID.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct JoinState {
     /// The room ID that this session is in.
     pub room_id: RoomId,

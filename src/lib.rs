@@ -1,5 +1,6 @@
 extern crate atom;
 extern crate ini;
+extern crate multimap;
 #[macro_use]
 extern crate janus_plugin as janus;
 #[macro_use]
@@ -274,7 +275,7 @@ extern "C" fn destroy_session(handle: *mut PluginSession, error: *mut c_int) {
                 if !switchboard.is_connected(&joined.user_id) {
                     let response = json!({ "event": "leave", "user_id": &joined.user_id, "room_id": &joined.room_id });
                     let occupants = switchboard.occupants_of(&joined.room_id);
-                    match notify_except(&response, &joined.user_id, &occupants) {
+                    match notify_except(&response, &joined.user_id, occupants) {
                         Ok(_) => (),
                         Err(JanusError { code: 458 }) /* session not found */ => (),
                         Err(e) => janus_err!("Error notifying publishers on leave: {}", e)
@@ -365,7 +366,7 @@ fn process_join(from: &Arc<Session>, room_id: RoomId, user_id: UserId, subscribe
     let mut is_master_handle = false;
     if let Some(subscription) = subscribe.as_ref() {
         let max_room_size = STATE.config.get().unwrap().max_room_size;
-        let room_is_full = switchboard.occupant_count(&room_id) >= max_room_size;
+        let room_is_full = switchboard.occupants_of(&room_id).len() >= max_room_size;
         is_master_handle = subscription.data; // hack -- assume there is only one "master" data connection per user
         if is_master_handle && room_is_full {
             return Err(From::from("Room is full."))
@@ -377,9 +378,8 @@ fn process_join(from: &Arc<Session>, room_id: RoomId, user_id: UserId, subscribe
         from.subscription.set_if_none(Box::new(subscription.clone()));
         if is_master_handle {
             let notification = json!({ "event": "join", "user_id": user_id, "room_id": room_id });
-            let occupants = switchboard.occupants_of(&room_id);
-            switchboard.join_room(Arc::clone(from), room_id);
-            if let Err(e) = notify_except(&notification, &user_id, &occupants) {
+            switchboard.join_room(Arc::clone(from), room_id.clone());
+            if let Err(e) = notify_except(&notification, &user_id, switchboard.occupants_of(&room_id)) {
                 janus_err!("Error sending notification for user join: {:?}", e)
             }
         }
@@ -400,13 +400,12 @@ fn process_block(from: &Arc<Session>, whom: UserId) -> MessageResult {
     if let Some(joined) = from.join_state.get() {
         let mut switchboard = STATE.switchboard.write()?;
         let event = json!({ "event": "blocked", "by": &joined.user_id });
-        let occupants = switchboard.occupants_of(&joined.room_id);
-        match notify_user(&event, &whom, &occupants) {
+        match notify_user(&event, &whom, switchboard.occupants_of(&joined.room_id)) {
             Ok(_) => (),
             Err(JanusError { code: 458 }) /* session not found */ => (),
             Err(e) => janus_err!("Error notifying user about block: {}", e)
         };
-        switchboard.establish_block(Arc::new(joined.user_id.clone()), Arc::new(whom));
+        switchboard.establish_block(joined.user_id.clone(), whom);
         Ok(MessageResponse::msg(json!({})))
     } else {
         Err(From::from("Cannot block when not in a room."))
@@ -416,13 +415,12 @@ fn process_block(from: &Arc<Session>, whom: UserId) -> MessageResult {
 fn process_unblock(from: &Arc<Session>, whom: UserId) -> MessageResult {
     if let Some(joined) = from.join_state.get() {
         let mut switchboard = STATE.switchboard.write()?;
-        let occupants = switchboard.occupants_of(&joined.room_id);
         switchboard.lift_block(&joined.user_id, &whom);
         if let Some(publisher) = switchboard.get_publisher(&whom) {
             send_fir(&[publisher]);
         }
         let event = json!({ "event": "unblocked", "by": &joined.user_id });
-        match notify_user(&event, &whom, &occupants) {
+        match notify_user(&event, &whom, switchboard.occupants_of(&joined.room_id)) {
             Ok(_) => (),
             Err(JanusError { code: 458 }) /* session not found */ => (),
             Err(e) => janus_err!("Error notifying user about unblock: {}", e)
