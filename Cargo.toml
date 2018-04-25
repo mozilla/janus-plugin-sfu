@@ -10,6 +10,9 @@ publish = false
 [lib]
 crate_type = ["cdylib"]
 
+[profile.release]
+lto = true
+
 [dependencies]
 atom = "0.3"
 janus-plugin = { version = "0.10.1", features = ["refcount"] }
