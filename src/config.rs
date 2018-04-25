@@ -6,12 +6,16 @@ use std::path::Path;
 /// All of the runtime configuration for the plugin.
 #[derive(Debug, Clone)]
 pub struct Config {
-    pub max_room_size: usize
+    pub max_room_size: usize,
+    pub max_ccu: usize
 }
 
 impl Default for Config {
     fn default() -> Self {
-        Self { max_room_size: usize::max_value() }
+        Self {
+            max_room_size: usize::max_value(),
+            max_ccu: usize::max_value()
+        }
     }
 }
 
@@ -29,6 +33,10 @@ impl Config {
                 .get("max_room_size")
                 .and_then(|x| x.parse().ok())
                 .unwrap_or(defaults.max_room_size),
+            max_ccu: section
+                .get("max_ccu")
+                .and_then(|x| x.parse().ok())
+                .unwrap_or(defaults.max_ccu),
         })
     }
 }

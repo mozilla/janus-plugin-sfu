@@ -168,6 +168,10 @@ impl Switchboard {
         self.publisher_to_subscribers.get_keys(subscriber)
     }
 
+    pub fn sessions(&self) -> &Vec<Box<Arc<Session>>> {
+        &self.sessions
+    }
+
     pub fn occupants_of(&self, room: &RoomId) -> &[Arc<Session>] {
         self.occupants.get(room).map(Vec::as_slice).unwrap_or(&[])
     }
