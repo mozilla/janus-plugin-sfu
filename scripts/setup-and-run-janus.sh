@@ -70,7 +70,7 @@ git-get () {
 
 if [[ $force_rebuild || ! -e /opt/janus/bin/janus ]]; then
     banner 'getting janus source'
-    git-get mquander/janus-gateway refcount-stable
+    git-get meetecho/janus-gateway master
 
     sudo apt update
 
@@ -81,7 +81,7 @@ if [[ $force_rebuild || ! -e /opt/janus/bin/janus ]]; then
     sudo apt -y install libglib2.0-dev libjansson-dev libnice-dev libssl-dev gengetopt libmicrohttpd-dev
 
     if [[ $force_rebuild || ! -e /usr/lib/libsrtp.so ]]; then
-        git-get cisco/libsrtp v2.0.0
+        git-get cisco/libsrtp v2.1.0
         pushd cisco/libsrtp
         ./configure --prefix=/usr --enable-openssl
         make shared_library && sudo make install
@@ -97,7 +97,7 @@ if [[ $force_rebuild || ! -e /opt/janus/bin/janus ]]; then
     fi
 
     if [[ $force_rebuild || ! -e /usr/lib/libwebsockets.so ]]; then
-        git-get warmcat/libwebsockets v2.0.0
+        git-get warmcat/libwebsockets v2.4.2
         pushd warmcat/libwebsockets
         mkdir build
         pushd build
@@ -109,9 +109,9 @@ if [[ $force_rebuild || ! -e /opt/janus/bin/janus ]]; then
     fi
 
     banner 'building and installing janus'
-    pushd mquander/janus-gateway
+    pushd meetecho/janus-gateway
     sh autogen.sh
-    ./configure --prefix=/opt/janus --disable-all-plugins
+    ./configure --prefix=/opt/janus --disable-all-plugins --disable-all-handlers
     make
     sudo make install
     sudo make configs
