@@ -9,7 +9,7 @@ pub type RoomId = String;
 pub type UserId = String;
 
 /// Useful to represent a JSON message field which may or may not be present.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(untagged)]
 #[serde(deny_unknown_fields)]
 pub enum OptionalField<T> {
