@@ -1,7 +1,5 @@
 /// Types and code related to handling signalling messages.
-use std::fmt;
 use super::Sdp;
-use serde::de::{self, Deserializer, Visitor};
 
 /// A room ID representing a Janus multicast room.
 pub type RoomId = String;
@@ -10,38 +8,8 @@ pub type RoomId = String;
 /// conceptual user for managing subscriptions.
 pub type UserId = String;
 
-struct IdVisitor;
-
-impl<'de> Visitor<'de> for IdVisitor {
-    type Value = String;
-
-    fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
-        formatter.write_str("string or numeric identifier")
-    }
-
-    fn visit_str<E: de::Error>(self, value: &str) -> Result<String, E>
-    {
-        Ok(value.into())
-    }
-
-    fn visit_string<E: de::Error>(self, value: String) -> Result<String, E>
-    {
-        Ok(value)
-    }
-
-    fn visit_u64<E: de::Error>(self, value: u64) -> Result<String, E>
-    {
-        Ok(value.to_string())
-    }
-}
-
-fn deserialize_id<'de, D: Deserializer<'de>>(deserializer: D) -> Result<String, D::Error>
-{
-    deserializer.deserialize_any(IdVisitor)
-}
-
 /// Useful to represent a JSON message field which may or may not be present.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(untagged)]
 #[serde(deny_unknown_fields)]
 pub enum OptionalField<T> {
@@ -70,9 +38,7 @@ pub enum MessageKind {
     /// The "subscribe" field specifies which kind of traffic this client will receive. (Useful for saving a round
     /// trip if you wanted to both join and subscribe, as is typical.)
     Join {
-        #[serde(deserialize_with = "deserialize_id")]
         room_id: RoomId,
-        #[serde(deserialize_with = "deserialize_id")]
         user_id: UserId,
         subscribe: Option<Subscription>,
     },
@@ -82,16 +48,10 @@ pub enum MessageKind {
 
     /// Indicates that a given user should be blocked from receiving your traffic, and that you should not
     /// receive their traffic (superseding any subscriptions you have.)
-    Block {
-        #[serde(deserialize_with = "deserialize_id")]
-        whom: UserId
-    },
+    Block { whom: UserId },
 
     /// Undoes a block targeting the given user.
-    Unblock {
-        #[serde(deserialize_with = "deserialize_id")]
-        whom: UserId
-    },
+    Unblock { whom: UserId },
 }
 
 /// Information about which traffic a client will get pushed to them.
@@ -141,7 +101,7 @@ mod tests {
 
         #[test]
         fn parse_join_user_id() {
-            let json = r#"{"kind": "join", "user_id": 10, "room_id": "alpha"}"#;
+            let json = r#"{"kind": "join", "user_id": "10", "room_id": "alpha"}"#;
             let result: MessageKind = serde_json::from_str(json).unwrap();
             assert_eq!(result, MessageKind::Join {
                 user_id: "10".into(),
@@ -152,7 +112,7 @@ mod tests {
 
         #[test]
         fn parse_join_subscriptions() {
-            let json = r#"{"kind": "join", "user_id": 10, "room_id": 5, "subscribe": {"notifications": true, "data": false}}"#;
+            let json = r#"{"kind": "join", "user_id": "10", "room_id": "5", "subscribe": {"notifications": true, "data": false}}"#;
             let result: MessageKind = serde_json::from_str(json).unwrap();
             assert_eq!(result, MessageKind::Join {
                 user_id: "10".into(),
