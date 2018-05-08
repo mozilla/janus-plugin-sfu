@@ -1,5 +1,5 @@
 const params = new URLSearchParams(location.search.slice(1));
-var USER_ID = Math.floor(Math.random() * (1000000001));
+var USER_ID = new String(Math.floor(Math.random() * (1000000001)));
 const roomId = params.get("room") != null ? params.get("room") : "42";
 
 const PEER_CONNECTION_CONFIG = {
