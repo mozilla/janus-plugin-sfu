@@ -176,73 +176,65 @@ impl Switchboard {
         self.occupants.get(room).map(Vec::as_slice).unwrap_or(&[])
     }
 
-    pub fn media_recipients_for(&self, sender: &Session) -> Vec<&Arc<Session>> {
-        let mut subscribers: Vec<_> = self.subscribers_to(sender).iter().collect();
-        if let Some(joined) = sender.join_state.get() {
-            let forward_blocks = self.blockers_to_miscreants.get_keys(&joined.user_id);
-            let reverse_blocks = self.blockers_to_miscreants.get_values(&joined.user_id);
-            let blocks_exist = !forward_blocks.is_empty() || !reverse_blocks.is_empty();
-            if blocks_exist {
-                subscribers.retain(|recipient| {
-                    match recipient.join_state.get() {
-                        None => true,
-                        Some(other) => {
-                            let blocks = forward_blocks.contains(&other.user_id);
-                            let is_blocked = reverse_blocks.contains(&other.user_id);
-                            return !blocks && !is_blocked;
-                        }
-                    }
-                });
+    pub fn media_recipients_for(&self, sender: &Session) -> impl Iterator<Item=&Arc<Session>> {
+        let (forward_blocks, reverse_blocks) = match sender.join_state.get() {
+            None => (&[] as &[_], &[] as &[_]),
+            Some(joined) => (
+                self.blockers_to_miscreants.get_keys(&joined.user_id),
+                self.blockers_to_miscreants.get_values(&joined.user_id)
+            )
+        };
+        self.subscribers_to(sender).iter().filter(move |subscriber| {
+            match subscriber.join_state.get() {
+                None => true,
+                Some(other) => {
+                    let blocks = forward_blocks.contains(&other.user_id);
+                    let is_blocked = reverse_blocks.contains(&other.user_id);
+                    !blocks && !is_blocked
+                }
             }
-        }
-        subscribers
+        })
     }
 
-    pub fn media_senders_to(&self, recipient: &Session) -> Vec<&Arc<Session>> {
-        let mut publishers: Vec<_> = self.publishers_to(recipient).iter().collect();
-        if let Some(joined) = recipient.join_state.get() {
-            let forward_blocks = self.blockers_to_miscreants.get_values(&joined.user_id);
-            let reverse_blocks = self.blockers_to_miscreants.get_keys(&joined.user_id);
-            let blocks_exist = !forward_blocks.is_empty() || !reverse_blocks.is_empty();
-            if blocks_exist {
-                publishers.retain(|sender| {
-                    match sender.join_state.get() {
-                        None => true,
-                        Some(other) => {
-                            let blocks = forward_blocks.contains(&other.user_id);
-                            let is_blocked = reverse_blocks.contains(&other.user_id);
-                            return !blocks && !is_blocked;
-                        }
-                    }
-                });
+    pub fn media_senders_to(&self, recipient: &Session) -> impl Iterator<Item=&Arc<Session>> {
+        let (forward_blocks, reverse_blocks) = match recipient.join_state.get() {
+            None => (&[] as &[_], &[] as &[_]),
+            Some(joined) => (
+                self.blockers_to_miscreants.get_values(&joined.user_id),
+                self.blockers_to_miscreants.get_keys(&joined.user_id)
+            )
+        };
+        self.publishers_to(recipient).iter().filter(move |publisher| {
+            match publisher.join_state.get() {
+                None => true,
+                Some(other) => {
+                    let blocks = forward_blocks.contains(&other.user_id);
+                    let is_blocked = reverse_blocks.contains(&other.user_id);
+                    !blocks && !is_blocked
+                }
             }
-        }
-        publishers
+        })
     }
 
-    pub fn data_recipients_for(&self, session: &Session) -> Vec<&Arc<Session>> {
-        if let Some(joined) = session.join_state.get() {
-            let mut cohabitators: Vec<_> = self.occupants_of(&joined.room_id).iter().collect();
-            let forward_blocks = self.blockers_to_miscreants.get_keys(&joined.user_id);
-            let reverse_blocks = self.blockers_to_miscreants.get_values(&joined.user_id);
-            let blocks_exist = !forward_blocks.is_empty() || !reverse_blocks.is_empty();
-            cohabitators.retain(|cohabitator| cohabitator.handle != session.handle);
-            if blocks_exist {
-                cohabitators.retain(|cohabitator| {
-                    match cohabitator.join_state.get() {
-                        None => true,
-                        Some(other) => {
-                            let blocks = forward_blocks.contains(&other.user_id);
-                            let is_blocked = reverse_blocks.contains(&other.user_id);
-                            return !blocks && !is_blocked;
-                        }
-                    }
-                });
+    pub fn data_recipients_for<'s>(&'s self, session: &'s Session) -> impl Iterator<Item=&'s Arc<Session>> {
+        let (forward_blocks, reverse_blocks, cohabitators) = match session.join_state.get() {
+            None => (&[] as &[_], &[] as &[_], &[] as &[_]),
+            Some(joined) => (
+                self.blockers_to_miscreants.get_keys(&joined.user_id),
+                self.blockers_to_miscreants.get_values(&joined.user_id),
+                self.occupants_of(&joined.room_id)
+            )
+        };
+        cohabitators.iter().filter(move |cohabitator| {
+            cohabitator.handle != session.handle && match cohabitator.join_state.get() {
+                None => true,
+                Some(other) => {
+                    let blocks = forward_blocks.contains(&other.user_id);
+                    let is_blocked = reverse_blocks.contains(&other.user_id);
+                    !blocks && !is_blocked
+                }
             }
-            cohabitators
-        } else {
-            Vec::new()
-        }
+        })
     }
 
     pub fn get_users(&self, room: &RoomId) -> HashSet<&UserId> {
