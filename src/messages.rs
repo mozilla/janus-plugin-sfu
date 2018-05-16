@@ -1,30 +1,9 @@
 /// Types and code related to handling signalling messages.
-use super::{Sdp, JanssonEncodingFlags, JanssonValue};
+use super::Sdp;
 use super::serde_json;
-use std::error::Error;
-use std::ffi::CStr;
-use std::fmt;
-use std::os::raw::c_char;
 use serde::de::DeserializeOwned;
-
-/// A Janus transaction ID. Used to correlate signalling requests and responses.
-#[derive(Debug)]
-pub struct TransactionId(pub *mut c_char);
-
-unsafe impl Send for TransactionId {}
-
-impl fmt::Display for TransactionId {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        unsafe {
-            if self.0.is_null() {
-                f.write_str("<null>")
-            } else {
-                let contents = CStr::from_ptr(self.0);
-                f.write_str(&contents.to_string_lossy())
-            }
-        }
-    }
-}
+use std::error::Error;
+use std::borrow::Borrow;
 
 /// A room ID representing a Janus multicast room.
 pub type RoomId = String;
@@ -52,18 +31,9 @@ impl<T> Into<Option<T>> for OptionalField<T> {
 }
 
 impl<T> OptionalField<T> where T: DeserializeOwned {
-    pub fn try_parse(val: &Option<JanssonValue>) -> Option<Result<T, Box<Error>>> {
-        val.as_ref().and_then(|x| match parse_json::<OptionalField<T>>(x).map(|x| x.into()) {
-            Ok(None) => None,
-            Ok(Some(y)) => Some(Ok(y)),
-            Err(e) => Some(Err(e))
-        })
+    pub fn try_parse(val: impl Borrow<str>) -> Result<Option<T>, Box<Error>> {
+        Ok(serde_json::from_str::<OptionalField<T>>(val.borrow()).map(|x| x.into())?)
     }
-}
-
-fn parse_json<T>(json: &JanssonValue) -> Result<T, Box<Error>> where T: DeserializeOwned {
-    let json_str = json.to_libcstring(JanssonEncodingFlags::empty());
-    Ok(serde_json::from_str::<T>(json_str.to_str()?)?)
 }
 
 /// A signalling message carrying a JSEP SDP offer or answer.

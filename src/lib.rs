@@ -15,6 +15,7 @@ mod messages;
 mod sessions;
 mod switchboard;
 mod config;
+mod txid;
 
 use atom::AtomSetOnce;
 use messages::{RoomId, UserId};
@@ -22,9 +23,10 @@ use config::Config;
 use janus::{JanusError, JanusResult, JanssonDecodingFlags, JanssonEncodingFlags, JanssonValue, Plugin, PluginCallbacks,
             LibraryMetadata, PluginResult, PluginSession, RawPluginResult, RawJanssonValue};
 use janus::sdp::{AudioCodec, MediaDirection, OfferAnswerParameters, Sdp, VideoCodec};
-use messages::{JsepKind, MessageKind, OptionalField, Subscription, TransactionId};
+use messages::{JsepKind, MessageKind, OptionalField, Subscription};
 use serde_json::Value as JsonValue;
 use sessions::{JoinState, Session, SessionState};
+use txid::TransactionId;
 use std::error::Error;
 use std::ffi::CStr;
 use std::os::raw::{c_char, c_int};
@@ -66,8 +68,20 @@ struct RawMessage {
 }
 
 /// Inefficiently converts a serde JSON value to a Jansson JSON value.
-fn from_serde_json(input: &JsonValue) -> JanssonValue {
+fn serde_to_jansson(input: &JsonValue) -> JanssonValue {
     JanssonValue::from_str(&input.to_string(), JanssonDecodingFlags::empty()).unwrap()
+}
+
+fn jansson_to_str(json: &JanssonValue) -> Result<String, Box<Error>> {
+    Ok(json.to_libcstring(JanssonEncodingFlags::empty()).to_str()?.to_owned())
+}
+
+fn transpose<T, E>(val: Result<Option<T>, E>) -> Option<Result<T, E>> {
+    match val {
+        Ok(None) => None,
+        Ok(Some(y)) => Some(Ok(y)),
+        Err(e) => Some(Err(e))
+    }
 }
 
 /// A response to a signalling message. May carry either a response body, a JSEP, or both.
@@ -149,7 +163,7 @@ fn notify_except<T: IntoIterator<Item=U>, U: AsRef<Session>>(json: &JsonValue, m
 }
 
 fn send_notification<T: IntoIterator<Item=U>, U: AsRef<Session>>(body: &JsonValue, sessions: T) -> JanusResult {
-    let mut msg = from_serde_json(body);
+    let mut msg = serde_to_jansson(body);
     let push_event = gateway_callbacks().push_event;
     for session in sessions {
         let handle = session.as_ref().handle;
@@ -161,8 +175,8 @@ fn send_notification<T: IntoIterator<Item=U>, U: AsRef<Session>>(body: &JsonValu
 }
 
 fn send_offer<T: IntoIterator<Item=U>, U: AsRef<Session>>(offer: &JsonValue, sessions: T) -> JanusResult {
-    let mut msg = from_serde_json(&json!({}));
-    let mut jsep = from_serde_json(offer);
+    let mut msg = serde_to_jansson(&json!({}));
+    let mut jsep = serde_to_jansson(offer);
     let push_event = gateway_callbacks().push_event;
     for session in sessions {
         let handle = session.as_ref().handle;
@@ -288,7 +302,7 @@ extern "C" fn destroy_session(handle: *mut PluginSession, error: *mut c_int) {
 
 extern "C" fn query_session(_handle: *mut PluginSession) -> *mut RawJanssonValue {
     let output = json!({});
-    from_serde_json(&output).into_raw()
+    serde_to_jansson(&output).into_raw()
 }
 
 extern "C" fn setup_media(handle: *mut PluginSession) {
@@ -519,15 +533,15 @@ fn push_response(from: &Session, txn: TransactionId, body: &JsonValue, jsep: Opt
     let push_event = gateway_callbacks().push_event;
     let jsep = jsep.unwrap_or_else(|| json!({}));
     janus_info!("Responding to {:p} for txid {}: body={}, jsep={}", from.handle, txn, body, jsep);
-    JanusError::from(push_event(from.as_ptr(), &mut PLUGIN, txn.0, from_serde_json(body).as_mut_ref(), from_serde_json(&jsep).as_mut_ref()))
+    JanusError::from(push_event(from.as_ptr(), &mut PLUGIN, txn.0, serde_to_jansson(body).as_mut_ref(), serde_to_jansson(&jsep).as_mut_ref()))
 }
 
 fn handle_message_async(RawMessage { jsep, msg, txn, from }: RawMessage) -> JanusResult {
     if let Some(ref from) = from.upgrade() {
         let destroyed = from.destroyed.lock().expect("Session destruction mutex is poisoned :(");
         if !*destroyed {
-            let parsed_msg = OptionalField::try_parse(&msg);
-            let parsed_jsep = OptionalField::try_parse(&jsep);
+            let parsed_msg = msg.and_then(|x| transpose(jansson_to_str(&x).and_then(OptionalField::try_parse)));
+            let parsed_jsep = jsep.and_then(|x| transpose(jansson_to_str(&x).and_then(OptionalField::try_parse)));
             janus_info!("Processing txid {} from {:p}: msg={:?}, jsep={:?}",
                         txn, from.handle, parsed_msg, parsed_jsep);
 
