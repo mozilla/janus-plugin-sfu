@@ -1,5 +1,9 @@
 /// Types and code related to handling signalling messages.
 use super::Sdp;
+use super::serde_json;
+use serde::de::DeserializeOwned;
+use std::error::Error;
+use std::borrow::Borrow;
 
 /// A room ID representing a Janus multicast room.
 pub type RoomId = String;
@@ -15,6 +19,21 @@ pub type UserId = String;
 pub enum OptionalField<T> {
     Some(T),
     None {}
+}
+
+impl<T> Into<Option<T>> for OptionalField<T> {
+    fn into(self) -> Option<T> {
+        match self {
+            OptionalField::None {} => None,
+            OptionalField::Some(x) => Some(x)
+        }
+    }
+}
+
+impl<T> OptionalField<T> where T: DeserializeOwned {
+    pub fn try_parse(val: impl Borrow<str>) -> Result<Option<T>, Box<Error>> {
+        Ok(serde_json::from_str::<OptionalField<T>>(val.borrow()).map(|x| x.into())?)
+    }
 }
 
 /// A signalling message carrying a JSEP SDP offer or answer.
