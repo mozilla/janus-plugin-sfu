@@ -6,7 +6,7 @@ install: release
 
 release:
 	RUSTFLAGS=-g cargo build --release
-	cargo test --release
+	RUSTFLAGS=-g cargo test --release
 
 debug:
 	cargo build
