@@ -309,7 +309,7 @@ extern "C" fn setup_media(handle: *mut PluginSession) {
     let sess = unsafe { Session::from_ptr(handle).expect("Session can't be null!") };
     let switchboard = STATE.switchboard.read().expect("Switchboard is poisoned :(");
     send_fir(switchboard.media_senders_to(&sess));
-    janus_verb!("WebRTC media is now available on {:p}.", sess.handle);
+    janus_info!("WebRTC media is now available on {:p}.", sess.handle);
 }
 
 extern "C" fn incoming_rtp(handle: *mut PluginSession, video: c_int, buf: *mut c_char, len: c_int) {
@@ -352,12 +352,12 @@ extern "C" fn incoming_data(handle: *mut PluginSession, buf: *mut c_char, len: c
 
 extern "C" fn slow_link(handle: *mut PluginSession, _uplink: c_int, _video: c_int) {
     let sess = unsafe { Session::from_ptr(handle).expect("Session can't be null!") };
-    janus_verb!("Slow link message received on {:p}.", sess.handle);
+    janus_info!("Slow link message received on {:p}.", sess.handle);
 }
 
 extern "C" fn hangup_media(handle: *mut PluginSession) {
     let sess = unsafe { Session::from_ptr(handle).expect("Session can't be null!") };
-    janus_verb!("Hanging up WebRTC media on {:p}.", sess.handle);
+    janus_info!("Hanging up WebRTC media on {:p}.", sess.handle);
 }
 
 fn process_join(from: &Arc<Session>, room_id: RoomId, user_id: UserId, subscribe: Option<Subscription>) -> MessageResult {
@@ -595,7 +595,7 @@ extern "C" fn handle_message(handle: *mut PluginSession, transaction: *mut c_cha
                 msg: unsafe { JanssonValue::from_raw(message) },
                 jsep: unsafe { JanssonValue::from_raw(jsep) }
             };
-            janus_verb!("Queueing signalling message on {:p}.", sess.handle);
+            janus_info!("Queueing signalling message on {:p}.", sess.handle);
             STATE.message_channel.get().unwrap().send(msg).ok();
             PluginResult::ok_wait(Some(c_str!("Processing.")))
         },
