@@ -29,6 +29,7 @@ use serde::de::DeserializeOwned;
 use serde_json::Value as JsonValue;
 use sessions::{JoinState, Session, SessionState};
 use txid::TransactionId;
+use std::collections::VecDeque;
 use std::error::Error;
 use std::ffi::CStr;
 use std::os::raw::{c_char, c_int};
@@ -257,7 +258,7 @@ extern "C" fn create_session(handle: *mut PluginSession, error: *mut c_int) {
     let initial_state = SessionState {
         destroyed: Mutex::new(false),
         join_state: AtomSetOnce::empty(),
-        subscriber_offer: Arc::new(Mutex::new(None)),
+        publications: Arc::new(Mutex::new(VecDeque::new())),
         subscription: AtomSetOnce::empty(),
         fir_seq: AtomicIsize::new(0),
     };
@@ -404,7 +405,7 @@ fn process_join(from: &Arc<Session>, room_id: RoomId, user_id: UserId, subscribe
             let publisher = switchboard.get_publisher(publisher_id).ok_or("Can't subscribe to a nonexistent publisher.")?.clone();
             let jsep = json!({
                 "type": "offer",
-                "sdp": publisher.subscriber_offer.lock().unwrap().as_ref().unwrap()
+                "sdp": publisher.publications.lock().unwrap().front().unwrap()
             });
             switchboard.subscribe_to_user(Arc::clone(from), publisher);
             return Ok(MessageResponse::new(body, jsep));
@@ -459,7 +460,7 @@ fn process_subscribe(from: &Arc<Session>, what: Subscription) -> MessageResult {
         let publisher = switchboard.get_publisher(publisher_id).ok_or("Can't subscribe to a nonexistent publisher.")?.clone();
         let jsep = json!({
             "type": "offer",
-            "sdp": publisher.subscriber_offer.lock().unwrap().as_ref().unwrap()
+            "sdp": publisher.publications.lock().unwrap().front().unwrap()
         });
         switchboard.subscribe_to_user(from.clone(), publisher);
         return Ok(MessageResponse::new(json!({}), jsep));
@@ -516,7 +517,7 @@ fn process_offer(from: &Session, offer: &Sdp) -> JsepResult {
         Err(JanusError { code: 458 }) /* session not found */ => (),
         Err(e) => janus_err!("Error notifying subscribers about new offer: {}", e)
     };
-    *from.subscriber_offer.lock().unwrap() = Some(subscriber_offer);
+    from.publications.lock().unwrap().push_front(subscriber_offer);
     Ok(json!({ "type": "answer", "sdp": answer }))
 }
 

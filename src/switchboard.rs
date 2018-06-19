@@ -252,10 +252,10 @@ impl Switchboard {
     pub fn get_publisher(&self, user_id: &UserId) -> Option<&Arc<Session>> {
         self.sessions.iter()
             .find(|s| {
-                let subscriber_offer = s.subscriber_offer.lock().unwrap();
+                let publications = s.publications.lock().unwrap();
                 let join_state = s.join_state.get();
-                match (subscriber_offer.as_ref(), join_state) {
-                    (Some(_), Some(state)) if &state.user_id == user_id => true,
+                match (publications.is_empty(), join_state) {
+                    (false, Some(state)) if &state.user_id == user_id => true,
                     _ => false
                 }
             })

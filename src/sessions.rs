@@ -1,10 +1,14 @@
 /// Types for representing Janus session state.
 use atom::AtomSetOnce;
+use std::collections::VecDeque;
 use std::sync::atomic::AtomicIsize;
 use std::sync::{Arc, Mutex};
 use messages::{RoomId, UserId, Subscription};
 use janus::sdp::Sdp;
 use janus::session::SessionWrapper;
+
+/// All of the offers that a publisher has made, ordered chronologically.
+pub type PublicationLog = VecDeque<Sdp>;
 
 /// State pertaining to this session's join of a particular room as a particular user ID.
 #[derive(Debug, Clone)]
@@ -34,8 +38,8 @@ pub struct SessionState {
     /// The subscription this user has established, if any.
     pub subscription: AtomSetOnce<Box<Subscription>>,
 
-    /// If this is a publisher, the offer for subscribing to it.
-    pub subscriber_offer: Arc<Mutex<Option<Sdp>>>,
+    /// If this is a publisher, the offers it's made to subscribe to it.
+    pub publications: Arc<Mutex<PublicationLog>>,
 
     /// The current FIR sequence number for this session's video.
     pub fir_seq: AtomicIsize,
