@@ -35,8 +35,12 @@ pub struct SessionState {
     /// Information pertaining to this session's user and room, if joined.
     pub join_state: AtomSetOnce<Box<JoinState>>,
 
-    /// The subscription this user has established, if any.
+    /// If this is a subscriber, the subscription this user has established, if any.
     pub subscription: AtomSetOnce<Box<Subscription>>,
+
+    /// If this is a subscriber and we're in the middle of a subscription negotiation,
+    /// the index of the negotiation in the publication log of the publisher we're subscribing to.
+    pub subscription_negotiation_idx: Arc<Mutex<Option<usize>>>,
 
     /// If this is a publisher, the offers it's made to subscribe to it.
     pub publications: Arc<Mutex<PublicationLog>>,

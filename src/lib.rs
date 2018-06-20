@@ -177,19 +177,6 @@ fn send_notification<T: IntoIterator<Item=U>, U: AsRef<Session>>(body: &JsonValu
     Ok(())
 }
 
-fn send_offer<T: IntoIterator<Item=U>, U: AsRef<Session>>(offer: &JsonValue, sessions: T) -> JanusResult {
-    let mut msg = serde_to_jansson(&json!({}));
-    let mut jsep = serde_to_jansson(offer);
-    let push_event = gateway_callbacks().push_event;
-    for session in sessions {
-        let handle = session.as_ref().handle;
-        janus_verb!("Offer going to {:p}: {}.", handle, offer);
-        // probably a hack -- we shouldn't stop notifying if we fail one
-        JanusError::from(push_event(handle, &mut PLUGIN, ptr::null(), msg.as_mut_ref(), jsep.as_mut_ref()))?
-    }
-    Ok(())
-}
-
 fn send_pli<T: IntoIterator<Item=U>, U: AsRef<Session>>(publishers: T) {
     let relay_rtcp = gateway_callbacks().relay_rtcp;
     for publisher in publishers {
@@ -258,8 +245,9 @@ extern "C" fn create_session(handle: *mut PluginSession, error: *mut c_int) {
     let initial_state = SessionState {
         destroyed: Mutex::new(false),
         join_state: AtomSetOnce::empty(),
-        publications: Arc::new(Mutex::new(VecDeque::new())),
         subscription: AtomSetOnce::empty(),
+        subscription_negotiation_idx: Arc::new(Mutex::new(None)),
+        publications: Arc::new(Mutex::new(VecDeque::new())),
         fir_seq: AtomicIsize::new(0),
     };
 
@@ -311,7 +299,7 @@ extern "C" fn query_session(_handle: *mut PluginSession) -> *mut RawJanssonValue
 extern "C" fn setup_media(handle: *mut PluginSession) {
     let sess = unsafe { Session::from_ptr(handle).expect("Session can't be null!") };
     let switchboard = STATE.switchboard.read().expect("Switchboard is poisoned :(");
-    send_fir(switchboard.media_senders_to(&sess));
+    send_fir(switchboard.publishers_to(&sess));
     janus_info!("WebRTC media is now available on {:p}.", sess.handle);
 }
 
@@ -403,11 +391,13 @@ fn process_join(from: &Arc<Session>, room_id: RoomId, user_id: UserId, subscribe
         }
         if let Some(ref publisher_id) = subscription.media {
             let publisher = switchboard.get_publisher(publisher_id).ok_or("Can't subscribe to a nonexistent publisher.")?.clone();
+            let publications = publisher.publications.lock().unwrap();
             let jsep = json!({
                 "type": "offer",
-                "sdp": publisher.publications.lock().unwrap().front().unwrap()
+                "sdp": publications.back().unwrap()
             });
-            switchboard.subscribe_to_user(Arc::clone(from), publisher);
+            *from.subscription_negotiation_idx.lock().unwrap() = Some(publications.len() - 1);
+            switchboard.subscribe_to_user(Arc::clone(from), Arc::clone(&publisher));
             return Ok(MessageResponse::new(body, jsep));
         }
     }
@@ -458,11 +448,13 @@ fn process_subscribe(from: &Arc<Session>, what: Subscription) -> MessageResult {
     let mut switchboard = STATE.switchboard.write()?;
     if let Some(ref publisher_id) = what.media {
         let publisher = switchboard.get_publisher(publisher_id).ok_or("Can't subscribe to a nonexistent publisher.")?.clone();
+        let publications = publisher.publications.lock().unwrap();
         let jsep = json!({
             "type": "offer",
-            "sdp": publisher.publications.lock().unwrap().front().unwrap()
+            "sdp": publications.back().unwrap()
         });
-        switchboard.subscribe_to_user(from.clone(), publisher);
+        *from.subscription_negotiation_idx.lock().unwrap() = Some(publications.len() - 1);
+        switchboard.subscribe_to_user(from.clone(), publisher.clone());
         return Ok(MessageResponse::new(json!({}), jsep));
     }
     Ok(MessageResponse::msg(json!({})))
@@ -510,19 +502,57 @@ fn process_offer(from: &Session, offer: &Sdp) -> JsepResult {
     );
     janus_huge!("Storing subscriber offer for {:p}: {:?}", from.handle, subscriber_offer);
 
+    let push_event = gateway_callbacks().push_event;
+    let mut msg = serde_to_jansson(&json!({}));
+    let mut jsep = serde_to_jansson(&json!({ "type": "offer", "sdp": subscriber_offer }));
     let switchboard = STATE.switchboard.read().expect("Switchboard lock poisoned; can't continue.");
-    let jsep = json!({ "type": "offer", "sdp": subscriber_offer });
-    match send_offer(&jsep, switchboard.subscribers_to(from)) {
-        Ok(_) => (),
-        Err(JanusError { code: 458 }) /* session not found */ => (),
-        Err(e) => janus_err!("Error notifying subscribers about new offer: {}", e)
-    };
-    from.publications.lock().unwrap().push_front(subscriber_offer);
+    let subscribers = switchboard.subscribers_to(from);
+    let mut publications = from.publications.lock().unwrap();
+    for subscriber in subscribers {
+        let handle = subscriber.as_ref().handle;
+        let mut negotiation_idx = subscriber.as_ref().subscription_negotiation_idx.lock().unwrap();
+        if negotiation_idx.is_some() {
+            // the latest publication will get offered to them once they finish the ongoing negotiation, in process_answer
+            janus_info!("Queueing offer from {:p} to {:p} due to ongoing negotiation: {:?}.", from.handle, handle, jsep);
+        } else {
+            janus_info!("Offer going from {:p} to {:p}: {:?}.", from.handle, handle, jsep);
+            *negotiation_idx = Some(publications.len());
+            // probably a hack -- we shouldn't stop notifying if we fail one
+            JanusError::from(push_event(handle, &mut PLUGIN, ptr::null(), msg.as_mut_ref(), jsep.as_mut_ref()))?
+        }
+    }
+    publications.push_back(subscriber_offer);
+
     Ok(json!({ "type": "answer", "sdp": answer }))
 }
 
-fn process_answer(_from: &Session, _answer: &Sdp) -> JsepResult {
-    Ok(json!({})) // todo: check that this guy should actually be sending us an answer?
+fn process_answer(from: &Session, _answer: &Sdp) -> JsepResult {
+    let switchboard = STATE.switchboard.read().expect("Switchboard is poisoned :(");
+    let senders = switchboard.publishers_to(&from);
+    if senders.len() > 1 {
+        janus_err!("Multiple publishers to one sender ({:p}) are really not supported anymore.", from.handle);
+    }
+
+    if let Some(publisher) = senders.iter().next() {
+        let mut negotiation_idx = from.subscription_negotiation_idx.lock().unwrap();
+        janus_verb!("{:p} now subscribed to {:p} at negotiation index {:?}.", from, publisher, *negotiation_idx);
+        if let Some(idx) = *negotiation_idx {
+            let publications = publisher.publications.lock().unwrap();
+            let most_recent_idx = publications.len() - 1;
+            if idx != most_recent_idx {
+                // a new publication came in while we were negotiating the existing one, offer it
+                *negotiation_idx = Some(most_recent_idx);
+                janus_info!("Queued offer {} going from {:p} to {:p}.", most_recent_idx, publisher.handle, from.handle);
+                return Ok(json!({ "type": "offer", "sdp": publications.back() }));
+            } else {
+                // we're all caught up, nothing to do
+                *negotiation_idx = None;
+                return Ok(json!({}));
+            }
+        }
+    }
+    janus_warn!("Incoming answer from {:p}, but not negotiating.", from.handle);
+    Ok(json!({}))
 }
 
 fn process_jsep(from: &Session, jsep: JsepKind) -> JsepResult {
