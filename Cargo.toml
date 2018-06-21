@@ -15,7 +15,7 @@ lto = true
 
 [dependencies]
 atom = "0.3"
-janus-plugin = { version = "0.10.1", features = ["refcount"] }
+janus-plugin = { version = "0.11.0", features = ["refcount"] }
 lazy_static = "1.0"
 multimap = "0.4"
 serde = "1.0"

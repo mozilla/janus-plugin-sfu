@@ -23,7 +23,9 @@ use config::Config;
 use janus::{JanusError, JanusResult, JanssonDecodingFlags, JanssonEncodingFlags, JanssonValue, Plugin, PluginCallbacks,
             LibraryMetadata, PluginResult, PluginSession, RawPluginResult, RawJanssonValue};
 use janus::sdp::{AudioCodec, MediaDirection, OfferAnswerParameters, Sdp, VideoCodec};
+use janus::utils::LibcString;
 use messages::{JsepKind, MessageKind, OptionalField, Subscription};
+use serde::de::DeserializeOwned;
 use serde_json::Value as JsonValue;
 use sessions::{JoinState, Session, SessionState};
 use txid::TransactionId;
@@ -72,8 +74,8 @@ fn serde_to_jansson(input: &JsonValue) -> JanssonValue {
     JanssonValue::from_str(&input.to_string(), JanssonDecodingFlags::empty()).unwrap()
 }
 
-fn jansson_to_str(json: &JanssonValue) -> Result<String, Box<Error>> {
-    Ok(json.to_libcstring(JanssonEncodingFlags::empty()).to_str()?.to_owned())
+fn jansson_to_str(json: &JanssonValue) -> Result<LibcString, Box<Error>> {
+    Ok(json.to_libcstring(JanssonEncodingFlags::empty()))
 }
 
 fn transpose<T, E>(val: Result<Option<T>, E>) -> Option<Result<T, E>> {
@@ -483,7 +485,7 @@ fn process_offer(from: &Session, offer: &Sdp) -> JsepResult {
         OfferAnswerParameters::VideoCodec, VIDEO_CODEC.to_cstr().as_ptr(),
         OfferAnswerParameters::VideoDirection, MediaDirection::JANUS_SDP_RECVONLY,
     );
-    janus_huge!("Providing answer to {:p}: {}", from.handle, answer.to_string().to_str()?);
+    janus_huge!("Providing answer to {:p}: {:?}", from.handle, answer);
 
     // it's fishy, but we provide audio and video streams to subscribers regardless of whether the client is sending
     // audio and video right now or not -- this is basically working around pains in renegotiation to do with
@@ -505,7 +507,7 @@ fn process_offer(from: &Session, offer: &Sdp) -> JsepResult {
         OfferAnswerParameters::VideoPayloadType, video_payload_type.unwrap_or(100),
         OfferAnswerParameters::VideoDirection, MediaDirection::JANUS_SDP_SENDONLY,
     );
-    janus_huge!("Storing subscriber offer for {:p}: {}", from.handle, subscriber_offer.to_string().to_str()?);
+    janus_huge!("Storing subscriber offer for {:p}: {:?}", from.handle, subscriber_offer);
 
     let switchboard = STATE.switchboard.read().expect("Switchboard lock poisoned; can't continue.");
     let jsep = json!({ "type": "offer", "sdp": subscriber_offer });
@@ -536,17 +538,19 @@ fn push_response(from: &Session, txn: TransactionId, body: &JsonValue, jsep: Opt
     JanusError::from(push_event(from.as_ptr(), &mut PLUGIN, txn.0, serde_to_jansson(body).as_mut_ref(), serde_to_jansson(&jsep).as_mut_ref()))
 }
 
+fn try_parse_jansson<T: DeserializeOwned>(json: JanssonValue) -> Result<Option<T>, Box<Error>> {
+    jansson_to_str(&json).and_then(|x| OptionalField::try_parse(x.to_string_lossy()))
+}
+
 fn handle_message_async(RawMessage { jsep, msg, txn, from }: RawMessage) -> JanusResult {
     if let Some(ref from) = from.upgrade() {
+        janus_info!("Processing txid {} from {:p}: msg={:?}, jsep={:?}", txn, from.handle, msg, jsep);
         let destroyed = from.destroyed.lock().expect("Session destruction mutex is poisoned :(");
         if !*destroyed {
-            let parsed_msg = msg.and_then(|x| transpose(jansson_to_str(&x).and_then(OptionalField::try_parse)));
-            let parsed_jsep = jsep.and_then(|x| transpose(jansson_to_str(&x).and_then(OptionalField::try_parse)));
-            janus_info!("Processing txid {} from {:p}: msg={:?}, jsep={:?}",
-                        txn, from.handle, parsed_msg, parsed_jsep);
-
             // process the message first, because processing a JSEP can cause us to want to send an RTCP
             // FIR to our subscribers, which may have been established in the message
+            let parsed_msg = msg.and_then(|x| transpose(try_parse_jansson(x)));
+            let parsed_jsep = jsep.and_then(|x| transpose(try_parse_jansson(x)));
             let msg_result = parsed_msg.map(|x| x.and_then(|msg| process_message(from, msg)));
             let jsep_result = parsed_jsep.map(|x| x.and_then(|jsep| process_jsep(from, jsep)));
             return match (msg_result, jsep_result) {
@@ -582,7 +586,7 @@ fn handle_message_async(RawMessage { jsep, msg, txn, from }: RawMessage) -> Janu
 
     // getting messages for destroyed connections is slightly concerning,
     // because messages shouldn't be backed up for that long, so warn if it happens
-    Ok(janus_warn!("Message received for destroyed session; discarding."))
+    Ok(janus_warn!("Message with txid {} received for destroyed session; discarding.", txn))
 }
 
 extern "C" fn handle_message(handle: *mut PluginSession, transaction: *mut c_char,
