@@ -1,9 +1,0 @@
-{
-  "name": "squawkers",
-  "version": "1.0.0",
-  "main": "squawkers-cli.js",
-  "dependencies": {
-    "docopt": "^0.6.2",
-    "puppeteer": "^0.13.0"
-  }
-}
