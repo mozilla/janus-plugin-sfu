@@ -33,7 +33,7 @@ if [[ ! -e $(which docopts) ]]; then
 fi
 
 if [[ ! -e $(which twistd) ]]; then
-    sudo apt install python-dev build-essential
+    sudo apt -y install python-dev build-essential
     sudo pip install pyopenssl twisted
 fi
 
