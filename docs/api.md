@@ -118,4 +118,17 @@ Unblock a user who you previously blocked. That user will get an `unblocked` eve
 }
 ```
 
+### Data
+
+Sends a data payload string to all other users in the room, or to a specific user in the room. Useful for reliable
+cross-client communication within a room without having to set up a WebRTC data channel.
+
+```
+{
+    "kind": "data",
+    "whom": [none|user ID]
+    "body": string
+}
+```
+
 [janus-transports]: https://janus.conf.meetecho.com/docs/rest.html
