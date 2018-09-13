@@ -136,7 +136,7 @@ lazy_static! {
     };
 }
 
-fn notify_user<T: IntoIterator<Item=U>, U: AsRef<Session>>(json: &JsonValue, target: &UserId, everyone: T) -> JanusResult {
+fn notify_user<T: IntoIterator<Item=U>, U: AsRef<Session>>(json: &JsonValue, target: &UserId, everyone: T) {
     let notifiees = everyone.into_iter().filter(|s| {
         let subscription_state = s.as_ref().subscription.get();
         let join_state = s.as_ref().join_state.get();
@@ -147,10 +147,10 @@ fn notify_user<T: IntoIterator<Item=U>, U: AsRef<Session>>(json: &JsonValue, tar
             _ => false
         }
     });
-    send_notification(json, notifiees)
+    send_message(json, notifiees)
 }
 
-fn notify_except<T: IntoIterator<Item=U>, U: AsRef<Session>>(json: &JsonValue, myself: &UserId, everyone: T) -> JanusResult {
+fn notify_except<T: IntoIterator<Item=U>, U: AsRef<Session>>(json: &JsonValue, myself: &UserId, everyone: T) {
     let notifiees = everyone.into_iter().filter(|s| {
         let subscription_state = s.as_ref().subscription.get();
         let join_state = s.as_ref().join_state.get();
@@ -161,32 +161,44 @@ fn notify_except<T: IntoIterator<Item=U>, U: AsRef<Session>>(json: &JsonValue, m
             _ => false
         }
     });
-    send_notification(json, notifiees)
+    send_message(json, notifiees)
 }
 
-fn send_notification<T: IntoIterator<Item=U>, U: AsRef<Session>>(body: &JsonValue, sessions: T) -> JanusResult {
+fn send_message<T: IntoIterator<Item=U>, U: AsRef<Session>>(body: &JsonValue, sessions: T) {
     let mut msg = serde_to_jansson(body);
     let push_event = gateway_callbacks().push_event;
     for session in sessions {
         let handle = session.as_ref().handle;
-        janus_verb!("Notification going to {:p}: {}.", handle, body);
-        // probably a hack -- we shouldn't stop notifying if we fail one
-        JanusError::from(push_event(handle, &mut PLUGIN, ptr::null(), msg.as_mut_ref(), ptr::null_mut()))?
+        janus_huge!("Signalling message going to {:p}: {}.", handle, body);
+        let result = JanusError::from(push_event(handle, &mut PLUGIN, ptr::null(), msg.as_mut_ref(), ptr::null_mut()));
+        match result {
+            Ok(_) => (),
+            Err(JanusError { code: 458 }) => {
+                // session not found -- should be unusual but not problematic
+                janus_warn!("Attempted to send signalling message to missing session {:p}: {}", handle, body);
+            }
+            Err(e) => janus_err!("Error sending signalling message to {:p}: {}", handle, e)
+        }
     }
-    Ok(())
 }
 
-fn send_offer<T: IntoIterator<Item=U>, U: AsRef<Session>>(offer: &JsonValue, sessions: T) -> JanusResult {
+fn send_offer<T: IntoIterator<Item=U>, U: AsRef<Session>>(offer: &JsonValue, sessions: T) {
     let mut msg = serde_to_jansson(&json!({}));
     let mut jsep = serde_to_jansson(offer);
     let push_event = gateway_callbacks().push_event;
     for session in sessions {
         let handle = session.as_ref().handle;
         janus_verb!("Offer going to {:p}: {}.", handle, offer);
-        // probably a hack -- we shouldn't stop notifying if we fail one
-        JanusError::from(push_event(handle, &mut PLUGIN, ptr::null(), msg.as_mut_ref(), jsep.as_mut_ref()))?
+        let result = JanusError::from(push_event(handle, &mut PLUGIN, ptr::null(), msg.as_mut_ref(), jsep.as_mut_ref()));
+        match result {
+            Ok(_) => (),
+            Err(JanusError { code: 458 }) => {
+                // session not found -- should be unusual but not problematic
+                janus_warn!("Attempted to send signalling message to missing session {:p}: {}", handle, offer);
+            }
+            Err(e) => janus_err!("Error sending signalling message to {:p}: {}", handle, e)
+        }
     }
-    Ok(())
 }
 
 fn send_pli<T: IntoIterator<Item=U>, U: AsRef<Session>>(publishers: T) {
@@ -286,11 +298,7 @@ extern "C" fn destroy_session(handle: *mut PluginSession, error: *mut c_int) {
                 if !switchboard.is_connected(&joined.user_id) {
                     let response = json!({ "event": "leave", "user_id": &joined.user_id, "room_id": &joined.room_id });
                     let occupants = switchboard.occupants_of(&joined.room_id);
-                    match notify_except(&response, &joined.user_id, occupants) {
-                        Ok(_) => (),
-                        Err(JanusError { code: 458 }) /* session not found */ => (),
-                        Err(e) => janus_err!("Error notifying publishers on leave: {}", e)
-                    };
+                    notify_except(&response, &joined.user_id, occupants);
                 }
             }
             *destroyed = true;
@@ -396,9 +404,7 @@ fn process_join(from: &Arc<Session>, room_id: RoomId, user_id: UserId, subscribe
         if is_master_handle {
             let notification = json!({ "event": "join", "user_id": user_id, "room_id": room_id });
             switchboard.join_room(Arc::clone(from), room_id.clone());
-            if let Err(e) = notify_except(&notification, &user_id, switchboard.occupants_of(&room_id)) {
-                janus_err!("Error sending notification for user join: {}", e)
-            }
+            notify_except(&notification, &user_id, switchboard.occupants_of(&room_id));
         }
         if let Some(ref publisher_id) = subscription.media {
             let publisher = switchboard.get_publisher(publisher_id).ok_or("Can't subscribe to a nonexistent publisher.")?.clone();
@@ -417,11 +423,7 @@ fn process_block(from: &Arc<Session>, whom: UserId) -> MessageResult {
     if let Some(joined) = from.join_state.get() {
         let mut switchboard = STATE.switchboard.write()?;
         let event = json!({ "event": "blocked", "by": &joined.user_id });
-        match notify_user(&event, &whom, switchboard.occupants_of(&joined.room_id)) {
-            Ok(_) => (),
-            Err(JanusError { code: 458 }) /* session not found */ => (),
-            Err(e) => janus_err!("Error notifying user about block: {}", e)
-        };
+        notify_user(&event, &whom, switchboard.occupants_of(&joined.room_id));
         switchboard.establish_block(joined.user_id.clone(), whom);
         Ok(MessageResponse::msg(json!({})))
     } else {
@@ -437,11 +439,7 @@ fn process_unblock(from: &Arc<Session>, whom: UserId) -> MessageResult {
             send_fir(&[publisher]);
         }
         let event = json!({ "event": "unblocked", "by": &joined.user_id });
-        match notify_user(&event, &whom, switchboard.occupants_of(&joined.room_id)) {
-            Ok(_) => (),
-            Err(JanusError { code: 458 }) /* session not found */ => (),
-            Err(e) => janus_err!("Error notifying user about unblock: {}", e)
-        };
+        notify_user(&event, &whom, switchboard.occupants_of(&joined.room_id));
         Ok(MessageResponse::msg(json!({})))
     } else {
         Err(From::from("Cannot unblock when not in a room."))
@@ -522,11 +520,7 @@ fn process_offer(from: &Session, offer: &Sdp) -> JsepResult {
 
     let switchboard = STATE.switchboard.read().expect("Switchboard lock poisoned; can't continue.");
     let jsep = json!({ "type": "offer", "sdp": subscriber_offer });
-    match send_offer(&jsep, switchboard.subscribers_to(from)) {
-        Ok(_) => (),
-        Err(JanusError { code: 458 }) /* session not found */ => (),
-        Err(e) => janus_err!("Error notifying subscribers about new offer: {}", e)
-    };
+    send_offer(&jsep, switchboard.subscribers_to(from));
     *from.subscriber_offer.lock().unwrap() = Some(subscriber_offer);
     Ok(json!({ "type": "answer", "sdp": answer }))
 }
