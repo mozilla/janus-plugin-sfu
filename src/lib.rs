@@ -218,7 +218,7 @@ fn send_offer<T: IntoIterator<Item=U>, U: AsRef<Session>>(offer: &JsonValue, ses
     let push_event = gateway_callbacks().push_event;
     for session in sessions {
         let handle = session.as_ref().handle;
-        janus_verb!("Offer going to {:p}: {}.", handle, offer);
+        janus_huge!("Offer going to {:p}: {}.", handle, offer);
         let result = JanusError::from(push_event(handle, &mut PLUGIN, ptr::null(), msg.as_mut_ref(), jsep.as_mut_ref()));
         match result {
             Ok(_) => (),
@@ -402,6 +402,7 @@ extern "C" fn hangup_media(handle: *mut PluginSession) {
 
 fn process_join(from: &Arc<Session>, room_id: RoomId, user_id: UserId, subscribe: Option<Subscription>) -> MessageResult {
     // todo: holy shit clean this function up somehow
+    janus_info!("Processing join from {:p} to room ID {} with user ID {}.", from.handle, room_id, user_id);
     let mut switchboard = STATE.switchboard.write()?;
     let body = json!({ "users": { room_id.as_str(): switchboard.get_users(&room_id) }});
 
@@ -430,6 +431,7 @@ fn process_join(from: &Arc<Session>, room_id: RoomId, user_id: UserId, subscribe
 
     from.join_state.set_if_none(Box::new(JoinState::new(room_id.clone(), user_id.clone())));
     if let Some(subscription) = subscribe {
+        janus_info!("Processing join-time subscription from {:p}: {:?}.", from.handle, subscription);
         from.subscription.set_if_none(Box::new(subscription.clone()));
         if is_master_handle {
             let notification = json!({ "event": "join", "user_id": user_id, "room_id": room_id });
@@ -450,6 +452,7 @@ fn process_join(from: &Arc<Session>, room_id: RoomId, user_id: UserId, subscribe
 }
 
 fn process_block(from: &Arc<Session>, whom: UserId) -> MessageResult {
+    janus_info!("Processing block from {:p} to {}", from.handle, whom);
     if let Some(joined) = from.join_state.get() {
         let mut switchboard = STATE.switchboard.write()?;
         let event = json!({ "event": "blocked", "by": &joined.user_id });
@@ -462,6 +465,7 @@ fn process_block(from: &Arc<Session>, whom: UserId) -> MessageResult {
 }
 
 fn process_unblock(from: &Arc<Session>, whom: UserId) -> MessageResult {
+    janus_info!("Processing unblock from {:p} to {}", from.handle, whom);
     if let Some(joined) = from.join_state.get() {
         let mut switchboard = STATE.switchboard.write()?;
         switchboard.lift_block(&joined.user_id, &whom);
@@ -477,6 +481,7 @@ fn process_unblock(from: &Arc<Session>, whom: UserId) -> MessageResult {
 }
 
 fn process_subscribe(from: &Arc<Session>, what: Subscription) -> MessageResult {
+    janus_info!("Processing subscription from {:p}: {:?}", from.handle, what);
     let subscription_state = Box::new(what.clone());
     if from.subscription.set_if_none(subscription_state).is_some() {
         return Err(From::from("Users may only subscribe once!"))
@@ -496,6 +501,7 @@ fn process_subscribe(from: &Arc<Session>, what: Subscription) -> MessageResult {
 }
 
 fn process_data(from: &Arc<Session>, whom: Option<UserId>, body: String) -> MessageResult {
+    janus_huge!("Processing data message from {:p}: {:?}", from.handle, body);
     let payload = json!({ "event": "data", "body": body });
     let switchboard = STATE.switchboard.write()?;
     if let Some(joined) = from.join_state.get() {
@@ -523,6 +529,7 @@ fn process_message(from: &Arc<Session>, msg: MessageKind) -> MessageResult {
 
 fn process_offer(from: &Session, offer: &Sdp) -> JsepResult {
     // enforce publication of the codecs that we know our client base will be compatible with
+    janus_info!("Processing JSEP offer from {:p}: {:?}", from.handle, offer);
     let mut answer = answer_sdp!(
         offer,
         OfferAnswerParameters::AudioCodec, AUDIO_CODEC.to_cstr().as_ptr(),
@@ -572,7 +579,8 @@ fn process_offer(from: &Session, offer: &Sdp) -> JsepResult {
     Ok(json!({ "type": "answer", "sdp": answer }))
 }
 
-fn process_answer(_from: &Session, _answer: &Sdp) -> JsepResult {
+fn process_answer(from: &Session, answer: &Sdp) -> JsepResult {
+    janus_info!("Processing JSEP answer from {:p}: {:?}", from.handle, answer);
     Ok(json!({})) // todo: check that this guy should actually be sending us an answer?
 }
 
@@ -586,7 +594,7 @@ fn process_jsep(from: &Session, jsep: JsepKind) -> JsepResult {
 fn push_response(from: &Session, txn: TransactionId, body: &JsonValue, jsep: Option<JsonValue>) -> JanusResult {
     let push_event = gateway_callbacks().push_event;
     let jsep = jsep.unwrap_or_else(|| json!({}));
-    janus_info!("Responding to {:p} for txid {}: body={}, jsep={}", from.handle, txn, body, jsep);
+    janus_huge!("Responding to {:p} for txid {}: body={}, jsep={}", from.handle, txn, body, jsep);
     JanusError::from(push_event(from.as_ptr(), &mut PLUGIN, txn.0, serde_to_jansson(body).as_mut_ref(), serde_to_jansson(&jsep).as_mut_ref()))
 }
 
@@ -596,7 +604,7 @@ fn try_parse_jansson<T: DeserializeOwned>(json: JanssonValue) -> Result<Option<T
 
 fn handle_message_async(RawMessage { jsep, msg, txn, from }: RawMessage) -> JanusResult {
     if let Some(ref from) = from.upgrade() {
-        janus_info!("Processing txid {} from {:p}: msg={:?}, jsep={:?}", txn, from.handle, msg, jsep);
+        janus_huge!("Processing txid {} from {:p}: msg={:?}, jsep={:?}", txn, from.handle, msg, jsep);
         let destroyed = from.destroyed.lock().expect("Session destruction mutex is poisoned :(");
         if !*destroyed {
             // process the message first, because processing a JSEP can cause us to want to send an RTCP
