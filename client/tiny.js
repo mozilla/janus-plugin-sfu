@@ -151,6 +151,8 @@ async function attachPublisher(session) {
       this.addUser(session, data.user_id);
     } else if (data.event == "leave" && data.room_id == roomId) {
       this.removeUser(session, data.user_id);
+    } else if (data.event == "data") {
+      console.log(data);
     }
   });
 

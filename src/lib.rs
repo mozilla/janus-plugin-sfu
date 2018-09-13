@@ -136,6 +136,36 @@ lazy_static! {
     };
 }
 
+// todo: clean up duplication here
+
+fn send_data_user<T: IntoIterator<Item=U>, U: AsRef<Session>>(json: &JsonValue, target: &UserId, everyone: T) {
+    let receivers = everyone.into_iter().filter(|s| {
+        let subscription_state = s.as_ref().subscription.get();
+        let join_state = s.as_ref().join_state.get();
+        match (subscription_state, join_state) {
+            (Some(subscription), Some(joined)) => {
+                subscription.data && &joined.user_id == target
+            }
+            _ => false
+        }
+    });
+    send_message(json, receivers)
+}
+
+fn send_data_except<T: IntoIterator<Item=U>, U: AsRef<Session>>(json: &JsonValue, myself: &UserId, everyone: T) {
+    let receivers = everyone.into_iter().filter(|s| {
+        let subscription_state = s.as_ref().subscription.get();
+        let join_state = s.as_ref().join_state.get();
+        match (subscription_state, join_state) {
+            (Some(subscription), Some(joined)) => {
+                subscription.data && &joined.user_id != myself
+            }
+            _ => false
+        }
+    });
+    send_message(json, receivers)
+}
+
 fn notify_user<T: IntoIterator<Item=U>, U: AsRef<Session>>(json: &JsonValue, target: &UserId, everyone: T) {
     let notifiees = everyone.into_iter().filter(|s| {
         let subscription_state = s.as_ref().subscription.get();
@@ -465,12 +495,29 @@ fn process_subscribe(from: &Arc<Session>, what: Subscription) -> MessageResult {
     Ok(MessageResponse::msg(json!({})))
 }
 
+fn process_data(from: &Arc<Session>, whom: Option<UserId>, body: String) -> MessageResult {
+    let payload = json!({ "event": "data", "body": body });
+    let switchboard = STATE.switchboard.write()?;
+    if let Some(joined) = from.join_state.get() {
+        let occupants = switchboard.occupants_of(&joined.room_id);
+        if let Some(user_id) = whom {
+            send_data_user(&payload, &user_id, occupants);
+        } else {
+            send_data_except(&payload, &joined.user_id, occupants);
+        }
+        Ok(MessageResponse::msg(json!({})))
+    } else {
+        Err(From::from("Cannot send data when not in a room."))
+    }
+}
+
 fn process_message(from: &Arc<Session>, msg: MessageKind) -> MessageResult {
     match msg {
+        MessageKind::Join { room_id, user_id, subscribe } => process_join(from, room_id, user_id, subscribe),
         MessageKind::Subscribe { what } => process_subscribe(from, what),
         MessageKind::Block { whom } => process_block(from, whom),
         MessageKind::Unblock { whom } => process_unblock(from, whom),
-        MessageKind::Join { room_id, user_id, subscribe } => process_join(from, room_id, user_id, subscribe),
+        MessageKind::Data { whom, body } => process_data(from, whom, body),
     }
 }
 

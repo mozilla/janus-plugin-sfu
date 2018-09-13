@@ -71,6 +71,12 @@ pub enum MessageKind {
 
     /// Undoes a block targeting the given user.
     Unblock { whom: UserId },
+
+    /// Sends arbitrary data to either all other clients in the room with you, or to a single other client.
+    Data {
+        whom: Option<UserId>,
+        body: String
+    }
 }
 
 /// Information about which traffic a client will get pushed to them.
