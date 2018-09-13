@@ -30,7 +30,7 @@ use serde_json::Value as JsonValue;
 use sessions::{JoinState, Session, SessionState};
 use txid::TransactionId;
 use std::error::Error;
-use std::ffi::CStr;
+use std::ffi::{CStr, CString};
 use std::os::raw::{c_char, c_int};
 use std::path::Path;
 use std::ptr;
@@ -478,23 +478,29 @@ fn process_message(from: &Arc<Session>, msg: MessageKind) -> MessageResult {
 
 fn process_offer(from: &Session, offer: &Sdp) -> JsepResult {
     // enforce publication of the codecs that we know our client base will be compatible with
-    let answer = answer_sdp!(
+    let mut answer = answer_sdp!(
         offer,
         OfferAnswerParameters::AudioCodec, AUDIO_CODEC.to_cstr().as_ptr(),
         OfferAnswerParameters::AudioDirection, MediaDirection::JANUS_SDP_RECVONLY,
         OfferAnswerParameters::VideoCodec, VIDEO_CODEC.to_cstr().as_ptr(),
         OfferAnswerParameters::VideoDirection, MediaDirection::JANUS_SDP_RECVONLY,
     );
-    janus_huge!("Providing answer to {:p}: {:?}", from.handle, answer);
+    let audio_payload_type = answer.get_payload_type(AUDIO_CODEC.to_cstr());
+    let video_payload_type = answer.get_payload_type(VIDEO_CODEC.to_cstr());
+    if let Some(pt) = audio_payload_type {
+        // todo: figure out some more principled way to keep track of this stuff per room
+        let settings = CString::new(format!("{} stereo=0; sprop-stereo=0; usedtx=1;", pt))?;
+        answer.add_attribute(pt, c_str!("fmtp"), &settings);
+    }
+
+    janus_verb!("Providing answer to {:p}: {:?}", from.handle, answer);
 
     // it's fishy, but we provide audio and video streams to subscribers regardless of whether the client is sending
     // audio and video right now or not -- this is basically working around pains in renegotiation to do with
     // reordering/removing media streams on an existing connection. to improve this, we'll want to keep the same offer
     // around and mutate it, instead of generating a new one every time the publisher changes something.
 
-    let audio_payload_type = answer.get_payload_type(AUDIO_CODEC.to_cstr());
-    let video_payload_type = answer.get_payload_type(VIDEO_CODEC.to_cstr());
-    let subscriber_offer = offer_sdp!(
+    let mut subscriber_offer = offer_sdp!(
         ptr::null(),
         answer.c_addr as *const _,
         OfferAnswerParameters::Data, 1,
@@ -507,7 +513,12 @@ fn process_offer(from: &Session, offer: &Sdp) -> JsepResult {
         OfferAnswerParameters::VideoPayloadType, video_payload_type.unwrap_or(100),
         OfferAnswerParameters::VideoDirection, MediaDirection::JANUS_SDP_SENDONLY,
     );
-    janus_huge!("Storing subscriber offer for {:p}: {:?}", from.handle, subscriber_offer);
+    if let Some(pt) = audio_payload_type {
+        // todo: figure out some more principled way to keep track of this stuff per room
+        let settings = CString::new(format!("{} stereo=0; sprop-stereo=0; usedtx=1;", pt))?;
+        subscriber_offer.add_attribute(pt, c_str!("fmtp"), &settings);
+    }
+    janus_verb!("Storing subscriber offer for {:p}: {:?}", from.handle, subscriber_offer);
 
     let switchboard = STATE.switchboard.read().expect("Switchboard lock poisoned; can't continue.");
     let jsep = json!({ "type": "offer", "sdp": subscriber_offer });
