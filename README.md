@@ -19,7 +19,7 @@ This plugin should be compatible with any OS that can run Janus; that includes L
 ## Dependencies
 
 ```
-$ sudo apt install libjansson-dev
+$ sudo apt install libglib2.0-dev libjansson-dev
 ```
 
 ## Building
