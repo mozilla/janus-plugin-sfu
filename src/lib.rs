@@ -36,7 +36,7 @@ use std::path::Path;
 use std::ptr;
 use std::slice;
 use std::sync::{mpsc, Arc, Mutex, RwLock, Weak};
-use std::sync::atomic::{Ordering, AtomicIsize};
+use std::sync::atomic::{Ordering, AtomicIsize, AtomicBool};
 use std::thread;
 use switchboard::Switchboard;
 
@@ -275,9 +275,9 @@ extern "C" fn init(callbacks: *mut PluginCallbacks, config_path: *const c_char) 
             thread::spawn(move || {
                 janus_verb!("Message processing thread is alive.");
                 for msg in messages_rx.iter() {
-                    handle_message_async(msg).err().map(|e| {
+                    if let Err(e) = handle_message_async(msg) {
                         janus_err!("Error processing message: {}", e);
-                    });
+                    }
                 }
             });
 
@@ -297,7 +297,7 @@ extern "C" fn destroy() {
 
 extern "C" fn create_session(handle: *mut PluginSession, error: *mut c_int) {
     let initial_state = SessionState {
-        destroyed: Mutex::new(false),
+        destroyed: AtomicBool::new(false),
         join_state: AtomSetOnce::empty(),
         subscriber_offer: Arc::new(Mutex::new(None)),
         subscription: AtomSetOnce::empty(),
@@ -320,7 +320,6 @@ extern "C" fn destroy_session(handle: *mut PluginSession, error: *mut c_int) {
     match unsafe { Session::from_ptr(handle) } {
         Ok(sess) => {
             janus_info!("Destroying SFU session {:p}...", sess.handle);
-            let mut destroyed = sess.destroyed.lock().expect("Session destruction mutex is poisoned :(");
             let mut switchboard = STATE.switchboard.write().expect("Switchboard is poisoned :(");
             switchboard.remove_session(&sess);
             if let Some(joined) = sess.join_state.get() {
@@ -331,7 +330,7 @@ extern "C" fn destroy_session(handle: *mut PluginSession, error: *mut c_int) {
                     notify_except(&response, &joined.user_id, occupants);
                 }
             }
-            *destroyed = true;
+            sess.destroyed.store(true, Ordering::Relaxed);
         }
         Err(e) => {
             janus_err!("{}", e);
@@ -480,7 +479,7 @@ fn process_unblock(from: &Arc<Session>, whom: UserId) -> MessageResult {
     }
 }
 
-fn process_subscribe(from: &Arc<Session>, what: Subscription) -> MessageResult {
+fn process_subscribe(from: &Arc<Session>, what: &Subscription) -> MessageResult {
     janus_info!("Processing subscription from {:p}: {:?}", from.handle, what);
     let subscription_state = Box::new(what.clone());
     if from.subscription.set_if_none(subscription_state).is_some() {
@@ -500,7 +499,7 @@ fn process_subscribe(from: &Arc<Session>, what: Subscription) -> MessageResult {
     Ok(MessageResponse::msg(json!({})))
 }
 
-fn process_data(from: &Arc<Session>, whom: Option<UserId>, body: String) -> MessageResult {
+fn process_data(from: &Arc<Session>, whom: Option<UserId>, body: &str) -> MessageResult {
     janus_huge!("Processing data message from {:p}: {:?}", from.handle, body);
     let payload = json!({ "event": "data", "body": body });
     let switchboard = STATE.switchboard.write()?;
@@ -520,10 +519,10 @@ fn process_data(from: &Arc<Session>, whom: Option<UserId>, body: String) -> Mess
 fn process_message(from: &Arc<Session>, msg: MessageKind) -> MessageResult {
     match msg {
         MessageKind::Join { room_id, user_id, subscribe } => process_join(from, room_id, user_id, subscribe),
-        MessageKind::Subscribe { what } => process_subscribe(from, what),
+        MessageKind::Subscribe { what } => process_subscribe(from, &what),
         MessageKind::Block { whom } => process_block(from, whom),
         MessageKind::Unblock { whom } => process_unblock(from, whom),
-        MessageKind::Data { whom, body } => process_data(from, whom, body),
+        MessageKind::Data { whom, body } => process_data(from, whom, &body),
     }
 }
 
@@ -591,54 +590,53 @@ fn process_jsep(from: &Session, jsep: JsepKind) -> JsepResult {
     }
 }
 
-fn push_response(from: &Session, txn: TransactionId, body: &JsonValue, jsep: Option<JsonValue>) -> JanusResult {
+fn push_response(from: &Session, txn: &TransactionId, body: &JsonValue, jsep: Option<JsonValue>) -> JanusResult {
     let push_event = gateway_callbacks().push_event;
     let jsep = jsep.unwrap_or_else(|| json!({}));
     janus_huge!("Responding to {:p} for txid {}: body={}, jsep={}", from.handle, txn, body, jsep);
     JanusError::from(push_event(from.as_ptr(), &mut PLUGIN, txn.0, serde_to_jansson(body).as_mut_ref(), serde_to_jansson(&jsep).as_mut_ref()))
 }
 
-fn try_parse_jansson<T: DeserializeOwned>(json: JanssonValue) -> Result<Option<T>, Box<Error>> {
-    jansson_to_str(&json).and_then(|x| OptionalField::try_parse(x.to_string_lossy()))
+fn try_parse_jansson<T: DeserializeOwned>(json: &JanssonValue) -> Result<Option<T>, Box<Error>> {
+    jansson_to_str(json).and_then(|x| OptionalField::try_parse(x.to_string_lossy()))
 }
 
 fn handle_message_async(RawMessage { jsep, msg, txn, from }: RawMessage) -> JanusResult {
     if let Some(ref from) = from.upgrade() {
         janus_huge!("Processing txid {} from {:p}: msg={:?}, jsep={:?}", txn, from.handle, msg, jsep);
-        let destroyed = from.destroyed.lock().expect("Session destruction mutex is poisoned :(");
-        if !*destroyed {
+        if !from.destroyed.load(Ordering::Relaxed) {
             // process the message first, because processing a JSEP can cause us to want to send an RTCP
             // FIR to our subscribers, which may have been established in the message
-            let parsed_msg = msg.and_then(|x| transpose(try_parse_jansson(x)));
-            let parsed_jsep = jsep.and_then(|x| transpose(try_parse_jansson(x)));
+            let parsed_msg = msg.and_then(|x| transpose(try_parse_jansson(&x)));
+            let parsed_jsep = jsep.and_then(|x| transpose(try_parse_jansson(&x)));
             let msg_result = parsed_msg.map(|x| x.and_then(|msg| process_message(from, msg)));
             let jsep_result = parsed_jsep.map(|x| x.and_then(|jsep| process_jsep(from, jsep)));
             return match (msg_result, jsep_result) {
                 (Some(Err(msg_err)), _) => {
                     let resp = json!({ "success": false, "error": { "msg": format!("{}", msg_err) }});
-                    push_response(from, txn, &resp, None)
+                    push_response(from, &txn, &resp, None)
                 }
                 (_, Some(Err(jsep_err))) => {
                     let resp = json!({ "success": false, "error": { "msg": format!("{}", jsep_err) }});
-                    push_response(from, txn, &resp, None)
+                    push_response(from, &txn, &resp, None)
                 }
                 (Some(Ok(msg_resp)), None) => {
                     let msg_body = msg_resp.body.map_or(json!({ "success": true }), |x| {
                         json!({ "success": true, "response": x })
                     });
-                    push_response(from, txn, &msg_body, msg_resp.jsep)
+                    push_response(from, &txn, &msg_body, msg_resp.jsep)
                 }
                 (None, Some(Ok(jsep_resp))) => {
-                    push_response(from, txn, &json!({ "success": true }), Some(jsep_resp))
+                    push_response(from, &txn, &json!({ "success": true }), Some(jsep_resp))
                 }
                 (Some(Ok(msg_resp)), Some(Ok(jsep_resp))) => {
                     let msg_body = msg_resp.body.map_or(json!({ "success": true }), |x| {
                         json!({ "success": true, "response": x })
                     });
-                    push_response(from, txn, &msg_body, Some(jsep_resp))
+                    push_response(from, &txn, &msg_body, Some(jsep_resp))
                 }
                 (None, None) => {
-                    push_response(from, txn, &json!({ "success": true }), None)
+                    push_response(from, &txn, &json!({ "success": true }), None)
                 }
             }
         }
@@ -646,7 +644,8 @@ fn handle_message_async(RawMessage { jsep, msg, txn, from }: RawMessage) -> Janu
 
     // getting messages for destroyed connections is slightly concerning,
     // because messages shouldn't be backed up for that long, so warn if it happens
-    Ok(janus_warn!("Message with txid {} received for destroyed session; discarding.", txn))
+    janus_warn!("Message with txid {} received for destroyed session; discarding.", txn);
+    Ok(())
 }
 
 extern "C" fn handle_message(handle: *mut PluginSession, transaction: *mut c_char,

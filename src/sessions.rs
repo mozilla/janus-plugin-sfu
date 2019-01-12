@@ -1,6 +1,6 @@
 /// Types for representing Janus session state.
 use atom::AtomSetOnce;
-use std::sync::atomic::AtomicIsize;
+use std::sync::atomic::{AtomicIsize, AtomicBool};
 use std::sync::{Arc, Mutex};
 use messages::{RoomId, UserId, Subscription};
 use janus::sdp::Sdp;
@@ -26,7 +26,7 @@ impl JoinState {
 #[derive(Debug)]
 pub struct SessionState {
     /// Whether this session has been destroyed.
-    pub destroyed: Mutex<bool>,
+    pub destroyed: AtomicBool,
 
     /// Information pertaining to this session's user and room, if joined.
     pub join_state: AtomSetOnce<Box<JoinState>>,

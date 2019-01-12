@@ -141,7 +141,7 @@ impl Switchboard {
     pub fn leave_room(&mut self, session: &Session, room: RoomId) {
         if let Entry::Occupied(mut cohabitators) = self.occupants.entry(room) {
             cohabitators.get_mut().retain(|x| x.as_ref() != session);
-            if cohabitators.get().len() == 0 {
+            if cohabitators.get().is_empty() {
                 cohabitators.remove_entry();
             }
         }
