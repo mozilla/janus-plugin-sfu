@@ -34,7 +34,7 @@ fi
 
 if [[ ! -e $(which twistd) ]]; then
     sudo apt -y install python-dev build-essential
-    sudo pip install pyopenssl twisted
+    sudo pip install pyopenssl twisted service_identity
 fi
 
 eval "$(
@@ -70,7 +70,7 @@ git-get () {
 
 if [[ $force_rebuild || ! -e /opt/janus/bin/janus ]]; then
     banner 'getting janus source'
-    git-get meetecho/janus-gateway master
+    git-get meetecho/janus-gateway v0.4.5
 
     sudo apt update
 
@@ -78,7 +78,7 @@ if [[ $force_rebuild || ! -e /opt/janus/bin/janus ]]; then
     sudo apt -y install dh-autoreconf pkg-config cmake
 
     banner 'installing janus dependencies'
-    sudo apt -y install libglib2.0-dev libjansson-dev libnice-dev libssl-dev gengetopt libmicrohttpd-dev
+    sudo apt -y install libconfig-dev libglib2.0-dev libjansson-dev libnice-dev libssl-dev gengetopt libmicrohttpd-dev
 
     if [[ $force_rebuild || ! -e /usr/lib/libsrtp.so ]]; then
         git-get cisco/libsrtp v2.1.0
