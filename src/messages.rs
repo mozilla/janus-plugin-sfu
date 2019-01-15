@@ -60,6 +60,15 @@ pub enum MessageKind {
         room_id: RoomId,
         user_id: UserId,
         subscribe: Option<Subscription>,
+        token: Option<String>
+    },
+
+    /// Indicates that the given user should be disconnected from the given room. Requires a token bequeathing
+    /// this permission for the given room.
+    Kick {
+        room_id: RoomId,
+        user_id: UserId,
+        token: String
     },
 
     /// Indicates that a client wishes to subscribe to traffic described by the given subscription specification.
@@ -126,12 +135,13 @@ mod tests {
 
         #[test]
         fn parse_join_user_id() {
-            let json = r#"{"kind": "join", "user_id": "10", "room_id": "alpha"}"#;
+            let json = r#"{"kind": "join", "user_id": "10", "room_id": "alpha", "token": "foo"}"#;
             let result: MessageKind = serde_json::from_str(json).unwrap();
             assert_eq!(result, MessageKind::Join {
                 user_id: "10".into(),
                 room_id: "alpha".into(),
-                subscribe: None
+                subscribe: None,
+                token: Some(String::from("foo"))
             });
         }
 
@@ -146,7 +156,8 @@ mod tests {
                     notifications: true,
                     data: false,
                     media: None
-                })
+                }),
+                token: None
             });
         }
 

@@ -3,6 +3,7 @@ extern crate ini;
 extern crate multimap;
 #[macro_use]
 extern crate janus_plugin as janus;
+extern crate jsonwebtoken as jwt;
 #[macro_use]
 extern crate lazy_static;
 extern crate serde;
@@ -11,6 +12,7 @@ extern crate serde_derive;
 #[macro_use]
 extern crate serde_json;
 
+mod auth;
 mod messages;
 mod sessions;
 mod switchboard;
@@ -18,6 +20,7 @@ mod config;
 mod txid;
 
 use atom::AtomSetOnce;
+use auth::ValidatedToken;
 use messages::{RoomId, UserId};
 use config::Config;
 use janus::{JanusError, JanusResult, JanssonDecodingFlags, JanssonEncodingFlags, JanssonValue, Plugin, PluginCallbacks,
@@ -399,9 +402,25 @@ extern "C" fn hangup_media(handle: *mut PluginSession) {
     janus_info!("Hanging up WebRTC media on {:p}.", sess.handle);
 }
 
-fn process_join(from: &Arc<Session>, room_id: RoomId, user_id: UserId, subscribe: Option<Subscription>) -> MessageResult {
+fn process_join(from: &Arc<Session>, room_id: RoomId, user_id: UserId, subscribe: Option<Subscription>, token: Option<String>) -> MessageResult {
     // todo: holy shit clean this function up somehow
-    janus_info!("Processing join from {:p} to room ID {} with user ID {}.", from.handle, room_id, user_id);
+    let config = STATE.config.get().unwrap();
+    match (&config.auth_key, token) {
+        (Some(ref key), Some(ref token)) => {
+            match ValidatedToken::from_str(token, key) {
+                Ok(_tok) => {
+                    janus_info!("Processing validated join from {:p} to room ID {} with user ID {}.", from.handle, room_id, user_id);
+                }
+                Err(e) => {
+                    janus_warn!("Processing invalid join from {:p} to room ID {} with user ID {} ({})", from.handle, room_id, user_id, e);
+                }
+            }
+        },
+        _ => {
+            janus_info!("Processing anonymous join from {:p} to room ID {} with user ID {}.", from.handle, room_id, user_id);
+        }
+    }
+
     let mut switchboard = STATE.switchboard.write()?;
     let body = json!({ "users": { room_id.as_str(): switchboard.get_users(&room_id) }});
 
@@ -416,7 +435,6 @@ fn process_join(from: &Arc<Session>, room_id: RoomId, user_id: UserId, subscribe
 
     let mut is_master_handle = false;
     if let Some(subscription) = subscribe.as_ref() {
-        let config = STATE.config.get().unwrap();
         let room_is_full = switchboard.occupants_of(&room_id).len() > config.max_room_size;
         let server_is_full = switchboard.sessions().len() > config.max_ccu;
         is_master_handle = subscription.data; // hack -- assume there is only one "master" data connection per user
@@ -448,6 +466,23 @@ fn process_join(from: &Arc<Session>, room_id: RoomId, user_id: UserId, subscribe
         }
     }
     Ok(MessageResponse::msg(body))
+}
+
+fn process_kick(from: &Arc<Session>, room_id: RoomId, user_id: UserId, token: String) -> MessageResult {
+    let config = STATE.config.get().unwrap();
+    if let Some(ref key) = config.auth_key {
+        match ValidatedToken::from_str(&token, key) {
+            Ok(_tok) => {
+                janus_info!("Processing kick from {:p} targeting user ID {} in room ID {}.", from.handle, user_id, room_id);
+            }
+            Err(e) => {
+                janus_warn!("Ignoring kick from {:p} due to invalid token: {}.", from.handle, e);
+            }
+        }
+    } else {
+        janus_warn!("Ignoring kick from {:p} because no secret was configured.", from.handle);
+    }
+    Ok(MessageResponse::msg(json!({})))
 }
 
 fn process_block(from: &Arc<Session>, whom: UserId) -> MessageResult {
@@ -518,7 +553,8 @@ fn process_data(from: &Arc<Session>, whom: Option<UserId>, body: &str) -> Messag
 
 fn process_message(from: &Arc<Session>, msg: MessageKind) -> MessageResult {
     match msg {
-        MessageKind::Join { room_id, user_id, subscribe } => process_join(from, room_id, user_id, subscribe),
+        MessageKind::Join { room_id, user_id, subscribe, token } => process_join(from, room_id, user_id, subscribe, token),
+        MessageKind::Kick { room_id, user_id, token } => process_kick(from, room_id, user_id, token),
         MessageKind::Subscribe { what } => process_subscribe(from, &what),
         MessageKind::Block { whom } => process_block(from, whom),
         MessageKind::Unblock { whom } => process_unblock(from, whom),
