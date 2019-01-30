@@ -408,8 +408,8 @@ fn process_join(from: &Arc<Session>, room_id: RoomId, user_id: UserId, subscribe
     match (&config.auth_key, token) {
         (Some(ref key), Some(ref token)) => {
             match ValidatedToken::from_str(token, key) {
-                Ok(_tok) => {
-                    janus_info!("Processing validated join from {:p} to room ID {} with user ID {}.", from.handle, room_id, user_id);
+                Ok(tok) => {
+                    janus_info!("Processing validated join from {:p} to room ID {} with user ID {}. Join allowed: {}", from.handle, room_id, user_id, tok.join_hub);
                 }
                 Err(e) => {
                     janus_warn!("Processing invalid join from {:p} to room ID {} with user ID {} ({})", from.handle, room_id, user_id, e);
