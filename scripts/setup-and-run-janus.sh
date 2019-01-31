@@ -121,7 +121,7 @@ if [[ $force_rebuild || ! -e /opt/janus/bin/janus ]]; then
     popd
 fi
 
-if [[ ! -e /opt/janus/lib/janus/plugins/libjanus_plugin_sfu.so ]]; then
+if [[ $build_local || ! -e /opt/janus/lib/janus/plugins/libjanus_plugin_sfu.so ]]; then
     banner 'installing latest rust'
     curl https://sh.rustup.rs -sSf > rustup.sh
     sh rustup.sh -y
