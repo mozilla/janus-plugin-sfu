@@ -39,11 +39,12 @@ fi
 
 eval "$(
 docopts -h - : "$@" <<EOF
-Usage: ./setup-and-run-social-mr-janus-server.sh [--force-rebuild] [--working-directory <dir>]
+Usage: ./setup-and-run-janus.sh [--build-local] [--force-rebuild] [--working-directory <dir>] [--demo-port <port>]
 
     -f --force-rebuild               Forcefully rebuild dependencies
     -l --build-local                 Build local code instead of master
     -d --working-directory <dir>     Directory to work under [default: ./build]
+    -p --demo-port <port>            Port to use for demo server [default: 8787]
 EOF
 )"
 
@@ -168,7 +169,7 @@ if [[ ! -e server.pem ]]; then
     openssl req -nodes -x509 -newkey rsa:2048 -keyout server.key -out server.pem -days 365 \
         -subj "/C=US/ST=CA/L=MTV/O=foo/OU=foo/CN=foo"
 fi
-twistd -no web --path . -c server.pem -k server.key --https=443 &
+twistd -no web --path . -c server.pem -k server.key --https=$demo_port &
 popd
 
 trap "kill %1; kill %2; wait" SIGINT
