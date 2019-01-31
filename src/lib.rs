@@ -408,8 +408,8 @@ fn process_join(from: &Arc<Session>, room_id: RoomId, user_id: UserId, subscribe
     match (&config.auth_key, token) {
         (Some(ref key), Some(ref token)) => {
             match ValidatedToken::from_str(token, key) {
-                Ok(_tok) => {
-                    janus_info!("Processing validated join from {:p} to room ID {} with user ID {}.", from.handle, room_id, user_id);
+                Ok(tok) => {
+                    janus_info!("Processing validated join from {:p} to room ID {} with user ID {}. Join allowed: {}", from.handle, room_id, user_id, tok.join_hub);
                 }
                 Err(e) => {
                     janus_warn!("Processing invalid join from {:p} to room ID {} with user ID {} ({})", from.handle, room_id, user_id, e);
@@ -472,8 +472,19 @@ fn process_kick(from: &Arc<Session>, room_id: RoomId, user_id: UserId, token: St
     let config = STATE.config.get().unwrap();
     if let Some(ref key) = config.auth_key {
         match ValidatedToken::from_str(&token, key) {
-            Ok(_tok) => {
-                janus_info!("Processing kick from {:p} targeting user ID {} in room ID {}.", from.handle, user_id, room_id);
+            Ok(tok) => {
+                if tok.kick_users {
+                    janus_info!("Processing kick from {:p} targeting user ID {} in room ID {}.", from.handle, user_id, room_id);
+                    let end_session = gateway_callbacks().end_session;
+                    let switchboard = STATE.switchboard.read()?;
+                    let sessions = switchboard.get_sessions(&user_id);
+                    for sess in sessions {
+                        janus_info!("Kicking session {:p}.", from.handle);
+                        end_session(sess.as_ptr());
+                    }
+                } else {
+                    janus_warn!("Ignoring kick from {:p} because they didn't have kick permissions.", from.handle);
+                }
             }
             Err(e) => {
                 janus_warn!("Ignoring kick from {:p} due to invalid token: {}.", from.handle, e);

@@ -261,4 +261,16 @@ impl Switchboard {
             })
             .map(Box::as_ref)
     }
+
+    pub fn get_sessions(&self, user_id: &UserId) -> Vec<&Box<Arc<Session>>> {
+        self.sessions.iter()
+            .filter(|s| {
+                let join_state = s.join_state.get();
+                match join_state {
+                    Some(state) if &state.user_id == user_id => true,
+                    _ => false
+                }
+            }).collect::<_>()
+    }
+
 }
