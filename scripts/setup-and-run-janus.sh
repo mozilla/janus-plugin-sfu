@@ -42,10 +42,12 @@ docopts -h - : "$@" <<EOF
 Usage: ./setup-and-run-social-mr-janus-server.sh [--force-rebuild] [--working-directory <dir>]
 
     -f --force-rebuild               Forcefully rebuild dependencies
+    -l --build-local                 Build local code instead of master
     -d --working-directory <dir>     Directory to work under [default: ./build]
 EOF
 )"
 
+build_local=$([[ $build_local == "true" ]] && echo "true") || true
 force_rebuild=$([[ $force_rebuild == "true" ]] && echo "true") || true
 
 script_directory=$(dirname "$0")
@@ -118,7 +120,7 @@ if [[ $force_rebuild || ! -e /opt/janus/bin/janus ]]; then
     popd
 fi
 
-if [[ $force_rebuild || ! -e /opt/janus/lib/janus/plugins/libjanus_plugin_sfu.so ]]; then
+if [[ ! -e /opt/janus/lib/janus/plugins/libjanus_plugin_sfu.so ]]; then
     banner 'installing latest rust'
     curl https://sh.rustup.rs -sSf > rustup.sh
     sh rustup.sh -y
@@ -126,21 +128,22 @@ if [[ $force_rebuild || ! -e /opt/janus/lib/janus/plugins/libjanus_plugin_sfu.so
     rm rustup.sh
     rustup update
 
-    banner 'getting, building and installing janus-plugin-sfu'
-    # git-get mquander/janus-plugin-sfu master
-    # pushd mquander/janus-plugin-sfu
-    # cargo build --release
-    # sudo mkdir -p /opt/janus/lib/janus/plugins
-    # sudo cp target/release/libjanus_plugin_sfu.so /opt/janus/lib/janus/plugins/
-    # popd
+    if [[ $build_local ]]; then
+        pushd "$script_directory/.."
+        cargo build --release
+        sudo mkdir -p /opt/janus/lib/janus/plugins
+        sudo cp target/release/libjanus_plugin_sfu.so /opt/janus/lib/janus/plugins/
+        popd
+    else
+        banner 'getting, building and installing janus-plugin-sfu'
+        git-get mquander/janus-plugin-sfu master
+        pushd mquander/janus-plugin-sfu
+        cargo build --release
+        sudo mkdir -p /opt/janus/lib/janus/plugins
+        sudo cp target/release/libjanus_plugin_sfu.so /opt/janus/lib/janus/plugins/
+        popd
+    fi
 fi
-
-pushd ../../
-echo $PWD
-cargo build --release
-sudo mkdir -p /opt/janus/lib/janus/plugins
-sudo cp target/release/libjanus_plugin_sfu.so /opt/janus/lib/janus/plugins/
-popd
 
 if [ "$(awk '/\[nat\]/,/^stun/' /opt/janus/etc/janus/janus.cfg | wc -l)" -gt "2" ]; then
     sudo sed 's/\[nat\]/\0\nstun_server = stun2.l.google.com\nstun_port = 19302/' -i /opt/janus/etc/janus/janus.cfg
@@ -159,16 +162,16 @@ banner 'starting janus and web servers'
 
 /opt/janus/bin/janus &
 
-# pushd "$script_directory/../client"
-# if [[ ! -e server.pem ]]; then
-#     banner 'generating ssl cert'
-#     openssl req -nodes -x509 -newkey rsa:2048 -keyout server.key -out server.pem -days 365 \
-#         -subj "/C=US/ST=CA/L=MTV/O=foo/OU=foo/CN=foo"
-# fi
-# twistd -no web --path . -c server.pem -k server.key --https=443 &
-# popd
+pushd "$script_directory/../client"
+if [[ ! -e server.pem ]]; then
+    banner 'generating ssl cert'
+    openssl req -nodes -x509 -newkey rsa:2048 -keyout server.key -out server.pem -days 365 \
+        -subj "/C=US/ST=CA/L=MTV/O=foo/OU=foo/CN=foo"
+fi
+twistd -no web --path . -c server.pem -k server.key --https=443 &
+popd
 
-trap "kill %1; wait" SIGINT
+trap "kill %1; kill %2; wait" SIGINT
 sleep 1
 banner 'press Ctrl+C to kill'
 wait
