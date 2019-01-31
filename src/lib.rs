@@ -476,8 +476,14 @@ fn process_kick(from: &Arc<Session>, room_id: RoomId, user_id: UserId, token: St
                 if tok.kick_users {
                     janus_info!("Processing kick from {:p} targeting user ID {} in room ID {}.", from.handle, user_id, room_id);
                     let end_session = gateway_callbacks().end_session;
-                    let mut switchboard = STATE.switchboard.write()?;
-                    end_session(switchboard.get_publisher(&user_id).unwrap().as_ref().as_ptr());
+                    let switchboard = STATE.switchboard.read()?;
+                    let sessions = switchboard.get_sessions(&user_id);
+                    for sess in sessions {
+                        janus_info!("Kicking session {:p}.", from.handle);
+                        end_session(sess.as_ptr());
+                    }
+                } else {
+                    janus_warn!("Ignoring kick from {:p} because they didn't have kick permissions.", from.handle);
                 }
             }
             Err(e) => {
