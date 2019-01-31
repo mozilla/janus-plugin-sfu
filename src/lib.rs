@@ -477,7 +477,7 @@ fn process_kick(from: &Arc<Session>, room_id: RoomId, user_id: UserId, token: St
                     janus_info!("Processing kick from {:p} targeting user ID {} in room ID {}.", from.handle, user_id, room_id);
                     let end_session = gateway_callbacks().end_session;
                     let switchboard = STATE.switchboard.read()?;
-                    let sessions = switchboard.get_sessions(&user_id);
+                    let sessions = switchboard.get_sessions(&room_id, &user_id);
                     for sess in sessions {
                         janus_info!("Kicking session {:p}.", from.handle);
                         end_session(sess.as_ptr());
