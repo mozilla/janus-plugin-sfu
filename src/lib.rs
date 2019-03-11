@@ -410,14 +410,19 @@ fn process_join(from: &Arc<Session>, room_id: RoomId, user_id: UserId, subscribe
             match ValidatedToken::from_str(token, key) {
                 Ok(tok) => {
                     janus_info!("Processing validated join from {:p} to room ID {} with user ID {}. Join allowed: {}", from.handle, room_id, user_id, tok.join_hub);
+                    if !tok.join_hub {
+                        return Err(From::from("Rejecting join with no join_hub permission!"))
+                    }
                 }
                 Err(e) => {
                     janus_warn!("Processing invalid join from {:p} to room ID {} with user ID {} ({})", from.handle, room_id, user_id, e);
+                    return Err(From::from("Rejecting join with invalid token!"))
                 }
             }
         },
         _ => {
             janus_info!("Processing anonymous join from {:p} to room ID {} with user ID {}.", from.handle, room_id, user_id);
+            return Err(From::from("Rejecting anonymous join!"))
         }
     }
 
