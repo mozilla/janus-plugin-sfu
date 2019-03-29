@@ -405,24 +405,31 @@ extern "C" fn hangup_media(handle: *mut PluginSession) {
 fn process_join(from: &Arc<Session>, room_id: RoomId, user_id: UserId, subscribe: Option<Subscription>, token: Option<String>) -> MessageResult {
     // todo: holy shit clean this function up somehow
     let config = STATE.config.get().unwrap();
-    match (&config.auth_key, token) {
-        (Some(ref key), Some(ref token)) => {
-            match ValidatedToken::from_str(token, key) {
-                Ok(tok) => {
-                    janus_info!("Processing validated join from {:p} to room ID {} with user ID {}. Join allowed: {}", from.handle, room_id, user_id, tok.join_hub);
-                    if !tok.join_hub {
-                        return Err(From::from("Rejecting join with no join_hub permission!"))
+    match &config.auth_key {
+        Some(ref key) => {
+            match token {
+                Some(ref token) => {
+                    match ValidatedToken::from_str(token, key) {
+                        Ok(tok) => {
+                            janus_warn!("Processing validated join from {:p} to room ID {} with user ID {}. Join allowed: {}", from.handle, room_id, user_id, tok.join_hub);
+                            if !tok.join_hub {
+                                return Err(From::from("Rejecting join with no join_hub permission!"))
+                            }
+                        }
+                        Err(e) => {
+                            janus_warn!("Processing invalid join from {:p} to room ID {} with user ID {} ({})", from.handle, room_id, user_id, e);
+                            return Err(From::from("Rejecting join with invalid token!"))
+                        }
                     }
-                }
-                Err(e) => {
-                    janus_warn!("Processing invalid join from {:p} to room ID {} with user ID {} ({})", from.handle, room_id, user_id, e);
-                    return Err(From::from("Rejecting join with invalid token!"))
+                },
+                _ => {
+                    janus_warn!("Processing anonymous join from {:p} to room ID {} with user ID {}.", from.handle, room_id, user_id);
+                    return Err(From::from("Rejecting anonymous join!"))
                 }
             }
         },
         _ => {
-            janus_info!("Processing anonymous join from {:p} to room ID {} with user ID {}.", from.handle, room_id, user_id);
-            return Err(From::from("Rejecting anonymous join!"))
+            janus_warn!("No auth_key configured. Allowing join from {:p} to room ID {} with user ID {}.", from.handle, room_id, user_id);
         }
     }
 
