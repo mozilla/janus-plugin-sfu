@@ -417,7 +417,7 @@ fn process_join(from: &Arc<Session>, room_id: RoomId, user_id: UserId, subscribe
                             }
                         }
                         Err(e) => {
-                            janus_warn!("Processing invalid join from {:p} to room ID {} with user ID {} ({})", from.handle, room_id, user_id, e);
+                            janus_warn!("Processing invalid join from {:p} to room ID {} with user ID {}. Error: {}", from.handle, room_id, user_id, e);
                             return Err(From::from("Rejecting join with invalid token!"))
                         }
                     }
