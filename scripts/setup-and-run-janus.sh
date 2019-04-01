@@ -131,9 +131,9 @@ if [[ $build_local || ! -e /opt/janus/lib/janus/plugins/libjanus_plugin_sfu.so ]
 
     if [[ $build_local ]]; then
         pushd "$script_directory/.."
-        cargo build --release
+        cargo build
         sudo mkdir -p /opt/janus/lib/janus/plugins
-        sudo cp target/release/libjanus_plugin_sfu.so /opt/janus/lib/janus/plugins/
+        sudo cp target/debug/libjanus_plugin_sfu.so /opt/janus/lib/janus/plugins/
         popd
     else
         banner 'getting, building and installing janus-plugin-sfu'
