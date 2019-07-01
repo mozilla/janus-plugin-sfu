@@ -8,13 +8,13 @@ In the future, this is likely to grow into a reverse proxy for [Reticulum](https
 
 [See here for API documentation on how to communicate with the plugin.](docs/api.md)
 
-We're hanging around in the [WebVR Slack](https://webvr-slack.herokuapp.com/) #social channel if you have any questions or want to chat. PRs and GitHub issues also welcome.
+PRs and GitHub issues are welcome.
 
 ### How do I use this?
 
-This is a plugin for Janus, so you'll need to install and run Janus first. The [installation instructions on GitHub](https://github.com/meetecho/janus-gateway#dependencies) are canonical. It's currently only compatible with recent master builds of Janus -- when Janus 0.4.0 is released, that will do.
+This is a plugin for Janus, so you'll need to install and run Janus first. The [installation instructions on GitHub](https://github.com/meetecho/janus-gateway#dependencies) are canonical. It's compatible with versions of Janus more recent than 0.4.0.
 
-This plugin should be compatible with any OS that can run Janus; that includes Linux, OS X, and Windows via WSL. If you're on Ubuntu, don't install the version from your package manager -- that one has no WebRTC data channel support, so it won't work. If that stresses you out, you can try running `scripts/setup-and-run-janus.sh`, which will compile and install Janus and its dependencies for you.
+This plugin should be compatible with any OS that can run Janus; that includes Linux, OS X, and Windows via WSL. If you use a version from a package manager, you might want to check to make sure it has data channel support, which is a compile-time option. (Debian and Ubuntu have it.) Alternatively, you can try running `scripts/setup-and-run-janus.sh`, which will compile and install Janus and its dependencies for you.
 
 ## Dependencies
 
