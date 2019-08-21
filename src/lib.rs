@@ -723,6 +723,12 @@ extern "C" fn handle_message(handle: *mut PluginSession, transaction: *mut c_cha
     result.into_raw()
 }
 
+extern "C" fn handle_admin_message(_message: *mut RawJanssonValue) -> *mut RawJanssonValue {
+    // for now we don't use this for anything
+    let output = json!({});
+    serde_to_jansson(&output).into_raw()
+}
+
 const PLUGIN: Plugin = build_plugin!(
     LibraryMetadata {
         api_version: 10,
@@ -737,6 +743,7 @@ const PLUGIN: Plugin = build_plugin!(
     destroy,
     create_session,
     handle_message,
+    handle_admin_message,
     setup_media,
     incoming_rtp,
     incoming_rtcp,
