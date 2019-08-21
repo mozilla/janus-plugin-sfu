@@ -383,12 +383,12 @@ extern "C" fn incoming_rtcp(handle: *mut PluginSession, video: c_int, buf: *mut 
     }
 }
 
-extern "C" fn incoming_data(handle: *mut PluginSession, buf: *mut c_char, len: c_int) {
+extern "C" fn incoming_data(handle: *mut PluginSession, _label: *mut c_char, buf: *mut c_char, len: c_int, ) {
     let sess = unsafe { Session::from_ptr(handle).expect("Session can't be null!") };
     let switchboard = STATE.switchboard.read().expect("Switchboard lock poisoned; can't continue.");
     let relay_data = gateway_callbacks().relay_data;
     for other in switchboard.data_recipients_for(&sess) {
-        relay_data(other.as_ptr(), buf, len);
+        relay_data(other.as_ptr(), ptr::null_mut(), buf, len);
     }
 }
 
