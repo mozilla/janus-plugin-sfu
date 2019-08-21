@@ -15,7 +15,7 @@ lto = true
 
 [dependencies]
 atom = "0.3"
-janus-plugin = { version = "0.11.1", features = ["refcount"] }
+janus-plugin = { git = "https://github.com/mozilla/janus-plugin-rs" }
 lazy_static = "1.4"
 multimap = "0.8"
 serde = "1.0"
