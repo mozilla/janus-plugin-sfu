@@ -77,7 +77,7 @@ fn serde_to_jansson(input: &JsonValue) -> JanssonValue {
     JanssonValue::from_str(&input.to_string(), JanssonDecodingFlags::empty()).unwrap()
 }
 
-fn jansson_to_str(json: &JanssonValue) -> Result<LibcString, Box<Error>> {
+fn jansson_to_str(json: &JanssonValue) -> Result<LibcString, Box<dyn Error>> {
     Ok(json.to_libcstring(JanssonEncodingFlags::empty()))
 }
 
@@ -105,10 +105,10 @@ impl MessageResponse {
 }
 
 /// A result which carries a signalling message response to send to a client.
-type MessageResult = Result<MessageResponse, Box<Error>>;
+type MessageResult = Result<MessageResponse, Box<dyn Error>>;
 
 /// A result which carries a JSEP to send to a client.
-type JsepResult = Result<JsonValue, Box<Error>>;
+type JsepResult = Result<JsonValue, Box<dyn Error>>;
 
 /// The audio codec Janus will negotiate with all participants. Opus is cross-compatible with everything we care about.
 static AUDIO_CODEC: AudioCodec = AudioCodec::Opus;
@@ -251,7 +251,7 @@ fn send_fir<T: IntoIterator<Item=U>, U: AsRef<Session>>(publishers: T) {
     }
 }
 
-fn get_config(config_root: *const c_char) -> Result<Config, Box<Error>> {
+fn get_config(config_root: *const c_char) -> Result<Config, Box<dyn Error>> {
     let config_path = unsafe { Path::new(CStr::from_ptr(config_root).to_str()?) };
     let config_file = config_path.join("janus.plugin.sfu.cfg");
     Config::from_path(config_file)
@@ -653,7 +653,7 @@ fn push_response(from: &Session, txn: &TransactionId, body: &JsonValue, jsep: Op
     JanusError::from(push_event(from.as_ptr(), &mut PLUGIN, txn.0, serde_to_jansson(body).as_mut_ref(), serde_to_jansson(&jsep).as_mut_ref()))
 }
 
-fn try_parse_jansson<T: DeserializeOwned>(json: &JanssonValue) -> Result<Option<T>, Box<Error>> {
+fn try_parse_jansson<T: DeserializeOwned>(json: &JanssonValue) -> Result<Option<T>, Box<dyn Error>> {
     jansson_to_str(json).and_then(|x| OptionalField::try_parse(x.to_string_lossy()))
 }
 

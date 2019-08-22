@@ -26,7 +26,7 @@ impl Default for Config {
 impl Config {
     /// Reads the runtime configuration from an INI config file at the given path, applying defaults for individual
     /// configuration values that aren't present, or returning an error if no readable configuration is present at all.
-    pub fn from_path<P: AsRef<Path>>(path: P) -> Result<Self, Box<Error>>
+    pub fn from_path<P: AsRef<Path>>(path: P) -> Result<Self, Box<dyn Error>>
     {
         let conf = Ini::load_from_file(path)?;
         let section = conf.section(Some("general"))
