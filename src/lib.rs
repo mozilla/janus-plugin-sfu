@@ -383,12 +383,14 @@ extern "C" fn incoming_rtcp(handle: *mut PluginSession, video: c_int, buf: *mut 
     }
 }
 
-extern "C" fn incoming_data(handle: *mut PluginSession, _label: *mut c_char, buf: *mut c_char, len: c_int, ) {
+extern "C" fn incoming_data(handle: *mut PluginSession, label: *mut c_char, buf: *mut c_char, len: c_int, ) {
     let sess = unsafe { Session::from_ptr(handle).expect("Session can't be null!") };
     let switchboard = STATE.switchboard.read().expect("Switchboard lock poisoned; can't continue.");
     let relay_data = gateway_callbacks().relay_data;
     for other in switchboard.data_recipients_for(&sess) {
-        relay_data(other.as_ptr(), ptr::null_mut(), buf, len);
+        // we presume that clients have matching labels on their channels -- in our case we have one
+        // reliable one called "reliable" and one unreliable one called "unreliable"
+        relay_data(other.as_ptr(), label, buf, len);
     }
 }
 
