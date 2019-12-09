@@ -31,7 +31,7 @@ impl<T> Into<Option<T>> for OptionalField<T> {
 }
 
 impl<T> OptionalField<T> where T: DeserializeOwned {
-    pub fn try_parse(val: impl Borrow<str>) -> Result<Option<T>, Box<Error>> {
+    pub fn try_parse(val: impl Borrow<str>) -> Result<Option<T>, Box<dyn Error>> {
         Ok(serde_json::from_str::<OptionalField<T>>(val.borrow()).map(|x| x.into())?)
     }
 }

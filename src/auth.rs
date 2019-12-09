@@ -15,7 +15,7 @@ struct UserClaims {
 }
 
 impl ValidatedToken {
-    pub fn from_str(value: &str, key: &[u8]) -> Result<ValidatedToken, Box<Error>> {
+    pub fn from_str(value: &str, key: &[u8]) -> Result<ValidatedToken, Box<dyn Error>> {
         let validation = Validation::new(Algorithm::RS512);
         let token_data = jwt::decode::<UserClaims>(value, key, &validation)?;
         Ok(ValidatedToken {
