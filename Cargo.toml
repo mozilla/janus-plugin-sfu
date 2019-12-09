@@ -3,6 +3,7 @@ name = "janus-plugin-sfu"
 description = "Janus SFU for game networking."
 version = "0.1.0"
 authors = ["Marshall Polaris <marshall@pol.rs>"]
+readme = "README.md"
 repository = "https://github.com/mozilla/janus-plugin-sfu"
 license = "MPL-2.0"
 publish = false
