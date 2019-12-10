@@ -1,9 +1,9 @@
 /// Types for representing Janus session state.
-use atom::AtomSetOnce;
 use std::sync::atomic::{AtomicIsize, AtomicBool};
 use std::sync::{Arc, Mutex};
 use janus_plugin::sdp::Sdp;
 use janus_plugin::session::SessionWrapper;
+use once_cell::sync::OnceCell;
 use crate::messages::{RoomId, UserId, Subscription};
 
 /// State pertaining to this session's join of a particular room as a particular user ID.
@@ -29,10 +29,10 @@ pub struct SessionState {
     pub destroyed: AtomicBool,
 
     /// Information pertaining to this session's user and room, if joined.
-    pub join_state: AtomSetOnce<Box<JoinState>>,
+    pub join_state: OnceCell<JoinState>,
 
     /// The subscription this user has established, if any.
-    pub subscription: AtomSetOnce<Box<Subscription>>,
+    pub subscription: OnceCell<Subscription>,
 
     /// If this is a publisher, the offer for subscribing to it.
     pub subscriber_offer: Arc<Mutex<Option<Sdp>>>,
