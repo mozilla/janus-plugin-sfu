@@ -98,6 +98,7 @@ static AUDIO_CODEC: AudioCodec = AudioCodec::Opus;
 /// Safari, and Edge; VP8/9 unfortunately isn't compatible with Safari.
 static VIDEO_CODEC: VideoCodec = VideoCodec::H264;
 
+/// Function pointers to the Janus core functionality made available to our plugin.
 static mut CALLBACKS: Option<&PluginCallbacks> = None;
 
 /// Returns a ref to the callback struct provided by Janus containing function pointers to pass data back to the gateway.
@@ -105,8 +106,14 @@ fn gateway_callbacks() -> &'static PluginCallbacks {
     unsafe { CALLBACKS.expect("Callbacks not initialized -- did plugin init() succeed?") }
 }
 
+/// The data structure mapping plugin handles between publishers (people sending audio) and subscribers
+/// (people in the same room who are supposed to hear the audio.)
 static SWITCHBOARD: Lazy<RwLock<Switchboard>> = Lazy::new(|| { RwLock::new(Switchboard::new()) });
+
+/// The producer/consumer queue storing incoming plugin messages to be processed.
 static MESSAGE_CHANNEL: OnceCell<mpsc::SyncSender<RawMessage>> = OnceCell::new();
+
+/// The plugin configuration, read from disk.
 static CONFIG: OnceCell<Config> = OnceCell::new();
 
 // todo: clean up duplication here
