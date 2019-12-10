@@ -71,14 +71,6 @@ fn jansson_to_str(json: &JanssonValue) -> Result<LibcString, Box<dyn Error>> {
     Ok(json.to_libcstring(JanssonEncodingFlags::empty()))
 }
 
-fn transpose<T, E>(val: Result<Option<T>, E>) -> Option<Result<T, E>> {
-    match val {
-        Ok(None) => None,
-        Ok(Some(y)) => Some(Ok(y)),
-        Err(e) => Some(Err(e))
-    }
-}
-
 /// A response to a signalling message. May carry either a response body, a JSEP, or both.
 struct MessageResponse {
     pub body: Option<JsonValue>,
@@ -655,8 +647,8 @@ fn handle_message_async(RawMessage { jsep, msg, txn, from }: RawMessage) -> Janu
         if !from.destroyed.load(Ordering::Relaxed) {
             // process the message first, because processing a JSEP can cause us to want to send an RTCP
             // FIR to our subscribers, which may have been established in the message
-            let parsed_msg = msg.and_then(|x| transpose(try_parse_jansson(&x)));
-            let parsed_jsep = jsep.and_then(|x| transpose(try_parse_jansson(&x)));
+            let parsed_msg = msg.and_then(|x| try_parse_jansson(&x).transpose());
+            let parsed_jsep = jsep.and_then(|x| try_parse_jansson(&x).transpose());
             let msg_result = parsed_msg.map(|x| x.and_then(|msg| process_message(from, msg)));
             let jsep_result = parsed_jsep.map(|x| x.and_then(|jsep| process_jsep(from, jsep)));
             return match (msg_result, jsep_result) {
