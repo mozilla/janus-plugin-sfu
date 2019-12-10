@@ -16,7 +16,6 @@ crate_type = ["cdylib"]
 lto = true
 
 [dependencies]
-atom = "0.3"
 janus-plugin = { git = "https://github.com/mozilla/janus-plugin-rs" }
 multimap = "0.8"
 once_cell = "1.2"
