@@ -1,17 +1,3 @@
-extern crate atom;
-extern crate ini;
-extern crate multimap;
-#[macro_use]
-extern crate janus_plugin as janus;
-extern crate jsonwebtoken as jwt;
-#[macro_use]
-extern crate lazy_static;
-extern crate serde;
-#[macro_use]
-extern crate serde_derive;
-#[macro_use]
-extern crate serde_json;
-
 mod auth;
 mod messages;
 mod sessions;
@@ -23,12 +9,16 @@ use atom::AtomSetOnce;
 use auth::ValidatedToken;
 use messages::{RoomId, UserId};
 use config::Config;
-use janus::{JanusError, JanusResult, JanssonDecodingFlags, JanssonEncodingFlags, JanssonValue, Plugin, PluginCallbacks,
-            LibraryMetadata, PluginResult, PluginSession, RawPluginResult, RawJanssonValue};
-use janus::sdp::{AudioCodec, MediaDirection, OfferAnswerParameters, Sdp, VideoCodec};
-use janus::utils::LibcString;
+use janus_plugin::{answer_sdp, offer_sdp, build_plugin, export_plugin, janus_err, janus_warn, janus_info, janus_verb, janus_huge,
+                   JanusError, JanusResult, JanssonDecodingFlags, JanssonEncodingFlags, JanssonValue, Plugin, PluginCallbacks,
+                   LibraryMetadata, PluginResult, PluginSession, RawPluginResult, RawJanssonValue};
+use janus_plugin::rtcp::{gen_fir, gen_pli, has_fir, has_pli};
+use janus_plugin::sdp::{AudioCodec, MediaDirection, OfferAnswerParameters, Sdp, VideoCodec};
+use janus_plugin::utils::LibcString;
+use lazy_static::lazy_static;
 use messages::{JsepKind, MessageKind, OptionalField, Subscription};
 use serde::de::DeserializeOwned;
+use serde_json::json;
 use serde_json::Value as JsonValue;
 use sessions::{JoinState, Session, SessionState};
 use txid::TransactionId;
@@ -79,14 +69,6 @@ fn serde_to_jansson(input: &JsonValue) -> JanssonValue {
 
 fn jansson_to_str(json: &JanssonValue) -> Result<LibcString, Box<dyn Error>> {
     Ok(json.to_libcstring(JanssonEncodingFlags::empty()))
-}
-
-fn transpose<T, E>(val: Result<Option<T>, E>) -> Option<Result<T, E>> {
-    match val {
-        Ok(None) => None,
-        Ok(Some(y)) => Some(Ok(y)),
-        Err(e) => Some(Err(e))
-    }
 }
 
 /// A response to a signalling message. May carry either a response body, a JSEP, or both.
@@ -237,7 +219,7 @@ fn send_offer<T: IntoIterator<Item=U>, U: AsRef<Session>>(offer: &JsonValue, ses
 fn send_pli<T: IntoIterator<Item=U>, U: AsRef<Session>>(publishers: T) {
     let relay_rtcp = gateway_callbacks().relay_rtcp;
     for publisher in publishers {
-        let mut pli = janus::rtcp::gen_pli();
+        let mut pli = gen_pli();
         relay_rtcp(publisher.as_ref().as_ptr(), 1, pli.as_mut_ptr(), pli.len() as i32);
     }
 }
@@ -246,7 +228,7 @@ fn send_fir<T: IntoIterator<Item=U>, U: AsRef<Session>>(publishers: T) {
     let relay_rtcp = gateway_callbacks().relay_rtcp;
     for publisher in publishers {
         let mut seq = publisher.as_ref().fir_seq.fetch_add(1, Ordering::Relaxed) as i32;
-        let mut fir = janus::rtcp::gen_fir(&mut seq);
+        let mut fir = gen_fir(&mut seq);
         relay_rtcp(publisher.as_ref().as_ptr(), 1, fir.as_mut_ptr(), fir.len() as i32);
     }
 }
@@ -368,10 +350,10 @@ extern "C" fn incoming_rtcp(handle: *mut PluginSession, video: c_int, buf: *mut 
     let switchboard = STATE.switchboard.read().expect("Switchboard lock poisoned; can't continue.");
     let packet = unsafe { slice::from_raw_parts(buf, len as usize) };
     match video {
-        1 if janus::rtcp::has_pli(packet) => {
+        1 if has_pli(packet) => {
             send_pli(switchboard.media_senders_to(&sess));
         }
-        1 if janus::rtcp::has_fir(packet) => {
+        1 if has_fir(packet) => {
             send_fir(switchboard.media_senders_to(&sess));
         }
         _ => {
@@ -665,8 +647,8 @@ fn handle_message_async(RawMessage { jsep, msg, txn, from }: RawMessage) -> Janu
         if !from.destroyed.load(Ordering::Relaxed) {
             // process the message first, because processing a JSEP can cause us to want to send an RTCP
             // FIR to our subscribers, which may have been established in the message
-            let parsed_msg = msg.and_then(|x| transpose(try_parse_jansson(&x)));
-            let parsed_jsep = jsep.and_then(|x| transpose(try_parse_jansson(&x)));
+            let parsed_msg = msg.and_then(|x| try_parse_jansson(&x).transpose());
+            let parsed_jsep = jsep.and_then(|x| try_parse_jansson(&x).transpose());
             let msg_result = parsed_msg.map(|x| x.and_then(|msg| process_message(from, msg)));
             let jsep_result = parsed_jsep.map(|x| x.and_then(|jsep| process_jsep(from, jsep)));
             return match (msg_result, jsep_result) {

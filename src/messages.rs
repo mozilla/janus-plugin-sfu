@@ -1,6 +1,6 @@
 /// Types and code related to handling signalling messages.
-use super::Sdp;
-use super::serde_json;
+use janus_plugin::sdp::Sdp;
+use serde::Deserialize;
 use serde::de::DeserializeOwned;
 use std::error::Error;
 use std::borrow::Borrow;

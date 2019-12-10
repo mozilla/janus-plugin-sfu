@@ -2,9 +2,9 @@
 use atom::AtomSetOnce;
 use std::sync::atomic::{AtomicIsize, AtomicBool};
 use std::sync::{Arc, Mutex};
-use messages::{RoomId, UserId, Subscription};
-use janus::sdp::Sdp;
-use janus::session::SessionWrapper;
+use janus_plugin::sdp::Sdp;
+use janus_plugin::session::SessionWrapper;
+use crate::messages::{RoomId, UserId, Subscription};
 
 /// State pertaining to this session's join of a particular room as a particular user ID.
 #[derive(Debug, Clone)]
