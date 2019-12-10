@@ -15,7 +15,7 @@ use janus_plugin::{answer_sdp, offer_sdp, build_plugin, export_plugin, janus_err
 use janus_plugin::rtcp::{gen_fir, gen_pli, has_fir, has_pli};
 use janus_plugin::sdp::{AudioCodec, MediaDirection, OfferAnswerParameters, Sdp, VideoCodec};
 use janus_plugin::utils::LibcString;
-use lazy_static::lazy_static;
+use once_cell::sync::Lazy;
 use messages::{JsepKind, MessageKind, OptionalField, Subscription};
 use serde::de::DeserializeOwned;
 use serde_json::json;
@@ -113,13 +113,13 @@ struct State {
     pub config: AtomSetOnce<Box<Config>>,
 }
 
-lazy_static! {
-    static ref STATE: State = State {
+static STATE: Lazy<State> = Lazy::new(|| {
+    State {
         switchboard: RwLock::new(Switchboard::new()),
         message_channel: AtomSetOnce::empty(),
         config: AtomSetOnce::empty(),
-    };
-}
+    }
+});
 
 // todo: clean up duplication here
 
