@@ -192,16 +192,14 @@ impl Switchboard {
                 self.blockers_to_miscreants.get_values(&joined.user_id),
             ),
         };
-        self.subscribers_to(sender)
-            .iter()
-            .filter(move |subscriber| match subscriber.join_state.get() {
-                None => true,
-                Some(other) => {
-                    let blocks = forward_blocks.contains(&other.user_id);
-                    let is_blocked = reverse_blocks.contains(&other.user_id);
-                    !blocks && !is_blocked
-                }
-            })
+        self.subscribers_to(sender).iter().filter(move |subscriber| match subscriber.join_state.get() {
+            None => true,
+            Some(other) => {
+                let blocks = forward_blocks.contains(&other.user_id);
+                let is_blocked = reverse_blocks.contains(&other.user_id);
+                !blocks && !is_blocked
+            }
+        })
     }
 
     pub fn media_senders_to(&self, recipient: &Session) -> impl Iterator<Item = &Arc<Session>> {
@@ -212,16 +210,14 @@ impl Switchboard {
                 self.blockers_to_miscreants.get_keys(&joined.user_id),
             ),
         };
-        self.publishers_to(recipient)
-            .iter()
-            .filter(move |publisher| match publisher.join_state.get() {
-                None => true,
-                Some(other) => {
-                    let blocks = forward_blocks.contains(&other.user_id);
-                    let is_blocked = reverse_blocks.contains(&other.user_id);
-                    !blocks && !is_blocked
-                }
-            })
+        self.publishers_to(recipient).iter().filter(move |publisher| match publisher.join_state.get() {
+            None => true,
+            Some(other) => {
+                let blocks = forward_blocks.contains(&other.user_id);
+                let is_blocked = reverse_blocks.contains(&other.user_id);
+                !blocks && !is_blocked
+            }
+        })
     }
 
     pub fn data_recipients_for<'s>(&'s self, session: &'s Session) -> impl Iterator<Item = &'s Arc<Session>> {

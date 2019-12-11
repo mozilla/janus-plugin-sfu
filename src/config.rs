@@ -28,9 +28,7 @@ impl Config {
     /// configuration values that aren't present, or returning an error if no readable configuration is present at all.
     pub fn from_path<P: AsRef<Path>>(path: P) -> Result<Self, Box<dyn Error>> {
         let conf = Ini::load_from_file(path)?;
-        let section = conf
-            .section(Some("general"))
-            .ok_or("No 'general' section present in the config file.")?;
+        let section = conf.section(Some("general")).ok_or("No 'general' section present in the config file.")?;
         let defaults: Config = Default::default();
 
         let auth_key = match section.get("auth_key") {
@@ -45,10 +43,7 @@ impl Config {
 
         Ok(Self {
             auth_key: auth_key,
-            max_room_size: section
-                .get("max_room_size")
-                .and_then(|x| x.parse().ok())
-                .unwrap_or(defaults.max_room_size),
+            max_room_size: section.get("max_room_size").and_then(|x| x.parse().ok()).unwrap_or(defaults.max_room_size),
             max_ccu: section.get("max_ccu").and_then(|x| x.parse().ok()).unwrap_or(defaults.max_ccu),
         })
     }

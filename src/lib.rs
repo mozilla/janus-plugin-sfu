@@ -11,9 +11,8 @@ use janus_plugin::rtcp::{gen_fir, gen_pli, has_fir, has_pli};
 use janus_plugin::sdp::{AudioCodec, MediaDirection, OfferAnswerParameters, Sdp, VideoCodec};
 use janus_plugin::utils::LibcString;
 use janus_plugin::{
-    answer_sdp, build_plugin, export_plugin, janus_err, janus_huge, janus_info, janus_verb, janus_warn, offer_sdp, JanssonDecodingFlags,
-    JanssonEncodingFlags, JanssonValue, JanusError, JanusResult, LibraryMetadata, Plugin, PluginCallbacks, PluginResult, PluginSession,
-    RawJanssonValue, RawPluginResult,
+    answer_sdp, build_plugin, export_plugin, janus_err, janus_huge, janus_info, janus_verb, janus_warn, offer_sdp, JanssonDecodingFlags, JanssonEncodingFlags,
+    JanssonValue, JanusError, JanusResult, LibraryMetadata, Plugin, PluginCallbacks, PluginResult, PluginSession, RawJanssonValue, RawPluginResult,
 };
 use messages::{JsepKind, MessageKind, OptionalField, Subscription};
 use messages::{RoomId, UserId};
@@ -84,10 +83,7 @@ impl MessageResponse {
         }
     }
     fn msg(body: JsonValue) -> Self {
-        Self {
-            body: Some(body),
-            jsep: None,
-        }
+        Self { body: Some(body), jsep: None }
     }
 }
 
@@ -248,9 +244,7 @@ extern "C" fn init(callbacks: *mut PluginCallbacks, config_path: *const c_char) 
         Some(c) => {
             unsafe { CALLBACKS = Some(c) };
             let (messages_tx, messages_rx) = mpsc::sync_channel(0);
-            MESSAGE_CHANNEL
-                .set(messages_tx)
-                .expect("Big problem: message channel already initialized!");
+            MESSAGE_CHANNEL.set(messages_tx).expect("Big problem: message channel already initialized!");
 
             thread::spawn(move || {
                 janus_verb!("Message processing thread is alive.");
@@ -381,13 +375,7 @@ extern "C" fn hangup_media(handle: *mut PluginSession) {
     janus_info!("Hanging up WebRTC media on {:p}.", sess.handle);
 }
 
-fn process_join(
-    from: &Arc<Session>,
-    room_id: RoomId,
-    user_id: UserId,
-    subscribe: Option<Subscription>,
-    token: Option<String>,
-) -> MessageResult {
+fn process_join(from: &Arc<Session>, room_id: RoomId, user_id: UserId, subscribe: Option<Subscription>, token: Option<String>) -> MessageResult {
     // todo: holy shit clean this function up somehow
     let config = CONFIG.get().unwrap();
     match (&config.auth_key, token) {
@@ -400,30 +388,15 @@ fn process_join(
             );
         }
         (Some(_), None) => {
-            janus_warn!(
-                "Rejecting anonymous join from {:p} to room {} as user {}.",
-                from.handle,
-                room_id,
-                user_id
-            );
+            janus_warn!("Rejecting anonymous join from {:p} to room {} as user {}.", from.handle, room_id, user_id);
             return Err(From::from("Rejecting anonymous join!"));
         }
         (Some(key), Some(ref token)) => match ValidatedToken::from_str(token, key) {
             Ok(ref claims) if claims.join_hub => {
-                janus_verb!(
-                    "Allowing validated join from {:p} to room {} as user {}.",
-                    from.handle,
-                    room_id,
-                    user_id
-                );
+                janus_verb!("Allowing validated join from {:p} to room {} as user {}.", from.handle, room_id, user_id);
             }
             Ok(_) => {
-                janus_warn!(
-                    "Rejecting unauthorized join from {:p} to room {} as user {}.",
-                    from.handle,
-                    room_id,
-                    user_id
-                );
+                janus_warn!("Rejecting unauthorized join from {:p} to room {} as user {}.", from.handle, room_id, user_id);
                 return Err(From::from("Rejecting join with no join_hub permission!"));
             }
             Err(e) => {
@@ -491,12 +464,7 @@ fn process_kick(from: &Arc<Session>, room_id: RoomId, user_id: UserId, token: St
         match ValidatedToken::from_str(&token, key) {
             Ok(tok) => {
                 if tok.kick_users {
-                    janus_info!(
-                        "Processing kick from {:p} targeting user ID {} in room ID {}.",
-                        from.handle,
-                        user_id,
-                        room_id
-                    );
+                    janus_info!("Processing kick from {:p} targeting user ID {} in room ID {}.", from.handle, user_id, room_id);
                     let end_session = gateway_callbacks().end_session;
                     let switchboard = SWITCHBOARD.read()?;
                     let sessions = switchboard.get_sessions(&room_id, &user_id);
@@ -716,16 +684,12 @@ fn handle_message_async(RawMessage { jsep, msg, txn, from }: RawMessage) -> Janu
                     push_response(from, &txn, &resp, None)
                 }
                 (Some(Ok(msg_resp)), None) => {
-                    let msg_body = msg_resp
-                        .body
-                        .map_or(json!({ "success": true }), |x| json!({ "success": true, "response": x }));
+                    let msg_body = msg_resp.body.map_or(json!({ "success": true }), |x| json!({ "success": true, "response": x }));
                     push_response(from, &txn, &msg_body, msg_resp.jsep)
                 }
                 (None, Some(Ok(jsep_resp))) => push_response(from, &txn, &json!({ "success": true }), Some(jsep_resp)),
                 (Some(Ok(msg_resp)), Some(Ok(jsep_resp))) => {
-                    let msg_body = msg_resp
-                        .body
-                        .map_or(json!({ "success": true }), |x| json!({ "success": true, "response": x }));
+                    let msg_body = msg_resp.body.map_or(json!({ "success": true }), |x| json!({ "success": true, "response": x }));
                     push_response(from, &txn, &msg_body, Some(jsep_resp))
                 }
                 (None, None) => push_response(from, &txn, &json!({ "success": true }), None),
