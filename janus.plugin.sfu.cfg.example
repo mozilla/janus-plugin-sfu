@@ -1,0 +1,12 @@
+[general]
+
+# The path to a file containing a secret key. If present, this key will be used to validate the signatures
+# of JWTs provided when joining rooms in the SFU plugin, and users will not be allowed to join without
+# a valid signed JWT.
+# auth_key = "foo.key"
+
+# If present, the maximum number of users allowed to join a single room. Zero means no limit.
+max_room_size = 30
+
+# If present, the maximum number of concurrent users allowed to join any room on the server. Zero means no limit.
+max_ccu = 1000
