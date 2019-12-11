@@ -10,7 +10,7 @@ use std::path::Path;
 pub struct Config {
     pub auth_key: Option<Vec<u8>>,
     pub max_room_size: usize,
-    pub max_ccu: usize
+    pub max_ccu: usize,
 }
 
 impl Default for Config {
@@ -18,7 +18,7 @@ impl Default for Config {
         Self {
             auth_key: None,
             max_room_size: usize::max_value(),
-            max_ccu: usize::max_value()
+            max_ccu: usize::max_value(),
         }
     }
 }
@@ -26,10 +26,10 @@ impl Default for Config {
 impl Config {
     /// Reads the runtime configuration from an INI config file at the given path, applying defaults for individual
     /// configuration values that aren't present, or returning an error if no readable configuration is present at all.
-    pub fn from_path<P: AsRef<Path>>(path: P) -> Result<Self, Box<dyn Error>>
-    {
+    pub fn from_path<P: AsRef<Path>>(path: P) -> Result<Self, Box<dyn Error>> {
         let conf = Ini::load_from_file(path)?;
-        let section = conf.section(Some("general"))
+        let section = conf
+            .section(Some("general"))
             .ok_or("No 'general' section present in the config file.")?;
         let defaults: Config = Default::default();
 
@@ -40,7 +40,7 @@ impl Config {
                 file.read_to_end(&mut buffer)?;
                 Some(buffer)
             }
-            None => None
+            None => None,
         };
 
         Ok(Self {
@@ -49,10 +49,7 @@ impl Config {
                 .get("max_room_size")
                 .and_then(|x| x.parse().ok())
                 .unwrap_or(defaults.max_room_size),
-            max_ccu: section
-                .get("max_ccu")
-                .and_then(|x| x.parse().ok())
-                .unwrap_or(defaults.max_ccu),
+            max_ccu: section.get("max_ccu").and_then(|x| x.parse().ok()).unwrap_or(defaults.max_ccu),
         })
     }
 }

@@ -1,9 +1,9 @@
 /// Types and code related to handling signalling messages.
 use janus_plugin::sdp::Sdp;
-use serde::Deserialize;
 use serde::de::DeserializeOwned;
-use std::error::Error;
+use serde::Deserialize;
 use std::borrow::Borrow;
+use std::error::Error;
 
 /// A room ID representing a Janus multicast room.
 pub type RoomId = String;
@@ -18,19 +18,22 @@ pub type UserId = String;
 #[serde(deny_unknown_fields)]
 pub enum OptionalField<T> {
     Some(T),
-    None {}
+    None {},
 }
 
 impl<T> Into<Option<T>> for OptionalField<T> {
     fn into(self) -> Option<T> {
         match self {
             OptionalField::None {} => None,
-            OptionalField::Some(x) => Some(x)
+            OptionalField::Some(x) => Some(x),
         }
     }
 }
 
-impl<T> OptionalField<T> where T: DeserializeOwned {
+impl<T> OptionalField<T>
+where
+    T: DeserializeOwned,
+{
     pub fn try_parse(val: impl Borrow<str>) -> Result<Option<T>, Box<dyn Error>> {
         Ok(serde_json::from_str::<OptionalField<T>>(val.borrow()).map(|x| x.into())?)
     }
@@ -60,16 +63,12 @@ pub enum MessageKind {
         room_id: RoomId,
         user_id: UserId,
         subscribe: Option<Subscription>,
-        token: Option<String>
+        token: Option<String>,
     },
 
     /// Indicates that the given user should be disconnected from the given room. Requires a token bequeathing
     /// this permission for the given room.
-    Kick {
-        room_id: RoomId,
-        user_id: UserId,
-        token: String
-    },
+    Kick { room_id: RoomId, user_id: UserId, token: String },
 
     /// Indicates that a client wishes to subscribe to traffic described by the given subscription specification.
     Subscribe { what: Subscription },
@@ -82,10 +81,7 @@ pub enum MessageKind {
     Unblock { whom: UserId },
 
     /// Sends arbitrary data to either all other clients in the room with you, or to a single other client.
-    Data {
-        whom: Option<UserId>,
-        body: String
-    }
+    Data { whom: Option<UserId>, body: String },
 }
 
 /// Information about which traffic a client will get pushed to them.
@@ -110,7 +106,7 @@ mod tests {
     mod message_parsing {
 
         use super::*;
-        use ::serde_json;
+        use serde_json;
 
         #[test]
         fn parse_empty() {
@@ -137,41 +133,50 @@ mod tests {
         fn parse_join_user_id() {
             let json = r#"{"kind": "join", "user_id": "10", "room_id": "alpha", "token": "foo"}"#;
             let result: MessageKind = serde_json::from_str(json).unwrap();
-            assert_eq!(result, MessageKind::Join {
-                user_id: "10".into(),
-                room_id: "alpha".into(),
-                subscribe: None,
-                token: Some(String::from("foo"))
-            });
+            assert_eq!(
+                result,
+                MessageKind::Join {
+                    user_id: "10".into(),
+                    room_id: "alpha".into(),
+                    subscribe: None,
+                    token: Some(String::from("foo"))
+                }
+            );
         }
 
         #[test]
         fn parse_join_subscriptions() {
             let json = r#"{"kind": "join", "user_id": "10", "room_id": "5", "subscribe": {"notifications": true, "data": false}}"#;
             let result: MessageKind = serde_json::from_str(json).unwrap();
-            assert_eq!(result, MessageKind::Join {
-                user_id: "10".into(),
-                room_id: "5".into(),
-                subscribe: Some(Subscription {
-                    notifications: true,
-                    data: false,
-                    media: None
-                }),
-                token: None
-            });
+            assert_eq!(
+                result,
+                MessageKind::Join {
+                    user_id: "10".into(),
+                    room_id: "5".into(),
+                    subscribe: Some(Subscription {
+                        notifications: true,
+                        data: false,
+                        media: None
+                    }),
+                    token: None
+                }
+            );
         }
 
         #[test]
         fn parse_subscribe() {
             let json = r#"{"kind": "subscribe", "what": {"notifications": false, "data": true, "media": "steve"}}"#;
             let result: MessageKind = serde_json::from_str(json).unwrap();
-            assert_eq!(result, MessageKind::Subscribe {
-                what: Subscription {
-                    notifications: false,
-                    data: true,
-                    media: Some("steve".into())
+            assert_eq!(
+                result,
+                MessageKind::Subscribe {
+                    what: Subscription {
+                        notifications: false,
+                        data: true,
+                        media: Some("steve".into())
+                    }
                 }
-            });
+            );
         }
     }
 }

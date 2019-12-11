@@ -1,14 +1,14 @@
-/// Tools for managing the set of subscriptions between connections.
-use std::collections::{HashMap, HashSet};
-use std::collections::hash_map::Entry;
-use std::sync::Arc;
-use std::hash::Hash;
-use std::fmt::Debug;
-use std::borrow::Borrow;
-use multimap::MultiMap;
-use janus_plugin::janus_err;
 use crate::messages::{RoomId, UserId};
 use crate::sessions::Session;
+use janus_plugin::janus_err;
+use multimap::MultiMap;
+use std::borrow::Borrow;
+use std::collections::hash_map::Entry;
+/// Tools for managing the set of subscriptions between connections.
+use std::collections::{HashMap, HashSet};
+use std::fmt::Debug;
+use std::hash::Hash;
+use std::sync::Arc;
 
 #[derive(Debug)]
 pub struct BidirectionalMultimap<K: Eq + Hash, V: Eq + Hash> {
@@ -16,7 +16,11 @@ pub struct BidirectionalMultimap<K: Eq + Hash, V: Eq + Hash> {
     inverse_mapping: MultiMap<V, K>,
 }
 
-impl<K, V> BidirectionalMultimap<K, V> where K: Eq + Hash + Clone + Debug, V: Eq + Hash + Clone + Debug {
+impl<K, V> BidirectionalMultimap<K, V>
+where
+    K: Eq + Hash + Clone + Debug,
+    V: Eq + Hash + Clone + Debug,
+{
     pub fn new() -> Self {
         Self {
             forward_mapping: MultiMap::new(),
@@ -32,10 +36,11 @@ impl<K, V> BidirectionalMultimap<K, V> where K: Eq + Hash + Clone + Debug, V: Eq
     }
 
     pub fn disassociate<T, U>(&mut self, k: &T, v: &U)
-        where K: Borrow<T>,
-              T: Hash + Eq,
-              V: Borrow<U>,
-              U: Hash + Eq
+    where
+        K: Borrow<T>,
+        T: Hash + Eq,
+        V: Borrow<U>,
+        U: Hash + Eq,
     {
         if let Some(vals) = self.forward_mapping.get_vec_mut(k) {
             vals.retain(|x| x.borrow() != v);
@@ -46,8 +51,9 @@ impl<K, V> BidirectionalMultimap<K, V> where K: Eq + Hash + Clone + Debug, V: Eq
     }
 
     pub fn remove_key<T>(&mut self, k: &T)
-        where K: Borrow<T>,
-              T: Hash + Eq + Debug
+    where
+        K: Borrow<T>,
+        T: Hash + Eq + Debug,
     {
         if let Some(vs) = self.forward_mapping.remove(k) {
             for v in vs {
@@ -61,8 +67,9 @@ impl<K, V> BidirectionalMultimap<K, V> where K: Eq + Hash + Clone + Debug, V: Eq
     }
 
     pub fn remove_value<U>(&mut self, v: &U)
-        where V: Borrow<U>,
-              U: Hash + Eq + Debug
+    where
+        V: Borrow<U>,
+        U: Hash + Eq + Debug,
     {
         if let Some(ks) = self.inverse_mapping.remove(v) {
             for k in ks {
@@ -76,15 +83,17 @@ impl<K, V> BidirectionalMultimap<K, V> where K: Eq + Hash + Clone + Debug, V: Eq
     }
 
     pub fn get_values<T>(&self, k: &T) -> &[V]
-        where K: Borrow<T>,
-              T: Hash + Eq
+    where
+        K: Borrow<T>,
+        T: Hash + Eq,
     {
         self.forward_mapping.get_vec(k).map(Vec::as_slice).unwrap_or(&[])
     }
 
     pub fn get_keys<U>(&self, v: &U) -> &[K]
-        where V: Borrow<U>,
-              U: Hash + Eq
+    where
+        V: Borrow<U>,
+        U: Hash + Eq,
     {
         self.inverse_mapping.get_vec(v).map(Vec::as_slice).unwrap_or(&[])
     }
@@ -119,11 +128,9 @@ impl Switchboard {
     }
 
     pub fn is_connected(&self, user: &UserId) -> bool {
-        self.sessions.iter().any(|s| {
-            match s.join_state.get() {
-                None => false,
-                Some(other_state) => user == &other_state.user_id
-            }
+        self.sessions.iter().any(|s| match s.join_state.get() {
+            None => false,
+            Some(other_state) => user == &other_state.user_id,
         })
     }
 
@@ -177,64 +184,65 @@ impl Switchboard {
         self.occupants.get(room).map(Vec::as_slice).unwrap_or(&[])
     }
 
-    pub fn media_recipients_for(&self, sender: &Session) -> impl Iterator<Item=&Arc<Session>> {
+    pub fn media_recipients_for(&self, sender: &Session) -> impl Iterator<Item = &Arc<Session>> {
         let (forward_blocks, reverse_blocks) = match sender.join_state.get() {
             None => (&[] as &[_], &[] as &[_]),
             Some(joined) => (
                 self.blockers_to_miscreants.get_keys(&joined.user_id),
-                self.blockers_to_miscreants.get_values(&joined.user_id)
-            )
+                self.blockers_to_miscreants.get_values(&joined.user_id),
+            ),
         };
-        self.subscribers_to(sender).iter().filter(move |subscriber| {
-            match subscriber.join_state.get() {
+        self.subscribers_to(sender)
+            .iter()
+            .filter(move |subscriber| match subscriber.join_state.get() {
                 None => true,
                 Some(other) => {
                     let blocks = forward_blocks.contains(&other.user_id);
                     let is_blocked = reverse_blocks.contains(&other.user_id);
                     !blocks && !is_blocked
                 }
-            }
-        })
+            })
     }
 
-    pub fn media_senders_to(&self, recipient: &Session) -> impl Iterator<Item=&Arc<Session>> {
+    pub fn media_senders_to(&self, recipient: &Session) -> impl Iterator<Item = &Arc<Session>> {
         let (forward_blocks, reverse_blocks) = match recipient.join_state.get() {
             None => (&[] as &[_], &[] as &[_]),
             Some(joined) => (
                 self.blockers_to_miscreants.get_values(&joined.user_id),
-                self.blockers_to_miscreants.get_keys(&joined.user_id)
-            )
+                self.blockers_to_miscreants.get_keys(&joined.user_id),
+            ),
         };
-        self.publishers_to(recipient).iter().filter(move |publisher| {
-            match publisher.join_state.get() {
+        self.publishers_to(recipient)
+            .iter()
+            .filter(move |publisher| match publisher.join_state.get() {
                 None => true,
                 Some(other) => {
                     let blocks = forward_blocks.contains(&other.user_id);
                     let is_blocked = reverse_blocks.contains(&other.user_id);
                     !blocks && !is_blocked
                 }
-            }
-        })
+            })
     }
 
-    pub fn data_recipients_for<'s>(&'s self, session: &'s Session) -> impl Iterator<Item=&'s Arc<Session>> {
+    pub fn data_recipients_for<'s>(&'s self, session: &'s Session) -> impl Iterator<Item = &'s Arc<Session>> {
         let (forward_blocks, reverse_blocks, cohabitators) = match session.join_state.get() {
             None => (&[] as &[_], &[] as &[_], &[] as &[_]),
             Some(joined) => (
                 self.blockers_to_miscreants.get_keys(&joined.user_id),
                 self.blockers_to_miscreants.get_values(&joined.user_id),
-                self.occupants_of(&joined.room_id)
-            )
+                self.occupants_of(&joined.room_id),
+            ),
         };
         cohabitators.iter().filter(move |cohabitator| {
-            cohabitator.handle != session.handle && match cohabitator.join_state.get() {
-                None => true,
-                Some(other) => {
-                    let blocks = forward_blocks.contains(&other.user_id);
-                    let is_blocked = reverse_blocks.contains(&other.user_id);
-                    !blocks && !is_blocked
+            cohabitator.handle != session.handle
+                && match cohabitator.join_state.get() {
+                    None => true,
+                    Some(other) => {
+                        let blocks = forward_blocks.contains(&other.user_id);
+                        let is_blocked = reverse_blocks.contains(&other.user_id);
+                        !blocks && !is_blocked
+                    }
                 }
-            }
         })
     }
 
@@ -251,27 +259,29 @@ impl Switchboard {
     }
 
     pub fn get_publisher(&self, user_id: &UserId) -> Option<&Arc<Session>> {
-        self.sessions.iter()
+        self.sessions
+            .iter()
             .find(|s| {
                 let subscriber_offer = s.subscriber_offer.lock().unwrap();
                 let join_state = s.join_state.get();
                 match (subscriber_offer.as_ref(), join_state) {
                     (Some(_), Some(state)) if &state.user_id == user_id => true,
-                    _ => false
+                    _ => false,
                 }
             })
             .map(Box::as_ref)
     }
 
     pub fn get_sessions(&self, room_id: &RoomId, user_id: &UserId) -> Vec<&Box<Arc<Session>>> {
-        self.sessions.iter()
+        self.sessions
+            .iter()
             .filter(|s| {
                 let join_state = s.join_state.get();
                 match join_state {
                     Some(state) if &state.user_id == user_id && &state.room_id == room_id => true,
-                    _ => false
+                    _ => false,
                 }
-            }).collect::<_>()
+            })
+            .collect::<_>()
     }
-
 }

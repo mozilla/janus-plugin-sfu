@@ -1,10 +1,10 @@
-/// Types for representing Janus session state.
-use std::sync::atomic::{AtomicIsize, AtomicBool};
-use std::sync::{Arc, Mutex};
+use crate::messages::{RoomId, Subscription, UserId};
 use janus_plugin::sdp::Sdp;
 use janus_plugin::session::SessionWrapper;
 use once_cell::sync::OnceCell;
-use crate::messages::{RoomId, UserId, Subscription};
+/// Types for representing Janus session state.
+use std::sync::atomic::{AtomicBool, AtomicIsize};
+use std::sync::{Arc, Mutex};
 
 /// State pertaining to this session's join of a particular room as a particular user ID.
 #[derive(Debug, Clone)]

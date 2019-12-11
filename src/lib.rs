@@ -1,45 +1,45 @@
 mod auth;
+mod config;
 mod messages;
 mod sessions;
 mod switchboard;
-mod config;
 mod txid;
 
 use auth::ValidatedToken;
-use messages::{RoomId, UserId};
 use config::Config;
-use janus_plugin::{answer_sdp, offer_sdp, build_plugin, export_plugin, janus_err, janus_warn, janus_info, janus_verb, janus_huge,
-                   JanusError, JanusResult, JanssonDecodingFlags, JanssonEncodingFlags, JanssonValue, Plugin, PluginCallbacks,
-                   LibraryMetadata, PluginResult, PluginSession, RawPluginResult, RawJanssonValue};
 use janus_plugin::rtcp::{gen_fir, gen_pli, has_fir, has_pli};
 use janus_plugin::sdp::{AudioCodec, MediaDirection, OfferAnswerParameters, Sdp, VideoCodec};
 use janus_plugin::utils::LibcString;
-use once_cell::sync::{Lazy, OnceCell};
+use janus_plugin::{
+    answer_sdp, build_plugin, export_plugin, janus_err, janus_huge, janus_info, janus_verb, janus_warn, offer_sdp, JanssonDecodingFlags,
+    JanssonEncodingFlags, JanssonValue, JanusError, JanusResult, LibraryMetadata, Plugin, PluginCallbacks, PluginResult, PluginSession,
+    RawJanssonValue, RawPluginResult,
+};
 use messages::{JsepKind, MessageKind, OptionalField, Subscription};
+use messages::{RoomId, UserId};
+use once_cell::sync::{Lazy, OnceCell};
 use serde::de::DeserializeOwned;
 use serde_json::json;
 use serde_json::Value as JsonValue;
 use sessions::{JoinState, Session, SessionState};
-use txid::TransactionId;
 use std::error::Error;
 use std::ffi::{CStr, CString};
 use std::os::raw::{c_char, c_int};
 use std::path::Path;
 use std::ptr;
 use std::slice;
+use std::sync::atomic::{AtomicBool, AtomicIsize, Ordering};
 use std::sync::{mpsc, Arc, Mutex, RwLock, Weak};
-use std::sync::atomic::{Ordering, AtomicIsize, AtomicBool};
 use std::thread;
 use switchboard::Switchboard;
+use txid::TransactionId;
 
 // courtesy of c_string crate, which also has some other stuff we aren't interested in
 // taking in as a dependency here.
 macro_rules! c_str {
     ($lit:expr) => {
-        unsafe {
-            CStr::from_ptr(concat!($lit, "\0").as_ptr() as *const $crate::c_char)
-        }
-    }
+        unsafe { CStr::from_ptr(concat!($lit, "\0").as_ptr() as *const $crate::c_char) }
+    };
 }
 
 /// A single signalling message that came in off the wire, associated with one session.
@@ -78,10 +78,16 @@ struct MessageResponse {
 
 impl MessageResponse {
     fn new(body: JsonValue, jsep: JsonValue) -> Self {
-        Self { body: Some(body), jsep: Some(jsep) }
+        Self {
+            body: Some(body),
+            jsep: Some(jsep),
+        }
     }
     fn msg(body: JsonValue) -> Self {
-        Self { body: Some(body), jsep: None }
+        Self {
+            body: Some(body),
+            jsep: None,
+        }
     }
 }
 
@@ -108,7 +114,7 @@ fn gateway_callbacks() -> &'static PluginCallbacks {
 
 /// The data structure mapping plugin handles between publishers (people sending audio) and subscribers
 /// (people in the same room who are supposed to hear the audio.)
-static SWITCHBOARD: Lazy<RwLock<Switchboard>> = Lazy::new(|| { RwLock::new(Switchboard::new()) });
+static SWITCHBOARD: Lazy<RwLock<Switchboard>> = Lazy::new(|| RwLock::new(Switchboard::new()));
 
 /// The producer/consumer queue storing incoming plugin messages to be processed.
 static MESSAGE_CHANNEL: OnceCell<mpsc::SyncSender<RawMessage>> = OnceCell::new();
@@ -118,63 +124,55 @@ static CONFIG: OnceCell<Config> = OnceCell::new();
 
 // todo: clean up duplication here
 
-fn send_data_user<T: IntoIterator<Item=U>, U: AsRef<Session>>(json: &JsonValue, target: &UserId, everyone: T) {
+fn send_data_user<T: IntoIterator<Item = U>, U: AsRef<Session>>(json: &JsonValue, target: &UserId, everyone: T) {
     let receivers = everyone.into_iter().filter(|s| {
         let subscription_state = s.as_ref().subscription.get();
         let join_state = s.as_ref().join_state.get();
         match (subscription_state, join_state) {
-            (Some(subscription), Some(joined)) => {
-                subscription.data && &joined.user_id == target
-            }
-            _ => false
+            (Some(subscription), Some(joined)) => subscription.data && &joined.user_id == target,
+            _ => false,
         }
     });
     send_message(json, receivers)
 }
 
-fn send_data_except<T: IntoIterator<Item=U>, U: AsRef<Session>>(json: &JsonValue, myself: &UserId, everyone: T) {
+fn send_data_except<T: IntoIterator<Item = U>, U: AsRef<Session>>(json: &JsonValue, myself: &UserId, everyone: T) {
     let receivers = everyone.into_iter().filter(|s| {
         let subscription_state = s.as_ref().subscription.get();
         let join_state = s.as_ref().join_state.get();
         match (subscription_state, join_state) {
-            (Some(subscription), Some(joined)) => {
-                subscription.data && &joined.user_id != myself
-            }
-            _ => false
+            (Some(subscription), Some(joined)) => subscription.data && &joined.user_id != myself,
+            _ => false,
         }
     });
     send_message(json, receivers)
 }
 
-fn notify_user<T: IntoIterator<Item=U>, U: AsRef<Session>>(json: &JsonValue, target: &UserId, everyone: T) {
+fn notify_user<T: IntoIterator<Item = U>, U: AsRef<Session>>(json: &JsonValue, target: &UserId, everyone: T) {
     let notifiees = everyone.into_iter().filter(|s| {
         let subscription_state = s.as_ref().subscription.get();
         let join_state = s.as_ref().join_state.get();
         match (subscription_state, join_state) {
-            (Some(subscription), Some(joined)) => {
-                subscription.notifications && &joined.user_id == target
-            }
-            _ => false
+            (Some(subscription), Some(joined)) => subscription.notifications && &joined.user_id == target,
+            _ => false,
         }
     });
     send_message(json, notifiees)
 }
 
-fn notify_except<T: IntoIterator<Item=U>, U: AsRef<Session>>(json: &JsonValue, myself: &UserId, everyone: T) {
+fn notify_except<T: IntoIterator<Item = U>, U: AsRef<Session>>(json: &JsonValue, myself: &UserId, everyone: T) {
     let notifiees = everyone.into_iter().filter(|s| {
         let subscription_state = s.as_ref().subscription.get();
         let join_state = s.as_ref().join_state.get();
         match (subscription_state, join_state) {
-            (Some(subscription), Some(joined)) => {
-                subscription.notifications && &joined.user_id != myself
-            }
-            _ => false
+            (Some(subscription), Some(joined)) => subscription.notifications && &joined.user_id != myself,
+            _ => false,
         }
     });
     send_message(json, notifiees)
 }
 
-fn send_message<T: IntoIterator<Item=U>, U: AsRef<Session>>(body: &JsonValue, sessions: T) {
+fn send_message<T: IntoIterator<Item = U>, U: AsRef<Session>>(body: &JsonValue, sessions: T) {
     let mut msg = serde_to_jansson(body);
     let push_event = gateway_callbacks().push_event;
     for session in sessions {
@@ -187,12 +185,12 @@ fn send_message<T: IntoIterator<Item=U>, U: AsRef<Session>>(body: &JsonValue, se
                 // session not found -- should be unusual but not problematic
                 janus_warn!("Attempted to send signalling message to missing session {:p}: {}", handle, body);
             }
-            Err(e) => janus_err!("Error sending signalling message to {:p}: {}", handle, e)
+            Err(e) => janus_err!("Error sending signalling message to {:p}: {}", handle, e),
         }
     }
 }
 
-fn send_offer<T: IntoIterator<Item=U>, U: AsRef<Session>>(offer: &JsonValue, sessions: T) {
+fn send_offer<T: IntoIterator<Item = U>, U: AsRef<Session>>(offer: &JsonValue, sessions: T) {
     let mut msg = serde_to_jansson(&json!({}));
     let mut jsep = serde_to_jansson(offer);
     let push_event = gateway_callbacks().push_event;
@@ -206,12 +204,12 @@ fn send_offer<T: IntoIterator<Item=U>, U: AsRef<Session>>(offer: &JsonValue, ses
                 // session not found -- should be unusual but not problematic
                 janus_warn!("Attempted to send signalling message to missing session {:p}: {}", handle, offer);
             }
-            Err(e) => janus_err!("Error sending signalling message to {:p}: {}", handle, e)
+            Err(e) => janus_err!("Error sending signalling message to {:p}: {}", handle, e),
         }
     }
 }
 
-fn send_pli<T: IntoIterator<Item=U>, U: AsRef<Session>>(publishers: T) {
+fn send_pli<T: IntoIterator<Item = U>, U: AsRef<Session>>(publishers: T) {
     let relay_rtcp = gateway_callbacks().relay_rtcp;
     for publisher in publishers {
         let mut pli = gen_pli();
@@ -219,7 +217,7 @@ fn send_pli<T: IntoIterator<Item=U>, U: AsRef<Session>>(publishers: T) {
     }
 }
 
-fn send_fir<T: IntoIterator<Item=U>, U: AsRef<Session>>(publishers: T) {
+fn send_fir<T: IntoIterator<Item = U>, U: AsRef<Session>>(publishers: T) {
     let relay_rtcp = gateway_callbacks().relay_rtcp;
     for publisher in publishers {
         let mut seq = publisher.as_ref().fir_seq.fetch_add(1, Ordering::Relaxed) as i32;
@@ -250,7 +248,9 @@ extern "C" fn init(callbacks: *mut PluginCallbacks, config_path: *const c_char) 
         Some(c) => {
             unsafe { CALLBACKS = Some(c) };
             let (messages_tx, messages_rx) = mpsc::sync_channel(0);
-            MESSAGE_CHANNEL.set(messages_tx).expect("Big problem: message channel already initialized!");
+            MESSAGE_CHANNEL
+                .set(messages_tx)
+                .expect("Big problem: message channel already initialized!");
 
             thread::spawn(move || {
                 janus_verb!("Message processing thread is alive.");
@@ -360,7 +360,7 @@ extern "C" fn incoming_rtcp(handle: *mut PluginSession, video: c_int, buf: *mut 
     }
 }
 
-extern "C" fn incoming_data(handle: *mut PluginSession, label: *mut c_char, buf: *mut c_char, len: c_int, ) {
+extern "C" fn incoming_data(handle: *mut PluginSession, label: *mut c_char, buf: *mut c_char, len: c_int) {
     let sess = unsafe { Session::from_ptr(handle).expect("Session can't be null!") };
     let switchboard = SWITCHBOARD.read().expect("Switchboard lock poisoned; can't continue.");
     let relay_data = gateway_callbacks().relay_data;
@@ -381,32 +381,62 @@ extern "C" fn hangup_media(handle: *mut PluginSession) {
     janus_info!("Hanging up WebRTC media on {:p}.", sess.handle);
 }
 
-fn process_join(from: &Arc<Session>, room_id: RoomId, user_id: UserId, subscribe: Option<Subscription>, token: Option<String>) -> MessageResult {
+fn process_join(
+    from: &Arc<Session>,
+    room_id: RoomId,
+    user_id: UserId,
+    subscribe: Option<Subscription>,
+    token: Option<String>,
+) -> MessageResult {
     // todo: holy shit clean this function up somehow
     let config = CONFIG.get().unwrap();
     match (&config.auth_key, token) {
         (None, _) => {
-            janus_verb!("No auth_key configured. Allowing join from {:p} to room {} as user {}.", from.handle, room_id, user_id);
+            janus_verb!(
+                "No auth_key configured. Allowing join from {:p} to room {} as user {}.",
+                from.handle,
+                room_id,
+                user_id
+            );
         }
         (Some(_), None) => {
-            janus_warn!("Rejecting anonymous join from {:p} to room {} as user {}.", from.handle, room_id, user_id);
-            return Err(From::from("Rejecting anonymous join!"))
+            janus_warn!(
+                "Rejecting anonymous join from {:p} to room {} as user {}.",
+                from.handle,
+                room_id,
+                user_id
+            );
+            return Err(From::from("Rejecting anonymous join!"));
         }
-        (Some(key), Some(ref token)) => {
-            match ValidatedToken::from_str(token, key) {
-                Ok(ref claims) if claims.join_hub => {
-                    janus_verb!("Allowing validated join from {:p} to room {} as user {}.", from.handle, room_id, user_id);
-                }
-                Ok(_) => {
-                    janus_warn!("Rejecting unauthorized join from {:p} to room {} as user {}.", from.handle, room_id, user_id);
-                    return Err(From::from("Rejecting join with no join_hub permission!"))
-                }
-                Err(e) => {
-                    janus_warn!("Rejecting invalid join from {:p} to room {} as user {}. Error: {}", from.handle, room_id, user_id, e);
-                    return Err(From::from("Rejecting join with invalid token!"))
-                }
+        (Some(key), Some(ref token)) => match ValidatedToken::from_str(token, key) {
+            Ok(ref claims) if claims.join_hub => {
+                janus_verb!(
+                    "Allowing validated join from {:p} to room {} as user {}.",
+                    from.handle,
+                    room_id,
+                    user_id
+                );
             }
-        }
+            Ok(_) => {
+                janus_warn!(
+                    "Rejecting unauthorized join from {:p} to room {} as user {}.",
+                    from.handle,
+                    room_id,
+                    user_id
+                );
+                return Err(From::from("Rejecting join with no join_hub permission!"));
+            }
+            Err(e) => {
+                janus_warn!(
+                    "Rejecting invalid join from {:p} to room {} as user {}. Error: {}",
+                    from.handle,
+                    room_id,
+                    user_id,
+                    e
+                );
+                return Err(From::from("Rejecting join with invalid token!"));
+            }
+        },
     }
 
     let mut switchboard = SWITCHBOARD.write()?;
@@ -418,10 +448,10 @@ fn process_join(from: &Arc<Session>, room_id: RoomId, user_id: UserId, subscribe
         let server_is_full = switchboard.sessions().len() > config.max_ccu;
         is_master_handle = subscription.data; // hack -- assume there is only one "master" data connection per user
         if is_master_handle && room_is_full {
-            return Err(From::from("Room is full."))
+            return Err(From::from("Room is full."));
         }
         if is_master_handle && server_is_full {
-            return Err(From::from("Server is full."))
+            return Err(From::from("Server is full."));
         }
     }
 
@@ -440,7 +470,10 @@ fn process_join(from: &Arc<Session>, room_id: RoomId, user_id: UserId, subscribe
             notify_except(&notification, &user_id, switchboard.occupants_of(&room_id));
         }
         if let Some(ref publisher_id) = subscription.media {
-            let publisher = switchboard.get_publisher(publisher_id).ok_or("Can't subscribe to a nonexistent publisher.")?.clone();
+            let publisher = switchboard
+                .get_publisher(publisher_id)
+                .ok_or("Can't subscribe to a nonexistent publisher.")?
+                .clone();
             let jsep = json!({
                 "type": "offer",
                 "sdp": publisher.subscriber_offer.lock().unwrap().as_ref().unwrap()
@@ -458,7 +491,12 @@ fn process_kick(from: &Arc<Session>, room_id: RoomId, user_id: UserId, token: St
         match ValidatedToken::from_str(&token, key) {
             Ok(tok) => {
                 if tok.kick_users {
-                    janus_info!("Processing kick from {:p} targeting user ID {} in room ID {}.", from.handle, user_id, room_id);
+                    janus_info!(
+                        "Processing kick from {:p} targeting user ID {} in room ID {}.",
+                        from.handle,
+                        user_id,
+                        room_id
+                    );
                     let end_session = gateway_callbacks().end_session;
                     let switchboard = SWITCHBOARD.read()?;
                     let sessions = switchboard.get_sessions(&room_id, &user_id);
@@ -512,12 +550,15 @@ fn process_unblock(from: &Arc<Session>, whom: UserId) -> MessageResult {
 fn process_subscribe(from: &Arc<Session>, what: &Subscription) -> MessageResult {
     janus_info!("Processing subscription from {:p}: {:?}", from.handle, what);
     if let Err(_existing) = from.subscription.set(what.clone()) {
-        return Err(From::from("Users may only subscribe once!"))
+        return Err(From::from("Users may only subscribe once!"));
     }
 
     let mut switchboard = SWITCHBOARD.write()?;
     if let Some(ref publisher_id) = what.media {
-        let publisher = switchboard.get_publisher(publisher_id).ok_or("Can't subscribe to a nonexistent publisher.")?.clone();
+        let publisher = switchboard
+            .get_publisher(publisher_id)
+            .ok_or("Can't subscribe to a nonexistent publisher.")?
+            .clone();
         let jsep = json!({
             "type": "offer",
             "sdp": publisher.subscriber_offer.lock().unwrap().as_ref().unwrap()
@@ -547,7 +588,12 @@ fn process_data(from: &Arc<Session>, whom: Option<UserId>, body: &str) -> Messag
 
 fn process_message(from: &Arc<Session>, msg: MessageKind) -> MessageResult {
     match msg {
-        MessageKind::Join { room_id, user_id, subscribe, token } => process_join(from, room_id, user_id, subscribe, token),
+        MessageKind::Join {
+            room_id,
+            user_id,
+            subscribe,
+            token,
+        } => process_join(from, room_id, user_id, subscribe, token),
         MessageKind::Kick { room_id, user_id, token } => process_kick(from, room_id, user_id, token),
         MessageKind::Subscribe { what } => process_subscribe(from, &what),
         MessageKind::Block { whom } => process_block(from, whom),
@@ -561,10 +607,14 @@ fn process_offer(from: &Session, offer: &Sdp) -> JsepResult {
     janus_info!("Processing JSEP offer from {:p}: {:?}", from.handle, offer);
     let mut answer = answer_sdp!(
         offer,
-        OfferAnswerParameters::AudioCodec, AUDIO_CODEC.to_cstr().as_ptr(),
-        OfferAnswerParameters::AudioDirection, MediaDirection::JANUS_SDP_RECVONLY,
-        OfferAnswerParameters::VideoCodec, VIDEO_CODEC.to_cstr().as_ptr(),
-        OfferAnswerParameters::VideoDirection, MediaDirection::JANUS_SDP_RECVONLY,
+        OfferAnswerParameters::AudioCodec,
+        AUDIO_CODEC.to_cstr().as_ptr(),
+        OfferAnswerParameters::AudioDirection,
+        MediaDirection::JANUS_SDP_RECVONLY,
+        OfferAnswerParameters::VideoCodec,
+        VIDEO_CODEC.to_cstr().as_ptr(),
+        OfferAnswerParameters::VideoDirection,
+        MediaDirection::JANUS_SDP_RECVONLY,
     );
     let audio_payload_type = answer.get_payload_type(AUDIO_CODEC.to_cstr());
     let video_payload_type = answer.get_payload_type(VIDEO_CODEC.to_cstr());
@@ -584,15 +634,24 @@ fn process_offer(from: &Session, offer: &Sdp) -> JsepResult {
     let mut subscriber_offer = offer_sdp!(
         ptr::null(),
         answer.c_addr as *const _,
-        OfferAnswerParameters::Data, 1,
-        OfferAnswerParameters::Audio, 1,
-        OfferAnswerParameters::AudioCodec, AUDIO_CODEC.to_cstr().as_ptr(),
-        OfferAnswerParameters::AudioPayloadType, audio_payload_type.unwrap_or(100),
-        OfferAnswerParameters::AudioDirection, MediaDirection::JANUS_SDP_SENDONLY,
-        OfferAnswerParameters::Video, 1,
-        OfferAnswerParameters::VideoCodec, VIDEO_CODEC.to_cstr().as_ptr(),
-        OfferAnswerParameters::VideoPayloadType, video_payload_type.unwrap_or(100),
-        OfferAnswerParameters::VideoDirection, MediaDirection::JANUS_SDP_SENDONLY,
+        OfferAnswerParameters::Data,
+        1,
+        OfferAnswerParameters::Audio,
+        1,
+        OfferAnswerParameters::AudioCodec,
+        AUDIO_CODEC.to_cstr().as_ptr(),
+        OfferAnswerParameters::AudioPayloadType,
+        audio_payload_type.unwrap_or(100),
+        OfferAnswerParameters::AudioDirection,
+        MediaDirection::JANUS_SDP_SENDONLY,
+        OfferAnswerParameters::Video,
+        1,
+        OfferAnswerParameters::VideoCodec,
+        VIDEO_CODEC.to_cstr().as_ptr(),
+        OfferAnswerParameters::VideoPayloadType,
+        video_payload_type.unwrap_or(100),
+        OfferAnswerParameters::VideoDirection,
+        MediaDirection::JANUS_SDP_SENDONLY,
     );
     if let Some(pt) = audio_payload_type {
         // todo: figure out some more principled way to keep track of this stuff per room
@@ -624,7 +683,13 @@ fn push_response(from: &Session, txn: &TransactionId, body: &JsonValue, jsep: Op
     let push_event = gateway_callbacks().push_event;
     let jsep = jsep.unwrap_or_else(|| json!({}));
     janus_huge!("Responding to {:p} for txid {}: body={}, jsep={}", from.handle, txn, body, jsep);
-    JanusError::from(push_event(from.as_ptr(), &mut PLUGIN, txn.0, serde_to_jansson(body).as_mut_ref(), serde_to_jansson(&jsep).as_mut_ref()))
+    JanusError::from(push_event(
+        from.as_ptr(),
+        &mut PLUGIN,
+        txn.0,
+        serde_to_jansson(body).as_mut_ref(),
+        serde_to_jansson(&jsep).as_mut_ref(),
+    ))
 }
 
 fn try_parse_jansson<T: DeserializeOwned>(json: &JanssonValue) -> Result<Option<T>, Box<dyn Error>> {
@@ -651,24 +716,20 @@ fn handle_message_async(RawMessage { jsep, msg, txn, from }: RawMessage) -> Janu
                     push_response(from, &txn, &resp, None)
                 }
                 (Some(Ok(msg_resp)), None) => {
-                    let msg_body = msg_resp.body.map_or(json!({ "success": true }), |x| {
-                        json!({ "success": true, "response": x })
-                    });
+                    let msg_body = msg_resp
+                        .body
+                        .map_or(json!({ "success": true }), |x| json!({ "success": true, "response": x }));
                     push_response(from, &txn, &msg_body, msg_resp.jsep)
                 }
-                (None, Some(Ok(jsep_resp))) => {
-                    push_response(from, &txn, &json!({ "success": true }), Some(jsep_resp))
-                }
+                (None, Some(Ok(jsep_resp))) => push_response(from, &txn, &json!({ "success": true }), Some(jsep_resp)),
                 (Some(Ok(msg_resp)), Some(Ok(jsep_resp))) => {
-                    let msg_body = msg_resp.body.map_or(json!({ "success": true }), |x| {
-                        json!({ "success": true, "response": x })
-                    });
+                    let msg_body = msg_resp
+                        .body
+                        .map_or(json!({ "success": true }), |x| json!({ "success": true, "response": x }));
                     push_response(from, &txn, &msg_body, Some(jsep_resp))
                 }
-                (None, None) => {
-                    push_response(from, &txn, &json!({ "success": true }), None)
-                }
-            }
+                (None, None) => push_response(from, &txn, &json!({ "success": true }), None),
+            };
         }
     }
 
@@ -678,21 +739,25 @@ fn handle_message_async(RawMessage { jsep, msg, txn, from }: RawMessage) -> Janu
     Ok(())
 }
 
-extern "C" fn handle_message(handle: *mut PluginSession, transaction: *mut c_char,
-                             message: *mut RawJanssonValue, jsep: *mut RawJanssonValue) -> *mut RawPluginResult {
+extern "C" fn handle_message(
+    handle: *mut PluginSession,
+    transaction: *mut c_char,
+    message: *mut RawJanssonValue,
+    jsep: *mut RawJanssonValue,
+) -> *mut RawPluginResult {
     let result = match unsafe { Session::from_ptr(handle) } {
         Ok(sess) => {
             let msg = RawMessage {
                 from: Arc::downgrade(&sess),
                 txn: TransactionId(transaction),
                 msg: unsafe { JanssonValue::from_raw(message) },
-                jsep: unsafe { JanssonValue::from_raw(jsep) }
+                jsep: unsafe { JanssonValue::from_raw(jsep) },
             };
             janus_info!("Queueing signalling message on {:p}.", sess.handle);
             MESSAGE_CHANNEL.get().unwrap().send(msg).ok();
             PluginResult::ok_wait(Some(c_str!("Processing.")))
-        },
-        Err(_) => PluginResult::error(c_str!("No handle associated with message!"))
+        }
+        Err(_) => PluginResult::error(c_str!("No handle associated with message!")),
     };
     result.into_raw()
 }

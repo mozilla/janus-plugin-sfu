@@ -10,8 +10,8 @@ pub struct ValidatedToken {
 
 #[derive(Debug, Serialize, Deserialize)]
 struct UserClaims {
-   join_hub: bool,
-   kick_users: bool,
+    join_hub: bool,
+    kick_users: bool,
 }
 
 impl ValidatedToken {
@@ -19,8 +19,8 @@ impl ValidatedToken {
         let validation = Validation::new(Algorithm::RS512);
         let token_data = decode::<UserClaims>(value, key, &validation)?;
         Ok(ValidatedToken {
-           join_hub: token_data.claims.join_hub,
-           kick_users: token_data.claims.kick_users,
+            join_hub: token_data.claims.join_hub,
+            kick_users: token_data.claims.kick_users,
         })
     }
 }
