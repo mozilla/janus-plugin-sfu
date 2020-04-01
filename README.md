@@ -10,7 +10,7 @@ PRs and GitHub issues are welcome.
 
 ### How do I use this?
 
-This is a plugin for Janus, so you'll need to install and run Janus first. The [installation instructions on GitHub](https://github.com/meetecho/janus-gateway#dependencies) are canonical. It's compatible with Janus version 0.7.3 and later, although sometimes Janus makes changes that break plugins.
+This is a plugin for Janus, so you'll need to install and run Janus first. The [installation instructions on GitHub](https://github.com/meetecho/janus-gateway#dependencies) are canonical. It's compatible with Janus version 0.9.0 and later, although sometimes Janus makes changes that break plugins.
 
 This plugin should be compatible with any OS that can run Janus; that includes Linux, OS X, and Windows via WSL. If you use a version from a package manager, you might want to check to make sure it has data channel support, which is a compile-time option. (Debian and Ubuntu have it.)
 
