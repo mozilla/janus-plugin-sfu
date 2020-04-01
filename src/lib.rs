@@ -7,12 +7,13 @@ mod txid;
 
 use auth::ValidatedToken;
 use config::Config;
-use janus_plugin::rtcp::{gen_fir, gen_pli, has_fir, has_pli};
+use janus_plugin::rtcp::{gen_fir, has_fir, has_pli};
 use janus_plugin::sdp::{AudioCodec, MediaDirection, OfferAnswerParameters, Sdp, VideoCodec};
 use janus_plugin::utils::LibcString;
 use janus_plugin::{
     answer_sdp, build_plugin, export_plugin, janus_err, janus_huge, janus_info, janus_verb, janus_warn, offer_sdp, JanssonDecodingFlags, JanssonEncodingFlags,
-    JanssonValue, JanusError, JanusResult, LibraryMetadata, Plugin, PluginCallbacks, PluginResult, PluginSession, RawJanssonValue, RawPluginResult,
+    JanssonValue, JanusError, JanusResult, LibraryMetadata, Plugin, PluginCallbacks, PluginResult, PluginSession,
+    PluginRtpPacket, PluginRtcpPacket, PluginDataPacket, RawJanssonValue, RawPluginResult,
 };
 use messages::{JsepKind, MessageKind, OptionalField, Subscription};
 use messages::{RoomId, UserId};
@@ -205,20 +206,17 @@ fn send_offer<T: IntoIterator<Item = U>, U: AsRef<Session>>(offer: &JsonValue, s
     }
 }
 
-fn send_pli<T: IntoIterator<Item = U>, U: AsRef<Session>>(publishers: T) {
-    let relay_rtcp = gateway_callbacks().relay_rtcp;
-    for publisher in publishers {
-        let mut pli = gen_pli();
-        relay_rtcp(publisher.as_ref().as_ptr(), 1, pli.as_mut_ptr(), pli.len() as i32);
-    }
-}
-
 fn send_fir<T: IntoIterator<Item = U>, U: AsRef<Session>>(publishers: T) {
     let relay_rtcp = gateway_callbacks().relay_rtcp;
     for publisher in publishers {
         let mut seq = publisher.as_ref().fir_seq.fetch_add(1, Ordering::Relaxed) as i32;
         let mut fir = gen_fir(&mut seq);
-        relay_rtcp(publisher.as_ref().as_ptr(), 1, fir.as_mut_ptr(), fir.len() as i32);
+        let mut packet = PluginRtcpPacket {
+            video: 1,
+            buffer: fir.as_mut_ptr(),
+            length: fir.len() as i16
+        };
+        relay_rtcp(publisher.as_ref().as_ptr(), &mut packet);
     }
 }
 
@@ -325,43 +323,47 @@ extern "C" fn setup_media(handle: *mut PluginSession) {
     janus_info!("WebRTC media is now available on {:p}.", sess.handle);
 }
 
-extern "C" fn incoming_rtp(handle: *mut PluginSession, video: c_int, buf: *mut c_char, len: c_int) {
+extern "C" fn incoming_rtp(handle: *mut PluginSession, packet: *mut PluginRtpPacket) {
     let sess = unsafe { Session::from_ptr(handle).expect("Session can't be null!") };
     let switchboard = SWITCHBOARD.read().expect("Switchboard lock poisoned; can't continue.");
     let relay_rtp = gateway_callbacks().relay_rtp;
     for other in switchboard.media_recipients_for(&sess) {
-        relay_rtp(other.as_ptr(), video, buf, len);
+        relay_rtp(other.as_ptr(), packet);
     }
 }
 
-extern "C" fn incoming_rtcp(handle: *mut PluginSession, video: c_int, buf: *mut c_char, len: c_int) {
+extern "C" fn incoming_rtcp(handle: *mut PluginSession, packet: *mut PluginRtcpPacket) {
     let sess = unsafe { Session::from_ptr(handle).expect("Session can't be null!") };
     let switchboard = SWITCHBOARD.read().expect("Switchboard lock poisoned; can't continue.");
-    let packet = unsafe { slice::from_raw_parts(buf, len as usize) };
+    let data = unsafe { slice::from_raw_parts((*packet).buffer, (*packet).length as usize) };
+    let video = unsafe { (*packet).video };
     match video {
-        1 if has_pli(packet) => {
-            send_pli(switchboard.media_senders_to(&sess));
+        1 if has_pli(data) => {
+            let send_pli = gateway_callbacks().send_pli;
+            for publisher in switchboard.media_senders_to(&sess) {
+                send_pli(publisher.as_ptr());
+            }
         }
-        1 if has_fir(packet) => {
+        1 if has_fir(data) => {
             send_fir(switchboard.media_senders_to(&sess));
         }
         _ => {
             let relay_rtcp = gateway_callbacks().relay_rtcp;
             for subscriber in switchboard.media_recipients_for(&sess) {
-                relay_rtcp(subscriber.as_ptr(), video, buf, len);
+                relay_rtcp(subscriber.as_ptr(), packet);
             }
         }
     }
 }
 
-extern "C" fn incoming_data(handle: *mut PluginSession, label: *mut c_char, buf: *mut c_char, len: c_int) {
+extern "C" fn incoming_data(handle: *mut PluginSession, packet: *mut PluginDataPacket) {
     let sess = unsafe { Session::from_ptr(handle).expect("Session can't be null!") };
     let switchboard = SWITCHBOARD.read().expect("Switchboard lock poisoned; can't continue.");
     let relay_data = gateway_callbacks().relay_data;
     for other in switchboard.data_recipients_for(&sess) {
         // we presume that clients have matching labels on their channels -- in our case we have one
         // reliable one called "reliable" and one unreliable one called "unreliable"
-        relay_data(other.as_ptr(), label, buf, len);
+        relay_data(other.as_ptr(), packet);
     }
 }
 
@@ -734,7 +736,7 @@ extern "C" fn handle_admin_message(_message: *mut RawJanssonValue) -> *mut RawJa
 
 const PLUGIN: Plugin = build_plugin!(
     LibraryMetadata {
-        api_version: 13,
+        api_version: 14,
         version: 1,
         name: c_str!("Janus SFU plugin"),
         package: c_str!("janus.plugin.sfu"),
