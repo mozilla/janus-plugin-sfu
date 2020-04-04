@@ -15,6 +15,7 @@ use janus_plugin::{
     JanssonValue, JanusError, JanusResult, LibraryMetadata, Plugin, PluginCallbacks, PluginResult, PluginSession,
     PluginRtpPacket, PluginRtcpPacket, PluginDataPacket, RawJanssonValue, RawPluginResult,
 };
+use lazy_static::lazy_static;
 use messages::{JsepKind, MessageKind, OptionalField, Subscription};
 use messages::{RoomId, UserId};
 use once_cell::sync::{Lazy, OnceCell};
@@ -114,7 +115,11 @@ fn gateway_callbacks() -> &'static PluginCallbacks {
 static SWITCHBOARD: Lazy<RwLock<Switchboard>> = Lazy::new(|| RwLock::new(Switchboard::new()));
 
 /// The producer/consumer queue storing incoming plugin messages to be processed.
-static MESSAGE_CHANNEL: OnceCell<mpsc::SyncSender<RawMessage>> = OnceCell::new();
+static MESSAGE_SENDERS: OnceCell<Vec<mpsc::SyncSender<RawMessage>>> = OnceCell::new();
+
+lazy_static! {
+    static ref MESSAGE_COUNTER: Arc<Mutex<usize>> = Arc::new(Mutex::new(0));
+}
 
 /// The plugin configuration, read from disk.
 static CONFIG: OnceCell<Config> = OnceCell::new();
@@ -241,17 +246,23 @@ extern "C" fn init(callbacks: *mut PluginCallbacks, config_path: *const c_char) 
     match unsafe { callbacks.as_ref() } {
         Some(c) => {
             unsafe { CALLBACKS = Some(c) };
-            let (messages_tx, messages_rx) = mpsc::sync_channel(0);
-            MESSAGE_CHANNEL.set(messages_tx).expect("Big problem: message channel already initialized!");
+            let mut senders = Vec::new();
 
-            thread::spawn(move || {
-                janus_verb!("Message processing thread is alive.");
-                for msg in messages_rx.iter() {
-                    if let Err(e) = handle_message_async(msg) {
-                        janus_err!("Error processing message: {}", e);
+            for _ in 0..16 {
+                let (messages_tx, messages_rx) = mpsc::sync_channel(0);
+                senders.push(messages_tx.clone());
+
+                thread::spawn(move || {
+                    janus_verb!("Message processing thread is alive.");
+                    for msg in messages_rx.iter() {
+                        if let Err(e) = handle_message_async(msg) {
+                            janus_err!("Error processing message: {}", e);
+                        }
                     }
-                }
-            });
+                });
+            }
+
+            let _ = MESSAGE_SENDERS.set(senders);
 
             janus_info!("Janus SFU plugin initialized!");
             0
@@ -720,7 +731,12 @@ extern "C" fn handle_message(
                 jsep: unsafe { JanssonValue::from_raw(jsep) },
             };
             janus_info!("Queueing signalling message on {:p}.", sess.handle);
-            MESSAGE_CHANNEL.get().unwrap().send(msg).ok();
+            let mut message_count = MESSAGE_COUNTER.lock().unwrap();
+            let senders = MESSAGE_SENDERS.get().unwrap();
+            let sender = &senders[*message_count % senders.len()];
+            sender.send(msg).ok();
+            *message_count += 1;
+
             PluginResult::ok_wait(Some(c_str!("Processing.")))
         }
         Err(_) => PluginResult::error(c_str!("No handle associated with message!")),
