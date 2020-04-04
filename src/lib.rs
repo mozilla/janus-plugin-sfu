@@ -249,7 +249,7 @@ extern "C" fn init(callbacks: *mut PluginCallbacks, config_path: *const c_char) 
             let mut senders = Vec::new();
             let cpus = num_cpus::get(); // Run one thread per logical CPU
 
-            for _ in 0..cpus {
+            for _ in 1..cpus {
                 let (messages_tx, messages_rx) = mpsc::sync_channel(0);
                 senders.push(messages_tx.clone());
 
