@@ -10,3 +10,6 @@ max_room_size = 30
 
 # If present, the maximum number of concurrent users allowed to join any room on the server. Zero means no limit.
 max_ccu = 1000
+
+# Number of threads to run message processing on. If zero, use the # of logical CPUs.
+message_threads = 0

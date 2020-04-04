@@ -242,12 +242,13 @@ extern "C" fn init(callbacks: *mut PluginCallbacks, config_path: *const c_char) 
             Config::default()
         }
     };
+    let message_threads = config.message_threads;
     CONFIG.set(config).expect("Big problem: config already initialized!");
     match unsafe { callbacks.as_ref() } {
         Some(c) => {
             unsafe { CALLBACKS = Some(c) };
             let mut senders = Vec::new();
-            let cpus = num_cpus::get(); // Run one thread per logical CPU
+            let cpus = if message_threads == 0 { num_cpus::get() } else { message_threads };
 
             for i in 0..cpus {
                 let (messages_tx, messages_rx) = mpsc::sync_channel(0);
