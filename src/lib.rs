@@ -249,18 +249,21 @@ extern "C" fn init(callbacks: *mut PluginCallbacks, config_path: *const c_char) 
             let mut senders = Vec::new();
             let cpus = num_cpus::get(); // Run one thread per logical CPU
 
-            for _ in 1..cpus {
+            for i in 0..cpus {
                 let (messages_tx, messages_rx) = mpsc::sync_channel(0);
                 senders.push(messages_tx.clone());
 
-                thread::spawn(move || {
-                    janus_verb!("Message processing thread is alive.");
-                    for msg in messages_rx.iter() {
-                        if let Err(e) = handle_message_async(msg) {
-                            janus_err!("Error processing message: {}", e);
+                thread::Builder::new()
+                    .name(format!("sfu msg {}", i))
+                    .spawn(move || {
+                        for msg in messages_rx.iter() {
+                            if let Err(e) = handle_message_async(msg) {
+                                janus_err!("Error processing message: {}", e);
+                            }
                         }
-                    }
-                });
+                    }).expect("Failed to spawn message thread.");
+
+                janus_verb!("Message processing thread {} is alive.", i);
             }
 
             let _ = MESSAGE_SENDERS.set(senders);
