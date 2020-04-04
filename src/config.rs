@@ -11,6 +11,7 @@ pub struct Config {
     pub auth_key: Option<Vec<u8>>,
     pub max_room_size: usize,
     pub max_ccu: usize,
+    pub message_threads: usize,
 }
 
 impl Default for Config {
@@ -19,6 +20,7 @@ impl Default for Config {
             auth_key: None,
             max_room_size: usize::max_value(),
             max_ccu: usize::max_value(),
+            message_threads: 0,
         }
     }
 }
@@ -45,6 +47,7 @@ impl Config {
             auth_key: auth_key,
             max_room_size: section.get("max_room_size").and_then(|x| x.parse().ok()).unwrap_or(defaults.max_room_size),
             max_ccu: section.get("max_ccu").and_then(|x| x.parse().ok()).unwrap_or(defaults.max_ccu),
+            message_threads: section.get("message_threads").and_then(|x| x.parse().ok()).unwrap_or(defaults.message_threads),
         })
     }
 }
