@@ -457,7 +457,7 @@ fn process_join(from: &Arc<Session>, room_id: RoomId, user_id: UserId, subscribe
         };
         if is_master_handle {
             let notification = json!({ "event": "join", "user_id": user_id, "room_id": room_id });
-            switchboard.join_room(Arc::clone(from), room_id.clone());
+            switchboard.join_room(Arc::clone(from), user_id.clone(), room_id.clone());
             notify_except(&notification, &user_id, switchboard.occupants_of(&room_id));
         }
         if let Some(ref publisher_id) = subscription.media {
