@@ -108,7 +108,7 @@ pub struct Switchboard {
     /// Connections which have joined a room, per room.
     occupants: HashMap<RoomId, Vec<Arc<Session>>>,
     /// Which room a user belongs to.
-    users_to_room: HashMap<UserId, RoomId>,
+    users_to_rooms: HashMap<UserId, Vec<RoomId>>,
     /// Which connections are subscribing to traffic from which other connections.
     publisher_to_subscribers: BidirectionalMultimap<Arc<Session>, Arc<Session>>,
     /// Which users have explicitly blocked traffic to and from other users.
@@ -120,7 +120,7 @@ impl Switchboard {
         Self {
             sessions: Vec::new(),
             occupants: HashMap::new(),
-            users_to_room: HashMap::new(),
+            users_to_rooms: HashMap::new(),
             publisher_to_subscribers: BidirectionalMultimap::new(),
             blockers_to_miscreants: BidirectionalMultimap::new(),
         }
@@ -146,20 +146,23 @@ impl Switchboard {
     }
 
     pub fn join_room(&mut self, session: Arc<Session>, user: UserId, room: RoomId) {
-        self.users_to_room.entry(user).or_insert(room.clone());
+        self.users_to_rooms.entry(user).or_insert_with(Vec::new).push(room.clone());
         self.occupants.entry(room).or_insert_with(Vec::new).push(session);
     }
 
     pub fn leave_room(&mut self, session: &Session, user: UserId, room: RoomId) {
-        if let Entry::Occupied(mut cohabitators) = self.occupants.entry(room) {
+        if let Entry::Occupied(mut cohabitators) = self.occupants.entry(room.clone()) {
             cohabitators.get_mut().retain(|x| x.as_ref() != session);
             if cohabitators.get().is_empty() {
                 cohabitators.remove_entry();
             }
         }
 
-        if let Entry::Occupied(room) = self.users_to_room.entry(user) {
-            room.remove_entry();
+        if let Entry::Occupied(mut rooms) = self.users_to_rooms.entry(user) {
+            rooms.get_mut().retain(|x| x.as_ref() != room);
+            if rooms.get().is_empty() {
+                rooms.remove_entry();
+            }
         }
     }
 
@@ -263,11 +266,9 @@ impl Switchboard {
     }
 
     pub fn get_publisher(&self, user_id: &UserId) -> Option<&Arc<Session>> {
-        let mut result = None;
-
-        if let Some(room_id) = self.users_to_room.get(user_id) {
-            if let Some(sessions) = self.occupants.get(room_id) {
-                result = sessions
+        if let Some(rooms) = self.users_to_rooms.get(user_id) {
+            for room in rooms {
+                if let Some(session) = self.occupants_of(&room)
                     .iter()
                     .find(|s| {
                         let subscriber_offer = s.subscriber_offer.lock().unwrap();
@@ -276,11 +277,14 @@ impl Switchboard {
                             (Some(_), Some(state)) if &state.user_id == user_id => true,
                             _ => false,
                         }
-                    })
+                    }) {
+
+                    return Some(session);
+                }
             }
         }
 
-        return result;
+        return None;
     }
 
     pub fn get_sessions(&self, room_id: &RoomId, user_id: &UserId) -> Vec<&Box<Arc<Session>>> {
