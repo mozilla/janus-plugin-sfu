@@ -309,12 +309,18 @@ extern "C" fn destroy_session(handle: *mut PluginSession, error: *mut c_int) {
         Ok(sess) => {
             janus_info!("Destroying SFU session {:p}...", sess.handle);
             let mut switchboard = SWITCHBOARD.write().expect("Switchboard is poisoned :(");
-            switchboard.remove_session(&sess);
+            switchboard.disconnect(&sess);
             if let Some(joined) = sess.join_state.get() {
-                // if they are entirely disconnected, notify their roommates
+                let is_publisher = sess.subscriber_offer.lock().unwrap().is_some();
+                if is_publisher {
+                    switchboard.leave_publisher(&sess);
+                } else {
+                    switchboard.leave_subscriber(&sess);
+                }
+                // if this user is entirely disconnected, notify their roommates
                 if !switchboard.is_connected(&joined.user_id) {
                     let response = json!({ "event": "leave", "user_id": &joined.user_id, "room_id": &joined.room_id });
-                    let occupants = switchboard.occupants_of(&joined.room_id);
+                    let occupants = switchboard.publishers_occupying(&joined.room_id);
                     notify_except(&response, &joined.user_id, occupants);
                 }
             }
@@ -433,15 +439,15 @@ fn process_join(from: &Arc<Session>, room_id: RoomId, user_id: UserId, subscribe
     let mut switchboard = SWITCHBOARD.write()?;
     let body = json!({ "users": { room_id.as_str(): switchboard.get_users(&room_id) }});
 
-    let mut is_master_handle = false;
+    let mut is_publisher = false;
     if let Some(subscription) = subscribe.as_ref() {
-        let room_is_full = switchboard.occupants_of(&room_id).len() > config.max_room_size;
+        let room_is_full = switchboard.publishers_occupying(&room_id).len() > config.max_room_size;
         let server_is_full = switchboard.sessions().len() > config.max_ccu;
-        is_master_handle = subscription.data; // hack -- assume there is only one "master" data connection per user
-        if is_master_handle && room_is_full {
+        is_publisher = subscription.data; // hack -- use data channel subscription to infer this
+        if is_publisher && room_is_full {
             return Err(From::from("Room is full."));
         }
-        if is_master_handle && server_is_full {
+        if is_publisher && server_is_full {
             return Err(From::from("Server is full."));
         }
     }
@@ -450,16 +456,19 @@ fn process_join(from: &Arc<Session>, room_id: RoomId, user_id: UserId, subscribe
         return Err(From::from("Handles may only join once!"));
     }
 
+    if is_publisher {
+        let notification = json!({ "event": "join", "user_id": user_id, "room_id": room_id });
+        switchboard.join_publisher(Arc::clone(from), user_id.clone(), room_id.clone());
+        notify_except(&notification, &user_id, switchboard.publishers_occupying(&room_id));
+    } else {
+        switchboard.join_subscriber(Arc::clone(from), user_id.clone(), room_id.clone());
+    }
+
     if let Some(subscription) = subscribe {
         janus_info!("Processing join-time subscription from {:p}: {:?}.", from.handle, subscription);
         if let Err(_existing) = from.subscription.set(subscription.clone()) {
             return Err(From::from("Handles may only subscribe once!"));
         };
-        if is_master_handle {
-            let notification = json!({ "event": "join", "user_id": user_id, "room_id": room_id });
-            switchboard.join_room(Arc::clone(from), user_id.clone(), room_id.clone());
-            notify_except(&notification, &user_id, switchboard.occupants_of(&room_id));
-        }
         if let Some(ref publisher_id) = subscription.media {
             let publisher = switchboard
                 .get_publisher(publisher_id)
@@ -473,6 +482,7 @@ fn process_join(from: &Arc<Session>, room_id: RoomId, user_id: UserId, subscribe
             return Ok(MessageResponse::new(body, jsep));
         }
     }
+
     Ok(MessageResponse::msg(body))
 }
 
@@ -485,10 +495,15 @@ fn process_kick(from: &Arc<Session>, room_id: RoomId, user_id: UserId, token: St
                     janus_info!("Processing kick from {:p} targeting user ID {} in room ID {}.", from.handle, user_id, room_id);
                     let end_session = gateway_callbacks().end_session;
                     let switchboard = SWITCHBOARD.read()?;
-                    let sessions = switchboard.get_sessions(&room_id, &user_id);
-                    for sess in sessions {
-                        janus_info!("Kicking session {:p}.", from.handle);
-                        end_session(sess.as_ptr());
+                    if let Some(publisher) = switchboard.get_publisher(&user_id) {
+                        janus_info!("Kicking session {:p}.", publisher.handle);
+                        end_session(publisher.as_ptr());
+                    }
+                    if let Some(subscribers) = switchboard.get_subscribers(&user_id) {
+                        for subscriber in subscribers {
+                            janus_info!("Kicking session {:p}.", subscriber.handle);
+                            end_session(subscriber.as_ptr());
+                        }
                     }
                 } else {
                     janus_warn!("Ignoring kick from {:p} because they didn't have kick permissions.", from.handle);
@@ -509,7 +524,7 @@ fn process_block(from: &Arc<Session>, whom: UserId) -> MessageResult {
     if let Some(joined) = from.join_state.get() {
         let mut switchboard = SWITCHBOARD.write()?;
         let event = json!({ "event": "blocked", "by": &joined.user_id });
-        notify_user(&event, &whom, switchboard.occupants_of(&joined.room_id));
+        notify_user(&event, &whom, switchboard.publishers_occupying(&joined.room_id));
         switchboard.establish_block(joined.user_id.clone(), whom);
         Ok(MessageResponse::msg(json!({})))
     } else {
@@ -526,7 +541,7 @@ fn process_unblock(from: &Arc<Session>, whom: UserId) -> MessageResult {
             send_fir(&[publisher]);
         }
         let event = json!({ "event": "unblocked", "by": &joined.user_id });
-        notify_user(&event, &whom, switchboard.occupants_of(&joined.room_id));
+        notify_user(&event, &whom, switchboard.publishers_occupying(&joined.room_id));
         Ok(MessageResponse::msg(json!({})))
     } else {
         Err(From::from("Cannot unblock when not in a room."))
@@ -560,7 +575,7 @@ fn process_data(from: &Arc<Session>, whom: Option<UserId>, body: &str) -> Messag
     let payload = json!({ "event": "data", "body": body });
     let switchboard = SWITCHBOARD.write()?;
     if let Some(joined) = from.join_state.get() {
-        let occupants = switchboard.occupants_of(&joined.room_id);
+        let occupants = switchboard.publishers_occupying(&joined.room_id);
         if let Some(user_id) = whom {
             send_data_user(&payload, &user_id, occupants);
         } else {
