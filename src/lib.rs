@@ -22,7 +22,7 @@ use once_cell::sync::{Lazy, OnceCell};
 use serde::de::DeserializeOwned;
 use serde_json::json;
 use serde_json::Value as JsonValue;
-use sessions::{JoinState, Session, SessionState};
+use sessions::{JoinKind, JoinState, Session, SessionState};
 use std::error::Error;
 use std::ffi::{CStr, CString};
 use std::os::raw::{c_char, c_int};
@@ -311,13 +311,12 @@ extern "C" fn destroy_session(handle: *mut PluginSession, error: *mut c_int) {
             let mut switchboard = SWITCHBOARD.write().expect("Switchboard is poisoned :(");
             switchboard.disconnect(&sess);
             if let Some(joined) = sess.join_state.get() {
-                let is_publisher = sess.subscriber_offer.lock().unwrap().is_some();
-                if is_publisher {
-                    switchboard.leave_publisher(&sess);
-                } else {
-                    switchboard.leave_subscriber(&sess);
+                match joined.kind {
+                    JoinKind::Publisher => switchboard.leave_publisher(&sess),
+                    JoinKind::Subscriber => switchboard.leave_subscriber(&sess)
                 }
-                // if this user is entirely disconnected, notify their roommates
+                // if this user is entirely disconnected, notify their roommates.
+                // todo: is it better if this is instead when their publisher disconnects?
                 if !switchboard.is_connected(&joined.user_id) {
                     let response = json!({ "event": "leave", "user_id": &joined.user_id, "room_id": &joined.room_id });
                     let occupants = switchboard.publishers_occupying(&joined.room_id);
@@ -439,24 +438,25 @@ fn process_join(from: &Arc<Session>, room_id: RoomId, user_id: UserId, subscribe
     let mut switchboard = SWITCHBOARD.write()?;
     let body = json!({ "users": { room_id.as_str(): switchboard.get_users(&room_id) }});
 
-    let mut is_publisher = false;
-    if let Some(subscription) = subscribe.as_ref() {
-        let room_is_full = switchboard.publishers_occupying(&room_id).len() > config.max_room_size;
-        let server_is_full = switchboard.sessions().len() > config.max_ccu;
-        is_publisher = subscription.data; // hack -- use data channel subscription to infer this
-        if is_publisher && room_is_full {
+    // hack -- use data channel subscription to infer this, it would probably be nicer if
+    // connections announced explicitly whether they were a publisher or subscriber
+    let gets_data_channel = subscribe.as_ref().map(|s| s.data).unwrap_or(false);
+    let join_kind = if gets_data_channel { JoinKind::Publisher } else { JoinKind::Subscriber };
+
+    if join_kind == JoinKind::Publisher {
+        if switchboard.publishers_occupying(&room_id).len() > config.max_room_size {
             return Err(From::from("Room is full."));
         }
-        if is_publisher && server_is_full {
+        if switchboard.sessions().len() > config.max_ccu {
             return Err(From::from("Server is full."));
         }
     }
 
-    if let Err(_existing) = from.join_state.set(JoinState::new(room_id.clone(), user_id.clone())) {
+    if let Err(_existing) = from.join_state.set(JoinState::new(join_kind, room_id.clone(), user_id.clone())) {
         return Err(From::from("Handles may only join once!"));
     }
 
-    if is_publisher {
+    if join_kind == JoinKind::Publisher {
         let notification = json!({ "event": "join", "user_id": user_id, "room_id": room_id });
         switchboard.join_publisher(Arc::clone(from), user_id.clone(), room_id.clone());
         notify_except(&notification, &user_id, switchboard.publishers_occupying(&room_id));
