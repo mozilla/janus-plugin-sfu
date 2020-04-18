@@ -701,8 +701,6 @@ fn handle_message_async(RawMessage { jsep, msg, txn, from }: RawMessage) -> Janu
     if let Some(ref from) = from.upgrade() {
         janus_huge!("Processing txid {} from {:p}: msg={:?}, jsep={:?}", txn, from.handle, msg, jsep);
         if !from.destroyed.load(Ordering::Relaxed) {
-            // process the message first, because processing a JSEP can cause us to want to send an RTCP
-            // FIR to our subscribers, which may have been established in the message
             let parsed_msg = msg.and_then(|x| try_parse_jansson(&x).transpose());
             let parsed_jsep = jsep.and_then(|x| try_parse_jansson(&x).transpose());
             let msg_result = parsed_msg.map(|x| x.and_then(|msg| process_message(from, msg)));
