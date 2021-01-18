@@ -388,6 +388,10 @@ extern "C" fn incoming_data(handle: *mut PluginSession, packet: *mut PluginDataP
     }
 }
 
+extern "C" fn data_ready(_handle: *mut PluginSession) {
+    // Skip data channels.
+}
+
 extern "C" fn slow_link(handle: *mut PluginSession, _uplink: c_int, _video: c_int) {
     let sess = unsafe { Session::from_ptr(handle).expect("Session can't be null!") };
     janus_info!("Slow link message received on {:p}.", sess.handle);
@@ -770,7 +774,7 @@ extern "C" fn handle_admin_message(_message: *mut RawJanssonValue) -> *mut RawJa
 
 const PLUGIN: Plugin = build_plugin!(
     LibraryMetadata {
-        api_version: 14,
+        api_version: 15,
         version: 1,
         name: c_str!("Janus SFU plugin"),
         package: c_str!("janus.plugin.sfu"),
@@ -787,6 +791,7 @@ const PLUGIN: Plugin = build_plugin!(
     incoming_rtp,
     incoming_rtcp,
     incoming_data,
+    data_ready,
     slow_link,
     hangup_media,
     destroy_session,
