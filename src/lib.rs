@@ -610,6 +610,7 @@ fn process_message(from: &Arc<Session>, msg: MessageKind) -> MessageResult {
 fn process_offer(from: &Session, offer: &Sdp) -> JsepResult {
     // enforce publication of the codecs that we know our client base will be compatible with
     janus_info!("Processing JSEP offer from {:p}: {:?}", from.handle, offer);
+    let h264_profile = c_str!("42e01f");
     let mut answer = answer_sdp!(
         offer,
         OfferAnswerParameters::AudioCodec,
@@ -618,11 +619,13 @@ fn process_offer(from: &Session, offer: &Sdp) -> JsepResult {
         MediaDirection::JANUS_SDP_RECVONLY,
         OfferAnswerParameters::VideoCodec,
         VIDEO_CODEC.to_cstr().as_ptr(),
+        OfferAnswerParameters::H264Profile,
+        h264_profile.as_ptr(),
         OfferAnswerParameters::VideoDirection,
         MediaDirection::JANUS_SDP_RECVONLY,
     );
     let audio_payload_type = answer.get_payload_type(AUDIO_CODEC.to_cstr());
-    let video_payload_type = answer.get_payload_type(VIDEO_CODEC.to_cstr());
+    let video_payload_type = answer.get_payload_type_full(VIDEO_CODEC.to_cstr(), h264_profile);
     if let Some(pt) = audio_payload_type {
         // todo: figure out some more principled way to keep track of this stuff per room
         let settings = CString::new(format!("{} stereo=0; sprop-stereo=0; usedtx=1;", pt))?;
@@ -655,6 +658,8 @@ fn process_offer(from: &Session, offer: &Sdp) -> JsepResult {
         VIDEO_CODEC.to_cstr().as_ptr(),
         OfferAnswerParameters::VideoPayloadType,
         video_payload_type.unwrap_or(100),
+        OfferAnswerParameters::H264Profile,
+        h264_profile.as_ptr(),
         OfferAnswerParameters::VideoDirection,
         MediaDirection::JANUS_SDP_SENDONLY,
     );
