@@ -2,7 +2,7 @@
 
 [![Build Status](https://travis-ci.org/mozilla/janus-plugin-sfu.svg?branch=master)](https://travis-ci.org/mozilla/janus-plugin-sfu)
 
-[Janus](https://janus.conf.meetecho.com/) [plugin](https://janus.conf.meetecho.com/docs/plugin_8h.html) to serve as a WebRTC Selective Forwarding Unit (SFU) for game networking data. It's the current backend for [Mozilla Hubs](https://github.com/mozilla/hubs). It's mostly just for being a simple, plug-and-play, star-topology SFU that you can use instead of being peer-to-peer.
+[Janus](https://janus.conf.meetecho.com/) [plugin](https://janus.conf.meetecho.com/docs/plugin_8h.html) to serve as a WebRTC Selective Forwarding Unit (SFU) for game networking data. It was designed as the backend for [Mozilla Hubs](https://github.com/mozilla/hubs), although Hubs no longer uses it.
 
 [See here for API documentation on how to communicate with the plugin.](docs/api.md)
 
@@ -10,7 +10,7 @@ PRs and GitHub issues are welcome.
 
 ### How do I use this?
 
-This is a plugin for Janus, so you'll need to install and run Janus first. The [installation instructions on GitHub](https://github.com/meetecho/janus-gateway#dependencies) are canonical. It's compatible with Janus version 0.9.0 and later, although sometimes Janus makes changes that break plugins.
+This is a plugin for Janus, so you'll need to install and run Janus first. The [installation instructions on GitHub](https://github.com/meetecho/janus-gateway#dependencies) are canonical. It's compatible with Janus version 0.10.9 and later, although sometimes Janus makes changes that break plugins.
 
 This plugin should be compatible with any OS that can run Janus; that includes Linux, OS X, and Windows via WSL. If you use a version from a package manager, you might want to check to make sure it has data channel support, which is a compile-time option. (Debian and Ubuntu have it.)
 
