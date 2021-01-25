@@ -1,7 +1,5 @@
 # janus-plugin-sfu
 
-[![Build Status](https://travis-ci.org/mozilla/janus-plugin-sfu.svg?branch=master)](https://travis-ci.org/mozilla/janus-plugin-sfu)
-
 [Janus](https://janus.conf.meetecho.com/) [plugin](https://janus.conf.meetecho.com/docs/plugin_8h.html) to serve as a WebRTC Selective Forwarding Unit (SFU) for game networking data. It was designed as the backend for [Mozilla Hubs](https://github.com/mozilla/hubs), although Hubs no longer uses it.
 
 [See here for API documentation on how to communicate with the plugin.](docs/api.md)

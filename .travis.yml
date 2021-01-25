@@ -1,7 +1,0 @@
-language: rust
-rust:
-  - stable
-addons:
-  apt:
-    packages:
-      - libjansson-dev
