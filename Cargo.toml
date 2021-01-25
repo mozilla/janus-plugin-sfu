@@ -16,7 +16,7 @@ crate_type = ["cdylib"]
 lto = true
 
 [dependencies]
-janus-plugin = { git = "https://github.com/mozilla/janus-plugin-rs" }
+janus-plugin = "0.12"
 multimap = "0.8"
 once_cell = "1.2"
 serde = { version = "1.0", features = ["derive"] }
@@ -25,3 +25,7 @@ rust-ini = "0.13"
 jsonwebtoken = "6.0"
 lazy_static = "1.4.0"
 num_cpus = "1.12.0"
+
+[patch.crates-io]
+janus-plugin-sys = { git = "https://github.com/Synantoo/janus-plugin-rs", branch = "feature/api-v15" }
+janus-plugin = { git = "https://github.com/Synantoo/janus-plugin-rs", branch = "feature/api-v15" }

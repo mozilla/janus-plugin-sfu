@@ -83,19 +83,19 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 [[package]]
 name = "jansson-sys"
 version = "0.1.0"
-source = "git+https://github.com/mozilla/janus-plugin-rs#d3fba6066e6dfa01412de112a10d1a194a6cf851"
+source = "git+https://github.com/Synantoo/janus-plugin-rs?branch=feature/api-v15#d4149c761a1089ac1dbbce851b2b5f906796dfff"
 
 [[package]]
 name = "janus-plugin"
 version = "0.12.0"
-source = "git+https://github.com/mozilla/janus-plugin-rs#d3fba6066e6dfa01412de112a10d1a194a6cf851"
+source = "git+https://github.com/Synantoo/janus-plugin-rs?branch=feature/api-v15#d4149c761a1089ac1dbbce851b2b5f906796dfff"
 dependencies = [
  "bitflags 1.2.1 (registry+https://github.com/rust-lang/crates.io-index)",
  "chrono 0.4.11 (registry+https://github.com/rust-lang/crates.io-index)",
  "colored 1.9.3 (registry+https://github.com/rust-lang/crates.io-index)",
  "glib-sys 0.9.1 (registry+https://github.com/rust-lang/crates.io-index)",
- "jansson-sys 0.1.0 (git+https://github.com/mozilla/janus-plugin-rs)",
- "janus-plugin-sys 0.7.0 (git+https://github.com/mozilla/janus-plugin-rs)",
+ "jansson-sys 0.1.0 (git+https://github.com/Synantoo/janus-plugin-rs?branch=feature/api-v15)",
+ "janus-plugin-sys 0.7.0 (git+https://github.com/Synantoo/janus-plugin-rs?branch=feature/api-v15)",
  "libc 0.2.68 (registry+https://github.com/rust-lang/crates.io-index)",
  "serde 1.0.105 (registry+https://github.com/rust-lang/crates.io-index)",
 ]
@@ -104,7 +104,7 @@ dependencies = [
 name = "janus-plugin-sfu"
 version = "0.1.0"
 dependencies = [
- "janus-plugin 0.12.0 (git+https://github.com/mozilla/janus-plugin-rs)",
+ "janus-plugin 0.12.0 (git+https://github.com/Synantoo/janus-plugin-rs?branch=feature/api-v15)",
  "jsonwebtoken 6.0.1 (registry+https://github.com/rust-lang/crates.io-index)",
  "lazy_static 1.4.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "multimap 0.8.1 (registry+https://github.com/rust-lang/crates.io-index)",
@@ -118,10 +118,10 @@ dependencies = [
 [[package]]
 name = "janus-plugin-sys"
 version = "0.7.0"
-source = "git+https://github.com/mozilla/janus-plugin-rs#d3fba6066e6dfa01412de112a10d1a194a6cf851"
+source = "git+https://github.com/Synantoo/janus-plugin-rs?branch=feature/api-v15#d4149c761a1089ac1dbbce851b2b5f906796dfff"
 dependencies = [
  "glib-sys 0.9.1 (registry+https://github.com/rust-lang/crates.io-index)",
- "jansson-sys 0.1.0 (git+https://github.com/mozilla/janus-plugin-rs)",
+ "jansson-sys 0.1.0 (git+https://github.com/Synantoo/janus-plugin-rs?branch=feature/api-v15)",
 ]
 
 [[package]]
@@ -330,9 +330,9 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 "checksum glib-sys 0.9.1 (registry+https://github.com/rust-lang/crates.io-index)" = "95856f3802f446c05feffa5e24859fe6a183a7cb849c8449afc35c86b1e316e2"
 "checksum hermit-abi 0.1.10 (registry+https://github.com/rust-lang/crates.io-index)" = "725cf19794cf90aa94e65050cb4191ff5d8fa87a498383774c47b332e3af952e"
 "checksum itoa 0.4.5 (registry+https://github.com/rust-lang/crates.io-index)" = "b8b7a7c0c47db5545ed3fef7468ee7bb5b74691498139e4b3f6a20685dc6dd8e"
-"checksum jansson-sys 0.1.0 (git+https://github.com/mozilla/janus-plugin-rs)" = "<none>"
-"checksum janus-plugin 0.12.0 (git+https://github.com/mozilla/janus-plugin-rs)" = "<none>"
-"checksum janus-plugin-sys 0.7.0 (git+https://github.com/mozilla/janus-plugin-rs)" = "<none>"
+"checksum jansson-sys 0.1.0 (git+https://github.com/Synantoo/janus-plugin-rs?branch=feature/api-v15)" = "<none>"
+"checksum janus-plugin 0.12.0 (git+https://github.com/Synantoo/janus-plugin-rs?branch=feature/api-v15)" = "<none>"
+"checksum janus-plugin-sys 0.7.0 (git+https://github.com/Synantoo/janus-plugin-rs?branch=feature/api-v15)" = "<none>"
 "checksum jsonwebtoken 6.0.1 (registry+https://github.com/rust-lang/crates.io-index)" = "a81d1812d731546d2614737bee92aa071d37e9afa1409bc374da9e5e70e70b22"
 "checksum lazy_static 1.4.0 (registry+https://github.com/rust-lang/crates.io-index)" = "e2abad23fbc42b3700f2f279844dc832adb2b2eb069b2df918f455c4e18cc646"
 "checksum libc 0.2.68 (registry+https://github.com/rust-lang/crates.io-index)" = "dea0c0405123bba743ee3f91f49b1c7cfb684eef0da0a50110f758ccf24cdff0"
