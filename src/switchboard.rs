@@ -151,12 +151,12 @@ impl Switchboard {
         self.blockers_to_miscreants.disassociate(from, target);
     }
 
-    pub fn join_publisher(&mut self, session: Arc<Session>, user: UserId, room: UserId) {
+    pub fn join_publisher(&mut self, session: Arc<Session>, user: UserId, room: RoomId) {
         self.publishers_by_user.entry(user).or_insert(session.clone());
         self.publishers_by_room.insert(room, session);
     }
 
-    pub fn join_subscriber(&mut self, session: Arc<Session>, user: UserId, _room: UserId) {
+    pub fn join_subscriber(&mut self, session: Arc<Session>, user: UserId, _room: RoomId) {
         self.subscribers_by_user.insert(user, session);
     }
 
