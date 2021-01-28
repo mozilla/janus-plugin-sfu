@@ -126,7 +126,6 @@ version = "0.1.0"
 dependencies = [
  "janus-plugin",
  "jsonwebtoken",
- "lazy_static",
  "multimap",
  "num_cpus",
  "once_cell",

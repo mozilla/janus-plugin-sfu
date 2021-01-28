@@ -15,7 +15,6 @@ use janus_plugin::{
     JanssonValue, JanusError, JanusResult, LibraryMetadata, Plugin, PluginCallbacks, PluginResult, PluginSession,
     PluginRtpPacket, PluginRtcpPacket, PluginDataPacket, RawJanssonValue, RawPluginResult,
 };
-use lazy_static::lazy_static;
 use messages::{JsepKind, MessageKind, OptionalField, Subscription};
 use messages::{RoomId, UserId};
 use once_cell::sync::{Lazy, OnceCell};
@@ -29,7 +28,7 @@ use std::os::raw::{c_char, c_int};
 use std::path::Path;
 use std::ptr;
 use std::slice;
-use std::sync::atomic::{AtomicBool, AtomicIsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicIsize, AtomicUsize, Ordering};
 use std::sync::{mpsc, Arc, Mutex, RwLock, Weak};
 use std::thread;
 use switchboard::Switchboard;
@@ -117,9 +116,8 @@ static SWITCHBOARD: Lazy<RwLock<Switchboard>> = Lazy::new(|| RwLock::new(Switchb
 /// The producer/consumer queue storing incoming plugin messages to be processed.
 static MESSAGE_SENDERS: OnceCell<Vec<mpsc::SyncSender<RawMessage>>> = OnceCell::new();
 
-lazy_static! {
-    static ref MESSAGE_COUNTER: Arc<Mutex<usize>> = Arc::new(Mutex::new(0));
-}
+/// Counts the number of messages handled. Used for round-robin dispatching to handler threads.
+static MESSAGE_COUNTER: AtomicUsize = AtomicUsize::new(0);
 
 /// The plugin configuration, read from disk.
 static CONFIG: OnceCell<Config> = OnceCell::new();
@@ -758,11 +756,10 @@ extern "C" fn handle_message(
                 jsep: unsafe { JanssonValue::from_raw(jsep) },
             };
             janus_info!("Queueing signalling message on {:p}.", sess.handle);
-            let mut message_count = MESSAGE_COUNTER.lock().unwrap();
+            let message_count = MESSAGE_COUNTER.fetch_add(1, Ordering::Relaxed);
             let senders = MESSAGE_SENDERS.get().unwrap();
-            let sender = &senders[*message_count % senders.len()];
+            let sender = &senders[message_count % senders.len()];
             sender.send(msg).ok();
-            *message_count += 1;
 
             PluginResult::ok_wait(Some(c_str!("Processing.")))
         }
