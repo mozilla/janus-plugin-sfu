@@ -581,7 +581,7 @@ fn process_subscribe(from: &Arc<Session>, what: &Subscription) -> MessageResult 
 fn process_data(from: &Arc<Session>, whom: Option<UserId>, body: &str) -> MessageResult {
     janus_huge!("Processing data message from {:p}: {:?}", from.handle, body);
     let payload = json!({ "event": "data", "body": body });
-    let switchboard = SWITCHBOARD.write()?;
+    let switchboard = SWITCHBOARD.read().expect("Switchboard lock poisoned; can't continue.");
     if let Some(joined) = from.join_state.get() {
         let occupants = switchboard.publishers_occupying(&joined.room_id);
         if let Some(user_id) = whom {
