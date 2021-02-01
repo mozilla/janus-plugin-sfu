@@ -444,7 +444,8 @@ fn process_join(from: &Arc<Session>, room_id: RoomId, user_id: UserId, subscribe
     }
 
     let mut switchboard = SWITCHBOARD.write()?;
-    let body = json!({ "users": { room_id.as_str(): switchboard.get_users(&room_id) }});
+    let users = switchboard.get_users(&room_id);
+    let body = json!({ "users": { room_id.as_str(): users }});
 
     // hack -- use data channel subscription to infer this, it would probably be nicer if
     // connections announced explicitly whether they were a publisher or subscriber
@@ -465,9 +466,21 @@ fn process_join(from: &Arc<Session>, room_id: RoomId, user_id: UserId, subscribe
     }
 
     if join_kind == JoinKind::Publisher {
-        let notification = json!({ "event": "join", "user_id": user_id, "room_id": room_id });
-        switchboard.join_publisher(Arc::clone(from), user_id.clone(), room_id.clone());
-        notify_except(&notification, &user_id, switchboard.publishers_occupying(&room_id));
+        if users.contains(&user_id) {
+            // Already have a publisher session for this user_id
+            // The client (naf-janus-adapter) will try to reconnect after 10s.
+            // It doesn't make sense to notify the other publishers because they will use the old
+            // session. End the old session now instead of waiting janus to notify the session is dead.
+            if let Some(publisher) = switchboard.get_publisher(&user_id) {
+                janus_info!("Ending session {:p}.", publisher.handle);
+                let end_session = gateway_callbacks().end_session;
+                end_session(publisher.as_ptr());
+            }
+        } else {
+            let notification = json!({ "event": "join", "user_id": user_id, "room_id": room_id });
+            switchboard.join_publisher(Arc::clone(from), user_id.clone(), room_id.clone());
+            notify_except(&notification, &user_id, switchboard.publishers_occupying(&room_id));
+        }
     } else {
         switchboard.join_subscriber(Arc::clone(from), user_id.clone(), room_id.clone());
     }
