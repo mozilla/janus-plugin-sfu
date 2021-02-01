@@ -1,18 +1,18 @@
 use crate::messages::{RoomId, UserId};
 use crate::sessions::Session;
 use janus_plugin::janus_err;
-use multimap::MultiMap;
 use std::borrow::Borrow;
 /// Tools for managing the set of subscriptions between connections.
 use std::collections::{HashMap, HashSet};
+use std::collections::hash_map::Entry;
 use std::fmt::Debug;
 use std::hash::Hash;
 use std::sync::Arc;
 
 #[derive(Debug)]
 pub struct BidirectionalMultimap<K: Eq + Hash, V: Eq + Hash> {
-    forward_mapping: MultiMap<K, V>,
-    inverse_mapping: MultiMap<V, K>,
+    forward_mapping: HashMap<K, Vec<V>>,
+    inverse_mapping: HashMap<V, Vec<K>>,
 }
 
 impl<K, V> BidirectionalMultimap<K, V>
@@ -22,16 +22,16 @@ where
 {
     pub fn new() -> Self {
         Self {
-            forward_mapping: MultiMap::new(),
-            inverse_mapping: MultiMap::new(),
+            forward_mapping: HashMap::new(),
+            inverse_mapping: HashMap::new(),
         }
     }
 
     pub fn associate(&mut self, k: K, v: V) {
         let kk = k.clone();
         let vv = v.clone();
-        self.forward_mapping.insert(k, vv);
-        self.inverse_mapping.insert(v, kk);
+        self.forward_mapping.entry(k).or_insert_with(Vec::new).push(vv);
+        self.inverse_mapping.entry(v).or_insert_with(Vec::new).push(kk);
     }
 
     pub fn disassociate<T, U>(&mut self, k: &T, v: &U)
@@ -41,10 +41,10 @@ where
         V: Borrow<U>,
         U: Hash + Eq,
     {
-        if let Some(vals) = self.forward_mapping.get_vec_mut(k) {
+        if let Some(vals) = self.forward_mapping.get_mut(k) {
             vals.retain(|x| x.borrow() != v);
         }
-        if let Some(keys) = self.inverse_mapping.get_vec_mut(v) {
+        if let Some(keys) = self.inverse_mapping.get_mut(v) {
             keys.retain(|x| x.borrow() != k);
         }
     }
@@ -56,7 +56,7 @@ where
     {
         if let Some(vs) = self.forward_mapping.remove(k) {
             for v in vs {
-                if let Some(ks) = self.inverse_mapping.get_vec_mut(&v) {
+                if let Some(ks) = self.inverse_mapping.get_mut(&v) {
                     ks.retain(|x| x.borrow() != k);
                 } else {
                     janus_err!("Map in inconsistent state: entry ({:?}, {:?}) has no corresponding entry.", k, v);
@@ -72,7 +72,7 @@ where
     {
         if let Some(ks) = self.inverse_mapping.remove(v) {
             for k in ks {
-                if let Some(vs) = self.forward_mapping.get_vec_mut(&k) {
+                if let Some(vs) = self.forward_mapping.get_mut(&k) {
                     vs.retain(|x| x.borrow() != v);
                 } else {
                     janus_err!("Map in inconsistent state: entry ({:?}, {:?}) has no corresponding entry.", k, v);
@@ -86,7 +86,7 @@ where
         K: Borrow<T>,
         T: Hash + Eq,
     {
-        self.forward_mapping.get_vec(k).map(Vec::as_slice).unwrap_or(&[])
+        self.forward_mapping.get(k).map(Vec::as_slice).unwrap_or(&[])
     }
 
     pub fn get_keys<U>(&self, v: &U) -> &[K]
@@ -94,7 +94,7 @@ where
         V: Borrow<U>,
         U: Hash + Eq,
     {
-        self.inverse_mapping.get_vec(v).map(Vec::as_slice).unwrap_or(&[])
+        self.inverse_mapping.get(v).map(Vec::as_slice).unwrap_or(&[])
     }
 }
 
@@ -105,11 +105,11 @@ pub struct Switchboard {
     /// All active connections, whether or not they have joined a room.
     sessions: Vec<Box<Arc<Session>>>,
     /// All joined publisher connections, by which room they have joined.
-    publishers_by_room: MultiMap<RoomId, Arc<Session>>,
+    publishers_by_room: HashMap<RoomId, Vec<Arc<Session>>>,
     /// All joined publisher connections, by which user they have joined as.
     publishers_by_user: HashMap<UserId, Arc<Session>>,
     /// All joined subscriber connections, by which user they have joined as.
-    subscribers_by_user: MultiMap<UserId, Arc<Session>>,
+    subscribers_by_user: HashMap<UserId, Vec<Arc<Session>>>,
     /// Which connections are subscribing to traffic from which other connections.
     publisher_to_subscribers: BidirectionalMultimap<Arc<Session>, Arc<Session>>,
     /// Which users have explicitly blocked traffic to and from other users.
@@ -120,9 +120,9 @@ impl Switchboard {
     pub fn new() -> Self {
         Self {
             sessions: Vec::new(),
-            publishers_by_room: MultiMap::new(),
+            publishers_by_room: HashMap::new(),
             publishers_by_user: HashMap::new(),
-            subscribers_by_user: MultiMap::new(),
+            subscribers_by_user: HashMap::new(),
             publisher_to_subscribers: BidirectionalMultimap::new(),
             blockers_to_miscreants: BidirectionalMultimap::new(),
         }
@@ -153,19 +153,22 @@ impl Switchboard {
 
     pub fn join_publisher(&mut self, session: Arc<Session>, user: UserId, room: RoomId) {
         self.publishers_by_user.entry(user).or_insert(session.clone());
-        self.publishers_by_room.insert(room, session);
+        self.publishers_by_room.entry(room).or_insert_with(Vec::new).push(session);
     }
 
     pub fn join_subscriber(&mut self, session: Arc<Session>, user: UserId, _room: RoomId) {
-        self.subscribers_by_user.insert(user, session);
+        self.subscribers_by_user.entry(user).or_insert_with(Vec::new).push(session);
     }
 
     pub fn leave_publisher(&mut self, session: &Session) {
         self.publisher_to_subscribers.remove_key(session);
         if let Some(joined) = session.join_state.get() {
             self.publishers_by_user.remove(&joined.user_id);
-            if let Some(sessions) = self.publishers_by_room.get_vec_mut(&joined.room_id) {
-                sessions.retain(|x| x.handle != session.handle);
+            if let Entry::Occupied(mut others) = self.publishers_by_room.entry(joined.room_id.clone()) {
+                others.get_mut().retain(|x| x.as_ref() != session);
+                if others.get().is_empty() {
+                    others.remove_entry();
+                }
             }
         }
     }
@@ -173,8 +176,11 @@ impl Switchboard {
     pub fn leave_subscriber(&mut self, session: &Session) {
         self.publisher_to_subscribers.remove_value(session);
         if let Some(joined) = session.join_state.get() {
-            if let Some(sessions) = self.subscribers_by_user.get_vec_mut(&joined.user_id) {
-                sessions.retain(|x| x.handle != session.handle);
+            if let Entry::Occupied(mut others) = self.subscribers_by_user.entry(joined.user_id.clone()) {
+                others.get_mut().retain(|x| x.as_ref() != session);
+                if others.get().is_empty() {
+                    others.remove_entry();
+                }
             }
         }
     }
@@ -196,7 +202,7 @@ impl Switchboard {
     }
 
     pub fn publishers_occupying(&self, room: &RoomId) -> &[Arc<Session>] {
-        self.publishers_by_room.get_vec(room).map(Vec::as_slice).unwrap_or(&[])
+        self.publishers_by_room.get(room).map(Vec::as_slice).unwrap_or(&[])
     }
 
     pub fn media_recipients_for(&self, sender: &Session) -> impl Iterator<Item = &Arc<Session>> {
@@ -272,6 +278,6 @@ impl Switchboard {
     }
 
     pub fn get_subscribers(&self, user: &UserId) -> Option<&Vec<Arc<Session>>> {
-        self.subscribers_by_user.get_vec(user)
+        self.subscribers_by_user.get(user)
     }
 }
