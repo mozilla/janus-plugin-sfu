@@ -178,7 +178,7 @@ fn send_message<T: IntoIterator<Item = U>, U: AsRef<Session>>(body: &JsonValue, 
     for session in sessions {
         let handle = session.as_ref().handle;
         janus_huge!("Signalling message going to {:p}: {}.", handle, body);
-        let result = JanusError::from(push_event(handle, &mut PLUGIN, ptr::null(), msg.as_mut_ref(), ptr::null_mut()));
+        let result = JanusError::from(push_event(handle, &PLUGIN as *const Plugin as *mut Plugin, ptr::null(), msg.as_mut_ref(), ptr::null_mut()));
         match result {
             Ok(_) => (),
             Err(JanusError { code: 458 }) => {
@@ -197,7 +197,7 @@ fn send_offer<T: IntoIterator<Item = U>, U: AsRef<Session>>(offer: &JsonValue, s
     for session in sessions {
         let handle = session.as_ref().handle;
         janus_huge!("Offer going to {:p}: {}.", handle, offer);
-        let result = JanusError::from(push_event(handle, &mut PLUGIN, ptr::null(), msg.as_mut_ref(), jsep.as_mut_ref()));
+        let result = JanusError::from(push_event(handle, &PLUGIN as *const Plugin as *mut Plugin, ptr::null(), msg.as_mut_ref(), jsep.as_mut_ref()));
         match result {
             Ok(_) => (),
             Err(JanusError { code: 458 }) => {
@@ -699,7 +699,7 @@ fn push_response(from: &Session, txn: &TransactionId, body: &JsonValue, jsep: Op
     janus_huge!("Responding to {:p} for txid {}: body={}, jsep={}", from.handle, txn, body, jsep);
     JanusError::from(push_event(
         from.as_ptr(),
-        &mut PLUGIN,
+        &PLUGIN as *const Plugin as *mut Plugin,
         txn.0,
         serde_to_jansson(body).as_mut_ref(),
         serde_to_jansson(&jsep).as_mut_ref(),
@@ -780,7 +780,7 @@ extern "C" fn handle_admin_message(_message: *mut RawJanssonValue) -> *mut RawJa
     serde_to_jansson(&output).into_raw()
 }
 
-const PLUGIN: Plugin = build_plugin!(
+static PLUGIN: Plugin = build_plugin!(
     LibraryMetadata {
         api_version: 15,
         version: 1,
