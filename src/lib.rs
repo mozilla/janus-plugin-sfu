@@ -774,7 +774,7 @@ extern "C" fn handle_message(
                 msg: unsafe { JanssonValue::from_raw(message) },
                 jsep: unsafe { JanssonValue::from_raw(jsep) },
             };
-            janus_info!("Queueing signalling message on {:p}.", sess.handle);
+            janus_verb!("Queueing signalling message on {:p}.", sess.handle);
             let message_count = MESSAGE_COUNTER.fetch_add(1, Ordering::Relaxed);
             let senders = MESSAGE_SENDERS.get().unwrap();
             let sender = &senders[message_count % senders.len()];
