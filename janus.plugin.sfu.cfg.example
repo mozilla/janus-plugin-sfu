@@ -5,10 +5,10 @@
 # a valid signed JWT.
 # auth_key = "foo.key"
 
-# If present, the maximum number of users allowed to join a single room. Zero means no limit.
+# If present, the maximum number of users allowed to join a single room.
 max_room_size = 30
 
-# If present, the maximum number of concurrent users allowed to join any room on the server. Zero means no limit.
+# If present, the maximum number of concurrent sessions the server can support. The number of sessions in a room is (number of users)^2
 max_ccu = 1000
 
 # Number of threads to run message processing on. If zero, use the # of logical CPUs.
