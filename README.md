@@ -41,3 +41,7 @@ directory (e.g. /usr/lib/janus/plugins). Restart Janus to activate.
 The plugin accepts a configuration file in the Janus configuration directory named `janus.plugin.sfu.cfg` containing key/value pairs in INI format. An example configuration file is provided as `janus.plugin.sfu.cfg.example`.
 
 You can test your install by pointing a browser at the `tiny.html` client provided in the `client` directory. If you open two browser windows, you should be able to share your microphone, share your screen, and send data channel messages in one, and see the results in the other.
+
+## Using it with networked-aframe
+
+You can use this plugin with [A-Frame](https://aframe.io) and networked-aframe. The maintained libraries are [Mozilla's networked-aframe](https://github.com/MozillaReality/networked-aframe) and [Synantoo naf-janus-adapter 3.0.x branch](https://github.com/Synantoo/naf-janus-adapter/tree/3.0.x). You need to build those libraries yourself if you don't use npm.
