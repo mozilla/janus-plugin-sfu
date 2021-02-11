@@ -22,6 +22,7 @@ use serde::de::DeserializeOwned;
 use serde_json::json;
 use serde_json::Value as JsonValue;
 use sessions::{JoinKind, JoinState, Session, SessionState};
+use std::collections::HashSet;
 use std::error::Error;
 use std::ffi::{CStr, CString};
 use std::os::raw::{c_char, c_int};
@@ -444,7 +445,8 @@ fn process_join(from: &Arc<Session>, room_id: RoomId, user_id: UserId, subscribe
     }
 
     let mut switchboard = SWITCHBOARD.write()?;
-    let body = json!({ "users": { room_id.as_str(): switchboard.get_users(&room_id) }});
+    let room_users = switchboard.get_room_users(&room_id).collect::<HashSet<_>>();
+    let body = json!({ "users": { room_id.as_str(): room_users }});
 
     // hack -- use data channel subscription to infer this, it would probably be nicer if
     // connections announced explicitly whether they were a publisher or subscriber
@@ -452,10 +454,10 @@ fn process_join(from: &Arc<Session>, room_id: RoomId, user_id: UserId, subscribe
     let join_kind = if gets_data_channel { JoinKind::Publisher } else { JoinKind::Subscriber };
 
     if join_kind == JoinKind::Publisher {
-        if switchboard.publishers_occupying(&room_id).len() > config.max_room_size {
+        if room_users.len() > config.max_room_size {
             return Err(From::from("Room is full."));
         }
-        if switchboard.sessions().len() > config.max_ccu {
+        if switchboard.get_all_users().count() >= config.max_ccu {
             return Err(From::from("Server is full."));
         }
     }

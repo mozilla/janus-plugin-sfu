@@ -3,7 +3,7 @@ use crate::sessions::Session;
 use janus_plugin::janus_err;
 use std::borrow::Borrow;
 /// Tools for managing the set of subscriptions between connections.
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::collections::hash_map::Entry;
 use std::fmt::Debug;
 use std::hash::Hash;
@@ -197,10 +197,6 @@ impl Switchboard {
         self.publisher_to_subscribers.get_keys(subscriber)
     }
 
-    pub fn sessions(&self) -> &Vec<Box<Arc<Session>>> {
-        &self.sessions
-    }
-
     pub fn publishers_occupying(&self, room: &RoomId) -> &[Arc<Session>] {
         self.publishers_by_room.get(room).map(Vec::as_slice).unwrap_or(&[])
     }
@@ -263,14 +259,14 @@ impl Switchboard {
         })
     }
 
-    pub fn get_users(&self, room: &RoomId) -> HashSet<&UserId> {
-        let mut result = HashSet::new();
-        for session in self.publishers_occupying(room) {
-            if let Some(joined) = session.join_state.get() {
-                result.insert(&joined.user_id);
-            }
-        }
-        result
+    pub fn get_room_users(&self, room: &RoomId) -> impl Iterator<Item = &UserId> {
+        self.publishers_occupying(room).iter().filter_map(|s| {
+            s.join_state.get().map(|j| &j.user_id)
+        })
+    }
+
+    pub fn get_all_users(&self) -> impl Iterator<Item = &UserId> {
+        self.publishers_by_user.keys()
     }
 
     pub fn get_publisher(&self, user: &UserId) -> Option<&Arc<Session>> {
