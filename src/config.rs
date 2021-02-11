@@ -18,8 +18,8 @@ impl Default for Config {
     fn default() -> Self {
         Self {
             auth_key: None,
-            max_room_size: usize::max_value(),
-            max_ccu: usize::max_value(),
+            max_room_size: 0,
+            max_ccu: 0,
             message_threads: 0,
         }
     }

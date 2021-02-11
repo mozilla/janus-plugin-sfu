@@ -454,10 +454,10 @@ fn process_join(from: &Arc<Session>, room_id: RoomId, user_id: UserId, subscribe
     let join_kind = if gets_data_channel { JoinKind::Publisher } else { JoinKind::Subscriber };
 
     if join_kind == JoinKind::Publisher {
-        if room_users.len() > config.max_room_size {
+        if config.max_room_size > 0 && room_users.len() >= config.max_room_size {
             return Err(From::from("Room is full."));
         }
-        if switchboard.get_all_users().count() >= config.max_ccu {
+        if config.max_ccu > 0 && switchboard.get_all_users().count() >= config.max_ccu {
             return Err(From::from("Server is full."));
         }
     }
