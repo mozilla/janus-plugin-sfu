@@ -424,16 +424,17 @@ fn process_join(from: &Arc<Session>, room_id: RoomId, user_id: UserId, subscribe
             return Err(From::from("Rejecting anonymous join!"));
         }
         (Some(key), Some(ref token)) => match ValidatedToken::from_str(token, key) {
-            Ok(ref claims) if claims.join_hub => {
-                janus_verb!("Allowing validated join from {:p} to room {} as user {}.", from.handle, room_id, user_id);
-            }
-            Ok(_) => {
-                janus_warn!("Rejecting unauthorized join from {:p} to room {} as user {}.", from.handle, room_id, user_id);
-                return Err(From::from("Rejecting join with no join_hub permission!"));
+            Ok(ref claims) => {
+                if claims.may_join(&room_id) {
+                    janus_verb!("Allowing join from {:p} to room {} as user {}.", from.handle, room_id, user_id);
+                } else {
+                    janus_warn!("Rejecting join from {:p} to room {} as user {}.", from.handle, room_id, user_id);
+                    return Err(From::from("Rejecting join without permission!"));
+                }
             }
             Err(e) => {
                 janus_warn!(
-                    "Rejecting invalid join from {:p} to room {} as user {}. Error: {}",
+                    "Rejecting join from {:p} to room {} as user {}. Error: {}",
                     from.handle,
                     room_id,
                     user_id,
