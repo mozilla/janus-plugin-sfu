@@ -44,4 +44,4 @@ You can test your install by pointing a browser at the `tiny.html` client provid
 
 ## Using it with networked-aframe
 
-You can use this plugin with [A-Frame](https://aframe.io) and networked-aframe. The maintained libraries are [Mozilla's networked-aframe](https://github.com/MozillaReality/networked-aframe) and [Synantoo naf-janus-adapter 3.0.x branch](https://github.com/Synantoo/naf-janus-adapter/tree/3.0.x). You need to build those libraries yourself if you don't use npm.
+You can use this plugin with [A-Frame](https://aframe.io) and [networked-aframe](https://github.com/networked-aframe/networked-aframe). Look at the [adapters table](https://github.com/networked-aframe/networked-aframe#adapters) for a maintained version of the naf-janus-adapter.
