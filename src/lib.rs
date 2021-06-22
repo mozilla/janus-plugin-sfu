@@ -100,7 +100,7 @@ static AUDIO_CODEC: AudioCodec = AudioCodec::Opus;
 
 /// The video codec Janus will negotiate with all participants. H.264 is cross-compatible with modern Firefox, Chrome,
 /// Safari, and Edge; VP8/9 unfortunately isn't compatible with Safari.
-static VIDEO_CODEC: VideoCodec = VideoCodec::H264;
+static VIDEO_CODEC: VideoCodec = VideoCodec::Vp8;
 
 /// Function pointers to the Janus core functionality made available to our plugin.
 static mut CALLBACKS: Option<&PluginCallbacks> = None;
@@ -617,7 +617,6 @@ fn process_message(from: &Arc<Session>, msg: MessageKind) -> MessageResult {
 fn process_offer(from: &Session, offer: &Sdp) -> JsepResult {
     // enforce publication of the codecs that we know our client base will be compatible with
     janus_info!("Processing JSEP offer from {:p}: {:?}", from.handle, offer);
-    let h264_profile = c_str!("42e01f");
     let mut answer = answer_sdp!(
         offer,
         OfferAnswerParameters::AudioCodec,
@@ -626,13 +625,11 @@ fn process_offer(from: &Session, offer: &Sdp) -> JsepResult {
         MediaDirection::JANUS_SDP_RECVONLY,
         OfferAnswerParameters::VideoCodec,
         VIDEO_CODEC.to_cstr().as_ptr(),
-        OfferAnswerParameters::H264Profile,
-        h264_profile.as_ptr(),
         OfferAnswerParameters::VideoDirection,
         MediaDirection::JANUS_SDP_RECVONLY,
     );
     let audio_payload_type = answer.get_payload_type(AUDIO_CODEC.to_cstr());
-    let video_payload_type = answer.get_payload_type_full(VIDEO_CODEC.to_cstr(), h264_profile);
+    let video_payload_type = answer.get_payload_type(VIDEO_CODEC.to_cstr());
     if let Some(pt) = audio_payload_type {
         // todo: figure out some more principled way to keep track of this stuff per room
         let settings = CString::new(format!("{} stereo=0; sprop-stereo=0; usedtx=1;", pt))?;
@@ -665,8 +662,6 @@ fn process_offer(from: &Session, offer: &Sdp) -> JsepResult {
         VIDEO_CODEC.to_cstr().as_ptr(),
         OfferAnswerParameters::VideoPayloadType,
         video_payload_type.unwrap_or(100),
-        OfferAnswerParameters::H264Profile,
-        h264_profile.as_ptr(),
         OfferAnswerParameters::VideoDirection,
         MediaDirection::JANUS_SDP_SENDONLY,
     );
