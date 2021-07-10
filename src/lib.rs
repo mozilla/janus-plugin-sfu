@@ -534,8 +534,10 @@ fn process_block(from: &Arc<Session>, whom: UserId) -> MessageResult {
     janus_info!("Processing block from {:p} to {}", from.handle, whom);
     if let Some(joined) = from.join_state.get() {
         let mut switchboard = SWITCHBOARD.write()?;
-        let event = json!({ "event": "blocked", "by": &joined.user_id });
-        notify_user(&event, &whom, switchboard.publishers_occupying(&joined.room_id));
+        if let Some(publisher) = switchboard.get_publisher(&whom) {
+            let event = json!({ "event": "blocked", "by": &joined.user_id });
+            notify_user(&event, &whom, &[publisher]);
+        }
         switchboard.establish_block(joined.user_id.clone(), whom);
         Ok(MessageResponse::msg(json!({})))
     } else {
@@ -550,9 +552,9 @@ fn process_unblock(from: &Arc<Session>, whom: UserId) -> MessageResult {
         switchboard.lift_block(&joined.user_id, &whom);
         if let Some(publisher) = switchboard.get_publisher(&whom) {
             send_fir(&[publisher]);
+            let event = json!({ "event": "unblocked", "by": &joined.user_id });
+            notify_user(&event, &whom, &[publisher]);
         }
-        let event = json!({ "event": "unblocked", "by": &joined.user_id });
-        notify_user(&event, &whom, switchboard.publishers_occupying(&joined.room_id));
         Ok(MessageResponse::msg(json!({})))
     } else {
         Err(From::from("Cannot unblock when not in a room."))
