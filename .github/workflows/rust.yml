@@ -16,6 +16,8 @@ jobs:
 
     steps:
     - uses: actions/checkout@v2
+    - name: Install libjansson-dev
+      run: sudo apt-get install libjansson-dev
     - name: Build
       run: cargo build --verbose
     - name: Run tests
