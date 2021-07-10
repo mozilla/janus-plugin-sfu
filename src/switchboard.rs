@@ -2,9 +2,9 @@ use crate::messages::{RoomId, UserId};
 use crate::sessions::Session;
 use janus_plugin::janus_err;
 use std::borrow::Borrow;
+use std::collections::hash_map::Entry;
 /// Tools for managing the set of subscriptions between connections.
 use std::collections::HashMap;
-use std::collections::hash_map::Entry;
 use std::fmt::Debug;
 use std::hash::Hash;
 use std::sync::Arc;
@@ -260,9 +260,7 @@ impl Switchboard {
     }
 
     pub fn get_room_users(&self, room: &RoomId) -> impl Iterator<Item = &UserId> {
-        self.publishers_occupying(room).iter().filter_map(|s| {
-            s.join_state.get().map(|j| &j.user_id)
-        })
+        self.publishers_occupying(room).iter().filter_map(|s| s.join_state.get().map(|j| &j.user_id))
     }
 
     pub fn get_all_users(&self) -> impl Iterator<Item = &UserId> {
