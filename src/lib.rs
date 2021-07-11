@@ -12,8 +12,8 @@ use janus_plugin::sdp::{AudioCodec, MediaDirection, OfferAnswerParameters, Sdp, 
 use janus_plugin::utils::LibcString;
 use janus_plugin::{
     answer_sdp, build_plugin, export_plugin, janus_err, janus_huge, janus_info, janus_verb, janus_warn, offer_sdp, JanssonDecodingFlags, JanssonEncodingFlags,
-    JanssonValue, JanusError, JanusResult, LibraryMetadata, Plugin, PluginCallbacks, PluginResult, PluginSession,
-    PluginRtpPacket, PluginRtcpPacket, PluginDataPacket, RawJanssonValue, RawPluginResult,
+    JanssonValue, JanusError, JanusResult, LibraryMetadata, Plugin, PluginCallbacks, PluginDataPacket, PluginResult, PluginRtcpPacket, PluginRtpPacket,
+    PluginSession, RawJanssonValue, RawPluginResult,
 };
 use messages::{JsepKind, MessageKind, OptionalField, Subscription};
 use messages::{RoomId, UserId};
@@ -179,7 +179,13 @@ fn send_message<T: IntoIterator<Item = U>, U: AsRef<Session>>(body: &JsonValue, 
     for session in sessions {
         let handle = session.as_ref().handle;
         janus_huge!("Signalling message going to {:p}: {}.", handle, body);
-        let result = JanusError::from(push_event(handle, &PLUGIN as *const Plugin as *mut Plugin, ptr::null(), msg.as_mut_ref(), ptr::null_mut()));
+        let result = JanusError::from(push_event(
+            handle,
+            &PLUGIN as *const Plugin as *mut Plugin,
+            ptr::null(),
+            msg.as_mut_ref(),
+            ptr::null_mut(),
+        ));
         match result {
             Ok(_) => (),
             Err(JanusError { code: 458 }) => {
@@ -198,7 +204,13 @@ fn send_offer<T: IntoIterator<Item = U>, U: AsRef<Session>>(offer: &JsonValue, s
     for session in sessions {
         let handle = session.as_ref().handle;
         janus_huge!("Offer going to {:p}: {}.", handle, offer);
-        let result = JanusError::from(push_event(handle, &PLUGIN as *const Plugin as *mut Plugin, ptr::null(), msg.as_mut_ref(), jsep.as_mut_ref()));
+        let result = JanusError::from(push_event(
+            handle,
+            &PLUGIN as *const Plugin as *mut Plugin,
+            ptr::null(),
+            msg.as_mut_ref(),
+            jsep.as_mut_ref(),
+        ));
         match result {
             Ok(_) => (),
             Err(JanusError { code: 458 }) => {
@@ -218,7 +230,7 @@ fn send_fir<T: IntoIterator<Item = U>, U: AsRef<Session>>(publishers: T) {
         let mut packet = PluginRtcpPacket {
             video: 1,
             buffer: fir.as_mut_ptr(),
-            length: fir.len() as i16
+            length: fir.len() as i16,
         };
         relay_rtcp(publisher.as_ref().as_ptr(), &mut packet);
     }
@@ -267,7 +279,8 @@ extern "C" fn init(callbacks: *mut PluginCallbacks, config_path: *const c_char) 
                                 janus_err!("Error processing message: {}", e);
                             }
                         }
-                    }).expect("Failed to spawn message thread.");
+                    })
+                    .expect("Failed to spawn message thread.");
 
                 janus_verb!("Message processing thread {} is alive.", i);
             }
@@ -318,7 +331,7 @@ extern "C" fn destroy_session(handle: *mut PluginSession, error: *mut c_int) {
             if let Some(joined) = sess.join_state.get() {
                 match joined.kind {
                     JoinKind::Publisher => switchboard.leave_publisher(&sess),
-                    JoinKind::Subscriber => switchboard.leave_subscriber(&sess)
+                    JoinKind::Subscriber => switchboard.leave_subscriber(&sess),
                 }
                 // if this user is entirely disconnected, notify their roommates.
                 // todo: is it better if this is instead when their publisher disconnects?
@@ -433,13 +446,7 @@ fn process_join(from: &Arc<Session>, room_id: RoomId, user_id: UserId, subscribe
                 }
             }
             Err(e) => {
-                janus_warn!(
-                    "Rejecting join from {:p} to room {} as user {}. Error: {}",
-                    from.handle,
-                    room_id,
-                    user_id,
-                    e
-                );
+                janus_warn!("Rejecting join from {:p} to room {} as user {}. Error: {}", from.handle, room_id, user_id, e);
                 return Err(From::from("Rejecting join with invalid token!"));
             }
         },

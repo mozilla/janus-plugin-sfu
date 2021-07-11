@@ -32,7 +32,6 @@ impl JoinState {
     }
 }
 
-
 /// The state associated with a single session.
 #[derive(Debug)]
 pub struct SessionState {
@@ -48,7 +47,6 @@ pub struct SessionState {
     // todo: these following fields should be unified with the JoinState, but it's
     // annoying in practice because they are established during JSEP negotiation
     // rather than during the join flow
-
     /// If this is a subscriber, the subscription this user has established, if any.
     pub subscription: OnceCell<Subscription>,
 
