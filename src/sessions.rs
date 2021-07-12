@@ -19,16 +19,16 @@ pub struct JoinState {
     /// Whether this session is a subscriber or a publisher.
     pub kind: JoinKind,
 
-    /// The room ID that this session is in.
-    pub room_id: RoomId,
+    /// The room Ids that this session is in.
+    pub room_ids: Vec<RoomId>,
 
     /// An opaque ID uniquely identifying this user.
     pub user_id: UserId,
 }
 
 impl JoinState {
-    pub fn new(kind: JoinKind, room_id: RoomId, user_id: UserId) -> Self {
-        Self { kind, room_id, user_id }
+    pub fn new(kind: JoinKind, room_ids: Vec<RoomId>, user_id: UserId) -> Self {
+        Self { kind, room_ids, user_id }
     }
 }
 
