@@ -269,7 +269,7 @@ extern "C" fn init(callbacks: *mut PluginCallbacks, config_path: *const c_char) 
             let mut senders = Vec::with_capacity(num_threads);
             for i in 0..num_threads {
                 let (messages_tx, messages_rx) = mpsc::sync_channel(0);
-                senders.push(messages_tx.clone());
+                senders.push(messages_tx);
 
                 thread::Builder::new()
                     .name(format!("sfu msg {}", i))
