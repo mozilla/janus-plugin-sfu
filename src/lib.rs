@@ -258,7 +258,6 @@ extern "C" fn init(callbacks: *mut PluginCallbacks, config_path: *const c_char) 
     match unsafe { callbacks.as_ref() } {
         Some(c) => {
             unsafe { CALLBACKS = Some(c) };
-            let mut senders = Vec::new();
             let num_threads = if message_threads == 0 {
                 let cpus = num_cpus::get();
                 janus_info!("message_threads is set to 0, setting it to {} (number of cpus)", cpus);
@@ -267,6 +266,7 @@ extern "C" fn init(callbacks: *mut PluginCallbacks, config_path: *const c_char) 
                 message_threads
             };
 
+            let mut senders = Vec::with_capacity(num_threads);
             for i in 0..num_threads {
                 let (messages_tx, messages_rx) = mpsc::sync_channel(0);
                 senders.push(messages_tx.clone());
