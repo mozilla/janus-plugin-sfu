@@ -479,7 +479,7 @@ fn process_join(from: &Arc<Session>, room_id: RoomId, user_id: UserId, subscribe
         switchboard.join_publisher(Arc::clone(from), user_id.clone(), room_id.clone());
         notify_except(&notification, &user_id, switchboard.publishers_occupying(&room_id));
     } else {
-        switchboard.join_subscriber(Arc::clone(from), user_id.clone(), room_id.clone());
+        switchboard.join_subscriber(Arc::clone(from), user_id, room_id);
     }
 
     if let Some(subscription) = subscribe {
